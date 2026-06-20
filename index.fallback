@@ -1,0 +1,815 @@
+/**
+ * PuppetAI v2 - Powerful browser automation, zero external dependencies.
+ * Requires only: puppeteer (and Chrome/Chromium on your system)
+ *
+ * Features:
+ *  - Smart natural language → steps parser (no API keys needed)
+ *  - TF-IDF extractive summarization
+ *  - Structured data extraction
+ *  - Retry with exponential backoff
+ *  - XPath clicking (no broken :contains())
+ *  - Session persistence (cookies + localStorage)
+ *  - Parallel multi-tab execution
+ *  - Plugin architecture
+ *  - 15 action types
+ *  - Full programmatic API + rich CLI
+ */
+
+'use strict';
+
+const puppeteer    = require('puppeteer');
+const fs           = require('fs');
+const path         = require('path');
+const { execSync } = require('child_process');
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const DEFAULT_URL     = 'https://example.com';
+const DEFAULT_RETRIES = 3;
+const DEFAULT_TIMEOUT = 30_000;
+const SCREENSHOT_DIR  = './screenshots';
+const SESSION_DIR     = './sessions';
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function normalizeText(text) {
+  return text.replace(/\s+/g, ' ').replace(/\u00A0/g, ' ').trim();
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function getChromeExecutablePath() {
+  const env = process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_EXECUTABLE || process.env.CHROME_BIN;
+  if (env) return env;
+  for (const name of ['google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser']) {
+    try {
+      const p = execSync(`command -v ${name}`, { encoding: 'utf8' }).trim();
+      if (p) return p;
+    } catch { /* not found */ }
+  }
+  return null;
+}
+
+async function withRetry(fn, attempts = DEFAULT_RETRIES, label = 'op') {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try { return await fn(); } catch (err) {
+      lastErr = err;
+      const wait = 300 * 2 ** (i - 1);
+      console.warn(`  [retry] ${label} attempt ${i}/${attempts}: ${err.message} — waiting ${wait}ms`);
+      await sleep(wait);
+    }
+  }
+  throw new Error(`${label} failed after ${attempts} attempts: ${lastErr?.message}`);
+}
+
+function makeLaunchOptions(opts = {}) {
+  const executablePath = getChromeExecutablePath();
+  const o = {
+    headless: opts.headless !== false,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', ...(opts.args || [])],
+  };
+  if (executablePath) o.executablePath = executablePath;
+  return o;
+}
+
+// ─── Text Analysis ────────────────────────────────────────────────────────────
+
+const STOPWORDS = new Set([
+  'the','and','for','that','this','with','from','have','has','was','were','are',
+  'not','but','you','your','they','their','will','can','would','should','there',
+  'what','when','which','where','how','all','any','one','about','been','also',
+  'more','its','into','than','them','these','those','such','most','just','each',
+  'over','after','before','between','through','during','without','within','along',
+  'http','https','www','com','org','net','html','css','php',
+]);
+
+function tokenize(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(
+    (w) => w.length > 2 && !STOPWORDS.has(w)
+  );
+}
+
+function splitSentences(text) {
+  return (
+    text.match(/[^.!?\n]+[.!?\n]+(?:\s|$)|[^.!?\n]+$/g)
+      ?.map((s) => s.trim())
+      .filter((s) => s.length > 20) || []
+  );
+}
+
+/**
+ * TF-IDF extractive summarizer.
+ * Scores sentences by how many high-value (rare-but-present) words they contain,
+ * with a positional bias toward earlier sentences.
+ */
+function summarize(text, maxSentences = 5) {
+  const cleaned   = normalizeText(text);
+  if (!cleaned)   return 'No text found.';
+
+  const sentences = splitSentences(cleaned);
+  if (sentences.length <= maxSentences) return cleaned;
+
+  // Term frequency across full doc
+  const allWords = tokenize(cleaned);
+  const tf = allWords.reduce((m, w) => { m[w] = (m[w] || 0) + 1; return m; }, {});
+
+  // Inverse sentence frequency (IDF-like: words in fewer sentences score higher)
+  const sf = {};
+  sentences.forEach((s) => {
+    new Set(tokenize(s)).forEach((w) => { sf[w] = (sf[w] || 0) + 1; });
+  });
+
+  const score = (sentence, idx) => {
+    const words  = tokenize(sentence);
+    const tfidf  = words.reduce((sum, w) => sum + (tf[w] || 0) / (sf[w] || 1), 0);
+    const norm   = tfidf / (words.length || 1);
+    const posBias = idx === 0 ? 1.4 : idx < 3 ? 1.1 : 1.0; // first sentences usually matter most
+    return norm * posBias;
+  };
+
+  const scored = sentences
+    .map((s, i) => ({ s, score: score(s, i), i }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxSentences)
+    .sort((a, b) => a.i - b.i); // restore original order
+
+  return scored.map((x) => x.s).join(' ');
+}
+
+/**
+ * Extract key terms from text (top N by TF-IDF score).
+ */
+function extractKeyTerms(text, n = 10) {
+  const words  = tokenize(normalizeText(text));
+  const tf     = words.reduce((m, w) => { m[w] = (m[w] || 0) + 1; return m; }, {});
+  return Object.entries(tf)
+    .filter(([w]) => w.length > 3)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, n)
+    .map(([word, count]) => ({ word, count }));
+}
+
+/**
+ * Extract links from extracted data.
+ */
+function extractLinksFromText(text) {
+  const matches = text.match(/https?:\/\/[^\s"'<>]+/g) || [];
+  return [...new Set(matches)];
+}
+
+// ─── Natural Language → Steps Parser ─────────────────────────────────────────
+//
+// Parses freeform instructions into a structured step list.
+// Uses intent detection + entity extraction — no LLM required.
+
+const INTENT_PATTERNS = [
+  // Navigation
+  { intent: 'navigate',   re: /(?:go to|open|visit|navigate to|load)\s+(\S+)/i },
+  { intent: 'navigate',   re: /^(https?:\/\/\S+)/i },
+
+  // Search
+  { intent: 'search',     re: /search(?:\s+(?:for|about|on\s+\S+\s+(?:for|about)?))?\s+"?([^"]+?)"?\s*$/i },
+  { intent: 'search',     re: /(?:look up|find|google|search)\s+"?([^"]+?)"?\s*(?:on\s+\S+)?$/i },
+
+  // Login
+  { intent: 'login',      re: /(?:log\s?in|sign\s?in)(?:\s+(?:to|with))?\s*(\S+)?/i },
+
+  // Click
+  { intent: 'click',      re: /click(?:\s+on)?\s+(?:the\s+)?"?([^"]+?)"?(?:\s+(?:button|link|tab))?$/i },
+
+  // Type
+  { intent: 'type',       re: /type\s+"([^"]+)"\s+(?:in(?:to)?|at)\s+([^\s,]+)/i },
+  { intent: 'type',       re: /(?:enter|fill(?:\s+in)?)\s+"([^"]+)"\s+(?:in(?:to)?|at)\s+([^\s,]+)/i },
+
+  // Extract
+  { intent: 'extract',    re: /(?:get|grab|extract|read|scrape|fetch)\s+(?:the\s+)?(?:all\s+)?([a-z\s,]+?)(?:\s+from\s+\S+)?$/i },
+
+  // Screenshot
+  { intent: 'screenshot', re: /(?:take\s+(?:a\s+)?)?screenshot|capture\s+(?:the\s+)?(?:page|screen)/i },
+
+  // Summarize
+  { intent: 'summarize',  re: /summarize|summary|overview|tldr/i },
+
+  // Scroll
+  { intent: 'scroll',     re: /scroll\s+(?:down|to\s+(?:the\s+)?bottom|up)/i },
+
+  // Wait
+  { intent: 'wait',       re: /wait\s+(?:for\s+)?(\d+)\s*(?:seconds?|ms|milliseconds?)/i },
+];
+
+function inferUrl(text) {
+  const explicit = text.match(/https?:\/\/[^\s]+/i);
+  if (explicit) return explicit[0];
+
+  // "search on google for X" → google
+  const engineMatch = text.match(/(?:search|look up|find|google)\s+on\s+([a-z0-9.-]+)/i)
+    || text.match(/on\s+(google|bing|duckduckgo|yahoo|reddit|github|youtube|amazon|twitter|x\.com)\b/i);
+  if (engineMatch) {
+    const engines = {
+      google: 'https://www.google.com',
+      bing: 'https://www.bing.com',
+      duckduckgo: 'https://www.duckduckgo.com',
+      yahoo: 'https://www.yahoo.com',
+      reddit: 'https://www.reddit.com',
+      github: 'https://github.com',
+      youtube: 'https://www.youtube.com',
+      amazon: 'https://www.amazon.com',
+      twitter: 'https://www.twitter.com',
+      'x.com': 'https://www.x.com',
+    };
+    const name = engineMatch[1].toLowerCase();
+    if (engines[name]) return engines[name];
+    return `https://www.${name}.com`;
+  }
+
+  // bare domain
+  const domain = text.match(/\b([a-z0-9-]+\.(com|org|net|io|co|dev|ai))\b/i);
+  if (domain) return `https://${domain[1]}`;
+
+  return null;
+}
+
+function extractSearchQuery(text) {
+  // "search for X", "search about X", "search on google for X", "google X"
+  const patterns = [
+    /search(?:\s+(?:on\s+\S+\s+)?(?:for|about))?\s+"([^"]+)"/i,
+    /search(?:\s+(?:on\s+\S+\s+)?(?:for|about))?\s+(.+?)(?:\s+on\s+\S+)?$/i,
+    /(?:look up|google|find)\s+"?([^"]+?)"?\s*(?:on\s+\S+)?$/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return m[1].trim().replace(/['"]/g, '');
+  }
+  return null;
+}
+
+function extractSelectorTarget(text) {
+  // Try to produce a reasonable CSS/XPath target from human descriptions
+  const headings = /h[1-6]s?|headings?|titles?/i.test(text);
+  const links    = /links?|anchors?|hrefs?/i.test(text);
+  const images   = /images?|imgs?|photos?/i.test(text);
+  const prices   = /prices?|costs?|amounts?/i.test(text);
+  const list     = /lists?|items?|results?/i.test(text);
+  const para     = /paragraphs?|text|content|body/i.test(text);
+
+  if (headings) return { selector: 'h1, h2, h3', multiple: true };
+  if (prices)   return { selector: '[class*="price"], [id*="price"], .price, #price', multiple: true };
+  if (links)    return { selector: 'a[href]', multiple: true };
+  if (images)   return { selector: 'img[src]', multiple: true };
+  if (list)     return { selector: 'li, [class*="item"], [class*="result"]', multiple: true };
+  if (para)     return { selector: 'p', multiple: true };
+  return null;
+}
+
+function parsePromptToSteps(prompt) {
+  const steps = [];
+  const lower = prompt.toLowerCase();
+  const url   = inferUrl(prompt);
+
+  // Always navigate first if there's a URL or site reference
+  if (url) {
+    steps.push({ action: 'navigate', url });
+  }
+
+  // Search intent
+  const searchQuery = extractSearchQuery(prompt);
+  if (searchQuery) {
+    const engineUrl = url || 'https://www.google.com';
+    if (!url) steps.unshift({ action: 'navigate', url: engineUrl });
+
+    // Different engines have different search inputs
+    const isGoogle      = /google/.test(engineUrl);
+    const isDDG         = /duckduckgo/.test(engineUrl);
+    const isBing        = /bing/.test(engineUrl);
+    const isYoutube     = /youtube/.test(engineUrl);
+
+    const inputSel   = isYoutube ? 'input#search' : isDDG ? 'input[name=q]' : 'input[name=q], input[type=search], textarea[name=q]';
+    const submitSel  = isYoutube ? 'button#search-icon-legacy' : 'input[type=submit], button[type=submit]';
+
+    steps.push({ action: 'waitForSelector', selector: inputSel.split(',')[0].trim(), timeout: 8000 });
+    steps.push({ action: 'click', selector: inputSel.split(',')[0].trim() });
+    steps.push({ action: 'type', selector: inputSel.split(',')[0].trim(), text: searchQuery, clear: true });
+    steps.push({ action: 'pressKey', key: 'Enter' });
+    steps.push({ action: 'waitForNavigation', timeout: 10000 });
+    steps.push({ action: 'extractText', as: 'searchResults' });
+    steps.push({ action: 'extract', selector: 'h3, [class*="result"] h2, [class*="result"] h3', as: 'resultTitles', multiple: true });
+  }
+
+  // Login intent
+  if (/log\s?in|sign\s?in/.test(lower)) {
+    const emailMatch = prompt.match(/(?:email|user(?:name)?)\s+(\S+@\S+|\S+)/i);
+    const passMatch  = prompt.match(/(?:password|pass)\s+(\S+)/i);
+    steps.push({ action: 'waitForSelector', selector: 'input[type=email], input[name=email], input[name=username], #email, #username', timeout: 5000 });
+    steps.push({ action: 'type', selector: 'input[type=email], input[name=email], #email', text: emailMatch?.[1] || 'YOUR_EMAIL', clear: true });
+    steps.push({ action: 'type', selector: 'input[type=password], #password', text: passMatch?.[1] || 'YOUR_PASSWORD', clear: true });
+    steps.push({ action: 'click', selector: 'button[type=submit], input[type=submit]' });
+    steps.push({ action: 'waitForNavigation', timeout: 10000 });
+  }
+
+  // Click intent (but not if it was part of a search/login)
+  if (/\bclick\b/.test(lower) && !searchQuery && !/log\s?in|sign\s?in/.test(lower)) {
+    const clickMatch = prompt.match(/click(?:\s+on)?\s+(?:the\s+)?"?([^"]+?)"?(?:\s+(?:button|link|tab))?$/i);
+    if (clickMatch) {
+      const target = clickMatch[1].trim();
+      // Use XPath to find by text (fixes the :contains() bug)
+      steps.push({
+        action:     'xpathClick',
+        expression: `//*[self::a or self::button or self::input][ contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '${target.toLowerCase()}') ]`,
+        description: `click "${target}"`,
+        required:   false,
+      });
+    }
+  }
+
+  // Extract intent
+  if (/\b(?:get|grab|extract|scrape|read|fetch|list)\b/.test(lower) && !searchQuery) {
+    const target = extractSelectorTarget(prompt);
+    if (target) {
+      steps.push({ action: 'extract', selector: target.selector, as: 'extracted', multiple: target.multiple });
+    } else {
+      steps.push({ action: 'extractText', as: 'pageText' });
+    }
+  }
+
+  // Summarize intent
+  if (/\b(?:summarize|summary|overview|tldr)\b/.test(lower)) {
+    steps.push({ action: 'extractText', as: 'pageText' });
+  }
+
+  // Screenshot intent
+  if (/screenshot|capture/.test(lower)) {
+    steps.push({ action: 'screenshot', filename: `capture-${Date.now()}.png`, fullPage: true });
+  }
+
+  // Scroll intent
+  if (/scroll\s+down|scroll\s+to\s+bottom/.test(lower)) {
+    steps.push({ action: 'scroll', selector: 'window' });
+  }
+
+  // Wait intent
+  const waitMatch = prompt.match(/wait\s+(?:for\s+)?(\d+)\s*(?:seconds?|s\b)/i);
+  const waitMsMatch = prompt.match(/wait\s+(?:for\s+)?(\d+)\s*(?:ms|milliseconds?)/i);
+  if (waitMatch)   steps.push({ action: 'wait', ms: parseInt(waitMatch[1], 10) * 1000 });
+  if (waitMsMatch) steps.push({ action: 'wait', ms: parseInt(waitMsMatch[1], 10) });
+
+  // If we navigated but did nothing else, do a full text extraction by default
+  const hasDataStep = steps.some((s) => ['extract','extractText','screenshot'].includes(s.action));
+  if (url && !hasDataStep) {
+    steps.push({ action: 'extractText', as: 'pageText' });
+  }
+
+  // Nothing matched at all — safe default
+  if (steps.length === 0) {
+    steps.push({ action: 'navigate', url: DEFAULT_URL });
+    steps.push({ action: 'extractText', as: 'pageText' });
+  }
+
+  return steps;
+}
+
+// ─── Session Manager ──────────────────────────────────────────────────────────
+
+class SessionManager {
+  constructor(sessionId) {
+    this.id   = sessionId || null;
+    this.file = sessionId ? path.join(SESSION_DIR, `${sessionId}.json`) : null;
+  }
+
+  async load(page) {
+    if (!this.file || !fs.existsSync(this.file)) return;
+    try {
+      const { cookies = [], localStorage: ls = {} } = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (cookies.length) await page.setCookie(...cookies);
+      if (Object.keys(ls).length) {
+        await page.evaluate((store) => {
+          for (const [k, v] of Object.entries(store)) localStorage.setItem(k, v);
+        }, ls);
+      }
+      console.log(`  [session] Loaded: ${this.id}`);
+    } catch (err) {
+      console.warn(`  [session] Load failed: ${err.message}`);
+    }
+  }
+
+  async save(page) {
+    if (!this.file) return;
+    try {
+      ensureDir(SESSION_DIR);
+      const cookies = await page.cookies();
+      let localStorage = {};
+      try {
+        localStorage = await page.evaluate(() => {
+          const s = {};
+          for (let i = 0; i < window.localStorage.length; i++) {
+            const k = window.localStorage.key(i);
+            s[k] = window.localStorage.getItem(k);
+          }
+          return s;
+        });
+      } catch { /* some pages block this */ }
+      fs.writeFileSync(this.file, JSON.stringify({ cookies, localStorage }, null, 2));
+      console.log(`  [session] Saved: ${this.id}`);
+    } catch (err) {
+      console.warn(`  [session] Save failed: ${err.message}`);
+    }
+  }
+}
+
+// ─── Plugin Registry ──────────────────────────────────────────────────────────
+
+const _plugins = {};
+
+function registerPlugin(name, handler) {
+  _plugins[name] = handler;
+}
+
+// ─── Step Executor ────────────────────────────────────────────────────────────
+
+async function executeSteps(steps, options = {}) {
+  const {
+    headless  = true,
+    sessionId = null,
+    retries   = DEFAULT_RETRIES,
+    timeout   = DEFAULT_TIMEOUT,
+    viewport  = { width: 1280, height: 800 },
+  } = options;
+
+  ensureDir(SCREENSHOT_DIR);
+
+  const browser = await puppeteer.launch(makeLaunchOptions({ headless }));
+  const page    = await browser.newPage();
+  await page.setViewport(viewport);
+  await page.setUserAgent(
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+  );
+
+  const session       = new SessionManager(sessionId);
+  const results       = [];
+  const extractedData = {};
+
+  page.on('pageerror', (err) => console.warn('  [page error]', err.message));
+
+  try {
+    for (let i = 0; i < steps.length; i++) {
+      const step         = steps[i];
+      const { action }   = step;
+      const loc          = step.selector || step.url || step.expression || step.text || '';
+      const label        = `step[${i}] ${action}`;
+
+      console.log(`[exec] ${label}${loc ? ' → ' + loc : ''}`);
+
+      try {
+        if (action === 'navigate') {
+          await withRetry(() => page.goto(step.url, { waitUntil: 'domcontentloaded', timeout }), retries, label);
+          await session.load(page);
+          results.push({ step: i, action, url: step.url, status: 'ok' });
+
+        } else if (action === 'click') {
+          // Try each selector in a comma list until one works
+          const selectors = step.selector.split(',').map((s) => s.trim());
+          let clicked = false;
+          for (const sel of selectors) {
+            try {
+              await page.waitForSelector(sel, { timeout: 3000 });
+              await page.click(sel);
+              clicked = true;
+              break;
+            } catch { /* try next */ }
+          }
+          if (!clicked) throw new Error(`None of these selectors found: ${step.selector}`);
+          results.push({ step: i, action, selector: step.selector, status: 'ok' });
+
+        } else if (action === 'xpathClick') {
+          await withRetry(async () => {
+            const [el] = await page.$x(step.expression);
+            if (!el) throw new Error(`XPath not found: ${step.expression}`);
+            await el.click();
+          }, retries, label);
+          results.push({ step: i, action, expression: step.expression, status: 'ok' });
+
+        } else if (action === 'type') {
+          const selectors = step.selector.split(',').map((s) => s.trim());
+          let typed = false;
+          for (const sel of selectors) {
+            try {
+              await page.waitForSelector(sel, { timeout: 3000 });
+              if (step.clear !== false) {
+                await page.click(sel, { clickCount: 3 });
+                await page.keyboard.press('Backspace');
+              }
+              await page.type(sel, step.text || '', { delay: 20 });
+              typed = true;
+              break;
+            } catch { /* try next */ }
+          }
+          if (!typed) throw new Error(`Could not type into: ${step.selector}`);
+          results.push({ step: i, action, selector: step.selector, text: step.text, status: 'ok' });
+
+        } else if (action === 'select') {
+          await page.waitForSelector(step.selector, { timeout: 5000 });
+          await page.select(step.selector, step.value);
+          results.push({ step: i, action, selector: step.selector, value: step.value, status: 'ok' });
+
+        } else if (action === 'pressKey') {
+          await page.keyboard.press(step.key);
+          results.push({ step: i, action, key: step.key, status: 'ok' });
+
+        } else if (action === 'hover') {
+          await page.waitForSelector(step.selector, { timeout: 5000 });
+          await page.hover(step.selector);
+          results.push({ step: i, action, selector: step.selector, status: 'ok' });
+
+        } else if (action === 'focus') {
+          await page.waitForSelector(step.selector, { timeout: 5000 });
+          await page.focus(step.selector);
+          results.push({ step: i, action, selector: step.selector, status: 'ok' });
+
+        } else if (action === 'scroll') {
+          if (step.selector && step.selector !== 'window') {
+            await page.$eval(step.selector, (el) => el.scrollIntoView());
+          } else {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+          }
+          results.push({ step: i, action, status: 'ok' });
+
+        } else if (action === 'waitForSelector') {
+          const selectors = step.selector.split(',').map((s) => s.trim());
+          let found = false;
+          for (const sel of selectors) {
+            try {
+              await page.waitForSelector(sel, { timeout: step.timeout || 5000 });
+              found = true;
+              break;
+            } catch { /* try next */ }
+          }
+          if (!found) throw new Error(`None found: ${step.selector}`);
+          results.push({ step: i, action, selector: step.selector, status: 'ok' });
+
+        } else if (action === 'waitForText') {
+          await page.waitForFunction(
+            (t) => document.body.innerText.includes(t),
+            { timeout: step.timeout || timeout },
+            step.text
+          );
+          results.push({ step: i, action, text: step.text, status: 'ok' });
+
+        } else if (action === 'waitForNavigation') {
+          await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: step.timeout || timeout })
+            .catch(() => { /* navigation may have already finished */ });
+          results.push({ step: i, action, status: 'ok' });
+
+        } else if (action === 'wait') {
+          await sleep(step.ms || 1000);
+          results.push({ step: i, action, ms: step.ms, status: 'ok' });
+
+        } else if (action === 'extract') {
+          const key = step.as || `extract_${i}`;
+          let value;
+          if (step.multiple) {
+            value = await page.$$eval(
+              step.selector,
+              (els) => els.map((e) => e.innerText?.trim() || e.getAttribute?.('href') || e.getAttribute?.('src')).filter(Boolean)
+            );
+          } else {
+            value = await page.$eval(step.selector, (e) => e.innerText?.trim()).catch(() => null);
+          }
+          extractedData[key] = value;
+          results.push({ step: i, action, selector: step.selector, as: key, value, status: 'ok' });
+
+        } else if (action === 'extractText') {
+          const key   = step.as || `text_${i}`;
+          const value = await page.evaluate(() => {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+              acceptNode(node) {
+                const tag  = node.parentElement?.tagName;
+                const text = node.nodeValue?.trim();
+                if (!text) return NodeFilter.FILTER_REJECT;
+                if (['SCRIPT','STYLE','NOSCRIPT','IFRAME','NAV','FORM'].includes(tag))
+                  return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+              },
+            });
+            let out = '';
+            while (walker.nextNode()) out += walker.currentNode.nodeValue.trim() + ' ';
+            return out.replace(/\s+/g, ' ').trim();
+          });
+          extractedData[key] = normalizeText(value);
+          results.push({ step: i, action, as: key, chars: value.length, status: 'ok' });
+
+        } else if (action === 'evaluate') {
+          // eslint-disable-next-line no-new-func
+          const value = await page.evaluate(new Function(`return (${step.script})`));
+          const key   = step.as || `eval_${i}`;
+          extractedData[key] = value;
+          results.push({ step: i, action, as: key, value, status: 'ok' });
+
+        } else if (action === 'screenshot') {
+          const filename = step.filename || `screenshot-${Date.now()}.png`;
+          const filepath = path.join(SCREENSHOT_DIR, filename);
+          await page.screenshot({ path: filepath, fullPage: step.fullPage !== false });
+          results.push({ step: i, action, path: filepath, status: 'ok' });
+
+        } else if (action === 'saveSession') {
+          await new SessionManager(step.sessionId).save(page);
+          results.push({ step: i, action, sessionId: step.sessionId, status: 'ok' });
+
+        } else if (_plugins[action]) {
+          const pluginResult = await _plugins[action](page, step, extractedData);
+          results.push({ step: i, action, ...pluginResult, status: 'ok' });
+
+        } else {
+          results.push({ step: i, action, status: 'unknown_action' });
+        }
+
+      } catch (err) {
+        console.error(`  [error] ${label}: ${err.message}`);
+        results.push({ step: i, action, status: 'error', error: err.message });
+        if (step.required !== false) break;
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+
+  return { results, extractedData };
+}
+
+// ─── Parallel Execution ───────────────────────────────────────────────────────
+
+async function executeParallel(taskList, options = {}) {
+  const settled = await Promise.allSettled(
+    taskList.map((task) => executeSteps(task.steps, { ...options, ...task.options }))
+  );
+  return settled.map((r, i) => ({
+    task:  i,
+    status: r.status,
+    value:  r.value,
+    error:  r.reason?.message,
+  }));
+}
+
+// ─── PuppetAI High-Level API ──────────────────────────────────────────────────
+
+class PuppetAI {
+  run(prompt, options = {}) {
+    console.log(`\n[PuppetAI] Parsing: "${prompt}"`);
+    const steps = parsePromptToSteps(prompt);
+    console.log(`[PuppetAI] ${steps.length} steps planned.\n`);
+    return executeSteps(steps, options).then(({ results, extractedData }) => ({
+      prompt, steps, results, extractedData,
+      success: results.every((r) => r.status !== 'error'),
+    }));
+  }
+
+  async summarize(url, options = {}) {
+    const steps = [
+      { action: 'navigate', url },
+      { action: 'extractText', as: 'pageText' },
+    ];
+    const { results, extractedData } = await executeSteps(steps, options);
+    const raw     = extractedData.pageText || '';
+    const summary = summarize(raw, options.maxSentences || 5);
+    const terms   = extractKeyTerms(raw, 8);
+    return { url, summary, keyTerms: terms, charCount: raw.length, results };
+  }
+
+  async ask(url, question, options = {}) {
+    const steps = [
+      { action: 'navigate', url },
+      { action: 'extractText', as: 'pageText' },
+    ];
+    const { results, extractedData } = await executeSteps(steps, options);
+    const text = extractedData.pageText || '';
+
+    // Simple keyword-matching answer extraction
+    const qWords    = tokenize(question);
+    const sentences = splitSentences(text);
+    const scored    = sentences.map((s) => ({
+      s,
+      score: qWords.filter((w) => s.toLowerCase().includes(w)).length,
+    })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
+
+    const answer = scored.length
+      ? scored.slice(0, 3).map((x) => x.s).join(' ')
+      : summarize(text, 3);
+
+    return { url, question, answer, results };
+  }
+
+  async extract(url, schema, options = {}) {
+    const steps = [
+      { action: 'navigate', url },
+      { action: 'extractText', as: 'pageText' },
+      { action: 'extract', selector: 'h1, h2', as: 'headings', multiple: true },
+      { action: 'extract', selector: 'a[href]', as: 'links', multiple: true },
+      { action: 'evaluate', script: 'document.title', as: 'title' },
+      { action: 'evaluate', script: 'document.querySelector("meta[name=description]")?.content || ""', as: 'description' },
+    ];
+    const { results, extractedData } = await executeSteps(steps, options);
+    return { url, schema, data: extractedData, results };
+  }
+
+  async parallel(tasks, options = {}) {
+    const planned = tasks.map((task) => {
+      const prompt = typeof task === 'string' ? task : task.prompt;
+      const opts   = typeof task === 'object' ? task.options || {} : {};
+      return { steps: parsePromptToSteps(prompt), options: opts };
+    });
+    return executeParallel(planned, options);
+  }
+
+  use(name, handler) {
+    registerPlugin(name, handler);
+    return this;
+  }
+}
+
+// ─── CLI ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const argv = process.argv.slice(2);
+
+  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
+    console.log(`
+PuppetAI v2 — Zero-dependency browser automation (puppeteer only)
+
+Commands:
+  run       "<prompt>"           Execute from natural language
+  plan      "<prompt>"           Show planned steps without running
+  summarize <url>                TF-IDF summarize a page
+  ask       <url> "<question>"   Find an answer on a page
+  extract   <url> "<schema>"     Extract structured data
+
+Options:
+  --session <id>    Persist cookies/localStorage
+  --headed          Show browser window
+  --timeout <ms>    Per-step timeout (default: 30000)
+  --output  <file>  Write JSON results to file
+
+Examples:
+  node index.js run "search on google for cats and dogs"
+  node index.js run "go to github.com and get all the headings"
+  node index.js summarize https://en.wikipedia.org/wiki/Node.js
+  node index.js ask https://example.com "What is this page about?"
+  node index.js extract https://example.com "title, links, description"
+  node index.js plan "click the login button on github.com"
+`);
+    return;
+  }
+
+  const options    = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    if      (argv[i] === '--session') options.sessionId = argv[++i];
+    else if (argv[i] === '--headed')  options.headless  = false;
+    else if (argv[i] === '--timeout') options.timeout   = parseInt(argv[++i], 10);
+    else if (argv[i] === '--output')  options._out      = argv[++i];
+    else positional.push(argv[i]);
+  }
+
+  const [command, ...rest] = positional;
+  const ai = new PuppetAI();
+  let result;
+
+  if (command === 'plan') {
+    result = { steps: parsePromptToSteps(rest.join(' ')) };
+  } else if (command === 'run') {
+    result = await ai.run(rest.join(' '), options);
+  } else if (command === 'summarize') {
+    result = await ai.summarize(rest[0] || DEFAULT_URL, options);
+  } else if (command === 'ask') {
+    const [url, ...qParts] = rest;
+    result = await ai.ask(url, qParts.join(' '), options);
+  } else if (command === 'extract') {
+    const [url, ...sParts] = rest;
+    result = await ai.extract(url, sParts.join(' '), options);
+  } else {
+    result = await ai.run([command, ...rest].join(' '), options);
+  }
+
+  const output = JSON.stringify(result, null, 2);
+  if (options._out) {
+    fs.writeFileSync(options._out, output);
+    console.log(`\n[PuppetAI] Results written to ${options._out}`);
+  } else {
+    console.log('\n=== PuppetAI Results ===\n');
+    console.log(output);
+  }
+}
+
+main().catch((err) => {
+  console.error('\n[PuppetAI] Fatal:', err.message || err);
+  process.exit(1);
+});
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
+
+module.exports = { PuppetAI, parsePromptToSteps, executeSteps, executeParallel, registerPlugin, summarize, extractKeyTerms };
