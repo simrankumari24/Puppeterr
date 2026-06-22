@@ -1,13 +1,34 @@
+#!/usr/bin/env node
 /**
- * PuppetAI v2 - Powerful browser automation, zero external dependencies.
- * Requires only: puppeteer (and Chrome/Chromium on your system)
+ * PuppetAI v4 - AI-powered browser automation via Ollama (phi3:mini)
+ * Requires: puppeteer + Ollama running locally (ollama run phi3:mini)
+ *
+ * Changes from v3:
+ *  - Switched default model to phi3:mini (smaller, faster, runs on much less RAM)
+ *  - LLM planner/interpreter are now actually wired up (were dead code before)
+ *  - phi3:mini is much less reliable at strict JSON output than llama3, so the
+ *    planner now: keeps prompts short, lowers max_tokens, validates+repairs
+ *    output, and does one corrective re-prompt before falling back to the
+ *    heuristic parser
+ *  - Fixed page.$x() — removed from modern Puppeteer; replaced with the
+ *    `::-p-xpath()` selector form
+ *  - Added timeouts on every Ollama call (a hung Ollama no longer hangs forever)
+ *  - Added optional streaming for Q&A/interpretation calls
+ *  - Fixed evaluate-action semantics (was passing a string-returning function
+ *    into page.evaluate, not actually running the expression in-page)
+ *  - Screenshot/session dirs now resolve relative to the script, not cwd
+ *  - Added package.json so the puppeteer version (and thus the Puppeteer API
+ *    surface) is pinned instead of "whatever npm install grabs today"
  *
  * Features:
- *  - Smart natural language → steps parser (no API keys needed)
- *  - TF-IDF extractive summarization
- *  - Structured data extraction
+ *  - phi3:mini plans automation steps from natural language (via Ollama REST API)
+ *  - phi3:mini interprets extracted page data to answer questions / summarize
+ *  - Falls back to built-in heuristic parser if Ollama is unreachable or
+ *    returns unparseable output (after one repair attempt)
+ *  - TF-IDF extractive summarization (offline fallback, also used if the LLM
+ *    answer call fails)
  *  - Retry with exponential backoff
- *  - XPath clicking (no broken :contains())
+ *  - XPath clicking via modern Puppeteer selector syntax (no broken :contains())
  *  - Session persistence (cookies + localStorage)
  *  - Parallel multi-tab execution
  *  - Plugin architecture
@@ -27,8 +48,21 @@ const { execSync } = require('child_process');
 const DEFAULT_URL     = 'https://example.com';
 const DEFAULT_RETRIES = 3;
 const DEFAULT_TIMEOUT = 30_000;
-const SCREENSHOT_DIR  = './screenshots';
-const SESSION_DIR     = './sessions';
+
+// Resolve data dirs relative to THIS file, not the caller's cwd, so running
+// `node /some/other/dir/index.js` doesn't scatter folders wherever you happen
+// to be standing.
+const SCREENSHOT_DIR  = path.join(__dirname, 'screenshots');
+const SESSION_DIR     = path.join(__dirname, 'sessions');
+
+const OLLAMA_URL      = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL    = process.env.OLLAMA_MODEL || 'phi3:mini';
+
+// phi3:mini is a small model — keep prompts lean and ask for less output.
+// These are intentionally smaller than you'd use for a bigger model like llama3.
+const OLLAMA_PLAN_MAX_TOKENS   = 700;
+const OLLAMA_ANSWER_MAX_TOKENS = 350;
+const OLLAMA_TIMEOUT_MS        = parseInt(process.env.OLLAMA_TIMEOUT_MS, 10) || 20_000;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -155,7 +189,7 @@ function extractKeyTerms(text, n = 10) {
     .slice(0, n)
     .map(([word, count]) => ({ word, count }));
 }
-
+/* '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' my API key for reference if needed in testing, but not used in this code since we're calling a local Ollama instance. */
 /**
  * Extract links from extracted data.
  */
@@ -164,100 +198,429 @@ function extractLinksFromText(text) {
   return [...new Set(matches)];
 }
 
-// ─── Natural Language → Steps Parser ─────────────────────────────────────────
+/** AbortSignal.timeout polyfill-safe wrapper (works on Node 17.3+, which is our floor anyway). */
+function timeoutSignal(ms) {
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), ms);
+  return ctrl.signal;
+}
+
+// ─── Ollama Client ────────────────────────────────────────────────────────────
 //
-// Parses freeform instructions into a structured step list.
-// Uses intent detection + entity extraction — no LLM required.
+// phi3:mini is small and fast, which is great, but it's noticeably less
+// disciplined than llama3 about following "JSON only, no commentary"
+// instructions — it'll often add a stray sentence before or after the JSON,
+// or wrap it in markdown fences anyway. Everything here is built around that
+// reality: short prompts, low max_tokens, tolerant extraction, and exactly
+// one corrective re-prompt before giving up and falling back to the
+// heuristic parser.
 
-const INTENT_PATTERNS = [
-  // Navigation
-  { intent: 'navigate',   re: /(?:go to|open|visit|navigate to|load)\s+(\S+)/i },
-  { intent: 'navigate',   re: /^(https?:\/\/\S+)/i },
+/**
+ * Call Ollama's /api/chat endpoint with a system + user message.
+ * Always has a hard timeout — a hung/overloaded Ollama instance will no
+ * longer hang the entire program.
+ *
+ * @param {boolean} stream - if true, calls onToken(chunk) as text arrives
+ *   and resolves with the full concatenated text at the end. If false,
+ *   resolves with the full text in one shot (default, simplest path).
+ */
+async function ollamaChat(system, user, {
+  temperature = 0.1,
+  maxTokens   = 512,
+  timeoutMs   = OLLAMA_TIMEOUT_MS,
+  stream      = false,
+  onToken     = null,
+} = {}) {
+  const res = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal:  timeoutSignal(timeoutMs),
+    body: JSON.stringify({
+      model:  OLLAMA_MODEL,
+      stream,
+      options: { temperature, num_predict: maxTokens },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user',   content: user   },
+      ],
+    }),
+  });
 
-  // Search
-  { intent: 'search',     re: /search(?:\s+(?:for|about|on\s+\S+\s+(?:for|about)?))?\s+"?([^"]+?)"?\s*$/i },
-  { intent: 'search',     re: /(?:look up|find|google|search)\s+"?([^"]+?)"?\s*(?:on\s+\S+)?$/i },
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Ollama HTTP ${res.status}: ${body.slice(0, 300)}`);
+  }
 
-  // Login
-  { intent: 'login',      re: /(?:log\s?in|sign\s?in)(?:\s+(?:to|with))?\s*(\S+)?/i },
+  if (!stream) {
+    const data = await res.json();
+    return data.message?.content?.trim() ?? '';
+  }
 
-  // Click
-  { intent: 'click',      re: /click(?:\s+on)?\s+(?:the\s+)?"?([^"]+?)"?(?:\s+(?:button|link|tab))?$/i },
+  // Streaming mode: Ollama sends newline-delimited JSON objects, one per token chunk.
+  let full = '';
+  const reader  = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop(); // last line may be incomplete
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const chunk = JSON.parse(line);
+        const piece = chunk.message?.content ?? '';
+        if (piece) {
+          full += piece;
+          if (onToken) onToken(piece);
+        }
+      } catch { /* ignore malformed partial line */ }
+    }
+  }
+  return full.trim();
+}
 
-  // Type
-  { intent: 'type',       re: /type\s+"([^"]+)"\s+(?:in(?:to)?|at)\s+([^\s,]+)/i },
-  { intent: 'type',       re: /(?:enter|fill(?:\s+in)?)\s+"([^"]+)"\s+(?:in(?:to)?|at)\s+([^\s,]+)/i },
+/**
+ * Check whether Ollama is running and the configured model is available.
+ * Tag-aware: "phi3:mini" matches a tag list entry of "phi3:mini" exactly,
+ * and also matches "phi3" if the user only configured the base name.
+ */
+async function ollamaAvailable() {
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: timeoutSignal(2500) });
+    if (!res.ok) return false;
+    const { models = [] } = await res.json();
+    const wanted = OLLAMA_MODEL.toLowerCase();
+    const wantedBase = wanted.split(':')[0];
+    return models.some((m) => {
+      const name = (m.name || m.model || '').toLowerCase();
+      return name === wanted || name.split(':')[0] === wantedBase;
+    });
+  } catch {
+    return false;
+  }
+}
 
-  // Extract
-  { intent: 'extract',    re: /(?:get|grab|extract|read|scrape|fetch)\s+(?:the\s+)?(?:all\s+)?([a-z\s,]+?)(?:\s+from\s+\S+)?$/i },
+/**
+ * Pull the first balanced top-level JSON array out of a string, tolerating
+ * markdown fences, leading/trailing commentary, and trailing commas — all
+ * things phi3:mini does fairly often despite being told not to.
+ */
+function extractJsonArray(raw) {
+  if (!raw) return null;
+  let text = raw.trim();
 
-  // Screenshot
-  { intent: 'screenshot', re: /(?:take\s+(?:a\s+)?)?screenshot|capture\s+(?:the\s+)?(?:page|screen)/i },
+  // Strip markdown fences if present, anywhere in the string.
+  text = text.replace(/```(?:json)?/gi, '');
 
-  // Summarize
-  { intent: 'summarize',  re: /summarize|summary|overview|tldr/i },
+  const start = text.indexOf('[');
+  if (start === -1) return null;
 
-  // Scroll
-  { intent: 'scroll',     re: /scroll\s+(?:down|to\s+(?:the\s+)?bottom|up)/i },
+  // Walk forward tracking bracket depth (respecting strings) to find the
+  // matching close bracket, rather than relying on a greedy regex that can
+  // overshoot past trailing prose containing other brackets.
+  let depth = 0, inStr = false, strChar = '', end = -1;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === strChar) inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = true; strChar = c; continue; }
+    if (c === '[') depth++;
+    if (c === ']') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  if (end === -1) return null;
 
-  // Wait
-  { intent: 'wait',       re: /wait\s+(?:for\s+)?(\d+)\s*(?:seconds?|ms|milliseconds?)/i },
-];
+  let candidate = text.slice(start, end + 1);
+  // Trailing-comma cleanup: phi3:mini sometimes leaves `, ]` or `, }`.
+  candidate = candidate.replace(/,(\s*[\]}])/g, '$1');
 
-function inferUrl(text) {
-  const explicit = text.match(/https?:\/\/[^\s]+/i);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask the model to convert a natural language prompt into a JSON step array.
+ * Tries once, and if parsing fails, sends ONE corrective re-prompt showing
+ * the model its own broken output and asking it to fix just the JSON.
+ * Returns parsed array, or null if both attempts fail (caller falls back to
+ * the heuristic parser).
+ */
+async function planStepsWithLlama(prompt, context = {}) {
+  const system = `You convert browser automation instructions into a JSON array of steps.
+Output ONLY the JSON array. No explanation. No markdown fences. No extra text before or after.
+
+Step shapes (use exactly these):
+{"action":"navigate","url":"..."}
+{"action":"click","selector":"..."}
+{"action":"xpathClick","expression":"..."}
+{"action":"type","selector":"...","text":"...","clear":true}
+{"action":"select","selector":"...","value":"..."}
+{"action":"pressKey","key":"Enter"}
+{"action":"hover","selector":"..."}
+{"action":"scroll","selector":"window"}
+{"action":"waitForSelector","selector":"...","timeout":5000}
+{"action":"waitForNavigation"}
+{"action":"wait","ms":1000}
+{"action":"extract","selector":"...","as":"key","multiple":true}
+{"action":"extractText","as":"key"}
+{"action":"screenshot","filename":"name.png","fullPage":true}
+
+Rules:
+- Never use :contains() in CSS. Use xpathClick with an XPath expression for text-based clicks.
+- Always waitForSelector before clicking or typing.
+- Google search: navigate to https://www.google.com, waitForSelector textarea[name=q], type the query, pressKey Enter, waitForNavigation, then extract results.
+- Mark optional steps with "required": false.
+Context: ${JSON.stringify(context).slice(0, 300)}`;
+
+  // phi3:mini does better with a short, blunt nudge than a long system prompt
+  // restated every time, so keep the user turn itself minimal.
+  const attempt = async (userMsg) => {
+    const raw = await ollamaChat(system, userMsg, {
+      temperature: 0.05,
+      maxTokens: OLLAMA_PLAN_MAX_TOKENS,
+    });
+    return { raw, parsed: extractJsonArray(raw) };
+  };
+
+  try {
+    const first = await attempt(prompt);
+    if (Array.isArray(first.parsed)) return first.parsed;
+
+    console.warn('  [ollama] first plan response was not valid JSON — sending one corrective re-prompt');
+    const repairUser =
+      `Your previous output could not be parsed as JSON. Output ONLY a valid JSON array, nothing else.\n` +
+      `Instruction: ${prompt}\n` +
+      `Your previous (broken) output was:\n${first.raw.slice(0, 500)}`;
+    const second = await attempt(repairUser);
+    if (Array.isArray(second.parsed)) return second.parsed;
+
+    console.warn('  [ollama] corrective re-prompt also failed — falling back to heuristic parser');
+    return null;
+  } catch (err) {
+    console.warn(`  [ollama] planSteps failed: ${err.message} — falling back to heuristic parser`);
+    return null;
+  }
+}
+
+/**
+ * Ask the model to interpret extracted page data and answer a question.
+ * Returns null on failure — caller falls back to TF-IDF keyword matching.
+ * Supports streaming via onToken for interactive CLI use.
+ */
+async function interpretWithLlama(question, data, { stream = false, onToken = null } = {}) {
+  // phi3:mini has a much smaller effective context than llama3 — trim harder.
+  const trimmed = JSON.stringify(data).slice(0, 3000);
+  const system  = 'Answer the question using only the page data given. Be concise (2-4 sentences). If the answer is not in the data, say so plainly.';
+  const user    = `Page data:\n${trimmed}\n\nQuestion: ${question}`;
+  try {
+    return await ollamaChat(system, user, {
+      temperature: 0.2,
+      maxTokens: OLLAMA_ANSWER_MAX_TOKENS,
+      stream,
+      onToken,
+    });
+  } catch (err) {
+    console.warn(`  [ollama] interpret failed: ${err.message} — falling back to keyword match`);
+    return null;
+  }
+}
+
+// ─── Natural Language → Steps Parser (heuristic, offline fallback) ──────────
+//
+// Parses freeform instructions into a structured step list without any LLM.
+// This is the safety net used when Ollama is unreachable, the model returns
+// unparseable output twice in a row, or the caller explicitly asks for
+// offline-only planning (`useLlm: false`).
+//
+// Pipeline (deterministic, rule-based — no guessing/inventing capabilities):
+//   1. VERB NORMALIZATION — map many synonyms onto one canonical verb
+//   2. INTENT CLASSIFICATION — canonical verb -> intent (defaults to SEARCH
+//      if nothing matches, per the semantic fallback rule)
+//   3. ENTITY EXTRACTION — pull out the target phrase after the verb
+//   4. PATTERN REWRITING — turn (intent, entity) into concrete steps
+//
+// This intentionally mirrors a fixed rule table rather than free-form regex
+// soup, so it's easy to see exactly which phrasing maps to which behavior.
+
+// ── 1. Verb normalization ────────────────────────────────────────────────
+//
+// Each canonical verb lists its synonym phrases, longest-phrase-first so
+// "navigate to" matches before a bare "go" would ever get a chance to.
+// Word-boundary-safe: matched against the start of the (trimmed) command.
+
+const VERB_SYNONYMS = {
+  NAVIGATE: [
+    'navigate to', 'take me to', 'head to', 'go to', 'move to',
+    'open', 'visit', 'go', 'move',
+  ],
+  SEARCH: [
+    'tell me about', 'find info on', 'look up', 'learn about',
+    'read about', 'what is', 'who is', 'show me', 'research', 'search',
+  ],
+  CLICK: [
+    'click on', 'click', 'press', 'hit', 'tap', 'select',
+  ],
+  EXTRACT: [
+    'capture text', 'get text', 'read page', 'extract', 'scrape',
+  ],
+  SCROLL: [
+    'scroll down', 'scroll up', 'scroll',
+  ],
+  LOGIN: [
+    'log into', 'log in to', 'sign into', 'sign in to', 'log in', 'sign in',
+  ],
+  SCREENSHOT: [
+    'take a screenshot of', 'take a screenshot', 'screenshot', 'capture the screen', 'capture the page',
+  ],
+  SUMMARIZE: [
+    'summarize', 'give me a summary of', 'summary of', 'tldr', 'overview of',
+  ],
+  WAIT: [
+    'wait for', 'wait',
+  ],
+};
+
+// Flatten into a single ordered list, longest phrase first overall, so e.g.
+// "take a screenshot of" is tried before the bare "screenshot" fallback and
+// "log in to" is tried before "log in".
+const VERB_LOOKUP = Object.entries(VERB_SYNONYMS)
+  .flatMap(([canonical, phrases]) => phrases.map((phrase) => ({ canonical, phrase })))
+  .sort((a, b) => b.phrase.length - a.phrase.length);
+
+/**
+ * Find the first matching verb phrase in the command and return the
+ * canonical verb plus whatever text trails it (the raw entity span).
+ * Matching is case-insensitive and anchored to a word boundary so "opener"
+ * doesn't false-match "open".
+ */
+function normalizeVerb(prompt) {
+  const lower = prompt.toLowerCase().trim();
+  for (const { canonical, phrase } of VERB_LOOKUP) {
+    const re = new RegExp(`\\b${phrase.replace(/\s+/g, '\\s+')}\\b\\s*`, 'i');
+    const m = lower.match(re);
+    if (m) {
+      const idx = m.index + m[0].length;
+      return { canonical, matchedPhrase: phrase, rest: prompt.slice(idx).trim() };
+    }
+  }
+  return null;
+}
+
+// ── 2. Intent classification ─────────────────────────────────────────────
+//
+// Canonical verb -> intent. Falls back to SEARCH if no verb phrase matched
+// at all (the "semantic fallback" rule: unclear commands become searches,
+// since "search the web for whatever this means" is a strictly more useful
+// default than doing nothing).
+
+const VERB_TO_INTENT = {
+  NAVIGATE:   'navigate',
+  SEARCH:     'search',
+  CLICK:      'click',
+  EXTRACT:    'extract',
+  SCROLL:     'scroll',
+  LOGIN:      'login',
+  SCREENSHOT: 'screenshot',
+  SUMMARIZE:  'summarize',
+  WAIT:       'wait',
+};
+
+function classifyIntent(prompt) {
+  const match = normalizeVerb(prompt);
+  if (!match) return { intent: 'search', entity: stripFiller(prompt.trim()), matchedPhrase: null };
+  const intent = VERB_TO_INTENT[match.canonical] || 'search';
+  return { intent, entity: stripFiller(match.rest), matchedPhrase: match.matchedPhrase };
+}
+
+// ── 3. Entity extraction helpers ─────────────────────────────────────────
+
+const URL_LIKE_RE = /^(https?:\/\/\S+|(?:www\.)?[a-z0-9-]+\.(?:com|org|net|io|co|dev|ai|app|gov|edu)(?:\/\S*)?)$/i;
+
+const SEARCH_ENGINES = {
+  google:     'https://www.google.com',
+  bing:       'https://www.bing.com',
+  duckduckgo: 'https://www.duckduckgo.com',
+  yahoo:      'https://www.yahoo.com',
+  reddit:     'https://www.reddit.com',
+  github:     'https://github.com',
+  youtube:    'https://www.youtube.com',
+  amazon:     'https://www.amazon.com',
+  twitter:    'https://www.twitter.com',
+  'x.com':    'https://www.x.com',
+};
+
+/** Strip common conversational filler from the end (and a small set of
+ * leading fillers) of an extracted entity, so casual phrasing like
+ * "go to amazon.com for me" or "please click signup now" doesn't leak
+ * "for me" / "now" into the actual target. */
+const TRAILING_FILLER_RE = /\s*(?:for me|please|now|thanks|thank you|will ya|would you|can you)\s*[.!]?\s*$/i;
+const LEADING_FILLER_RE   = /^\s*(?:please|hey|um+|uh+|so|ok(?:ay)?)[,\s]+/i;
+
+function stripFiller(text) {
+  let out = text;
+  let prev;
+  do {
+    prev = out;
+    out = out.replace(TRAILING_FILLER_RE, '').replace(LEADING_FILLER_RE, '').trim();
+  } while (out !== prev && out.length);
+  return out;
+}
+
+/** Normalize a bare domain or full URL into a proper https:// URL. */
+function toFullUrl(target) {
+  if (!target) return null;
+  const explicit = target.match(/https?:\/\/\S+/i);
   if (explicit) return explicit[0];
 
-  // "search on google for X" → google
-  const engineMatch = text.match(/(?:search|look up|find|google)\s+on\s+([a-z0-9.-]+)/i)
-    || text.match(/on\s+(google|bing|duckduckgo|yahoo|reddit|github|youtube|amazon|twitter|x\.com)\b/i);
-  if (engineMatch) {
-    const engines = {
-      google: 'https://www.google.com',
-      bing: 'https://www.bing.com',
-      duckduckgo: 'https://www.duckduckgo.com',
-      yahoo: 'https://www.yahoo.com',
-      reddit: 'https://www.reddit.com',
-      github: 'https://github.com',
-      youtube: 'https://www.youtube.com',
-      amazon: 'https://www.amazon.com',
-      twitter: 'https://www.twitter.com',
-      'x.com': 'https://www.x.com',
-    };
-    const name = engineMatch[1].toLowerCase();
-    if (engines[name]) return engines[name];
-    return `https://www.${name}.com`;
-  }
-
-  // bare domain
-  const domain = text.match(/\b([a-z0-9-]+\.(com|org|net|io|co|dev|ai))\b/i);
-  if (domain) return `https://${domain[1]}`;
-
-  return null;
+  const bare = target.match(/^(www\.)?([a-z0-9-]+\.[a-z]{2,})(\/\S*)?$/i);
+  if (!bare) return null;
+  const [, hasWww, domain, restPath] = bare;
+  return `https://${hasWww ? '' : 'www.'}${domain.toLowerCase()}${restPath || ''}`;
 }
 
-function extractSearchQuery(text) {
-  // "search for X", "search about X", "search on google for X", "google X"
-  const patterns = [
-    /search(?:\s+(?:on\s+\S+\s+)?(?:for|about))?\s+"([^"]+)"/i,
-    /search(?:\s+(?:on\s+\S+\s+)?(?:for|about))?\s+(.+?)(?:\s+on\s+\S+)?$/i,
-    /(?:look up|google|find)\s+"?([^"]+?)"?\s*(?:on\s+\S+)?$/i,
-  ];
-  for (const re of patterns) {
-    const m = text.match(re);
-    if (m) return m[1].trim().replace(/['"]/g, '');
+/** Strip an engine clause from a search entity in either phrasing:
+ *    "<query> on <engine>"           e.g. "capybaras on bing"
+ *    "on <engine> for/about <query>" e.g. "on bing for capybaras"
+ * Returns {query, engineUrl|null}. */
+function splitEngineClause(entity) {
+  const trailing = entity.match(/^(.*?)\s+on\s+([a-z0-9.-]+)\s*$/i);
+  if (trailing) {
+    const engineUrl = resolveEngineName(trailing[2]);
+    if (engineUrl) return { query: trailing[1].trim(), engineUrl };
   }
-  return null;
+
+  const leading = entity.match(/^on\s+([a-z0-9.-]+)\s+(?:for|about)\s+(.+)$/i);
+  if (leading) {
+    const engineUrl = resolveEngineName(leading[1]);
+    if (engineUrl) return { query: leading[2].trim(), engineUrl };
+  }
+
+  return { query: entity.trim(), engineUrl: null };
 }
 
+function resolveEngineName(name) {
+  const lower = name.toLowerCase();
+  if (SEARCH_ENGINES[lower]) return SEARCH_ENGINES[lower];
+  return URL_LIKE_RE.test(lower) ? toFullUrl(lower) : null;
+}
+
+/** Map a described data target ("headings", "prices", "links"...) to a CSS selector. */
 function extractSelectorTarget(text) {
-  // Try to produce a reasonable CSS/XPath target from human descriptions
-  const headings = /h[1-6]s?|headings?|titles?/i.test(text);
-  const links    = /links?|anchors?|hrefs?/i.test(text);
-  const images   = /images?|imgs?|photos?/i.test(text);
-  const prices   = /prices?|costs?|amounts?/i.test(text);
-  const list     = /lists?|items?|results?/i.test(text);
-  const para     = /paragraphs?|text|content|body/i.test(text);
+  const headings = /\bh[1-6]s?\b|headings?|titles?/i.test(text);
+  const links     = /links?|anchors?|hrefs?/i.test(text);
+  const images    = /images?|imgs?|photos?/i.test(text);
+  const prices    = /prices?|costs?|amounts?/i.test(text);
+  const list      = /\blists?\b|\bitems?\b|\bresults?\b/i.test(text);
+  const para      = /paragraphs?|\btext\b|\bcontent\b|\bbody\b/i.test(text);
 
   if (headings) return { selector: 'h1, h2, h3', multiple: true };
   if (prices)   return { selector: '[class*="price"], [id*="price"], .price, #price', multiple: true };
@@ -268,110 +631,161 @@ function extractSelectorTarget(text) {
   return null;
 }
 
+// ── 4. Pattern rewriting: intent + entity -> concrete steps ──────────────
+
+function buildSearchSteps(query, engineUrl) {
+  const url = engineUrl || 'https://www.google.com';
+  const isYoutube = /youtube/.test(url);
+  const isDDG     = /duckduckgo/.test(url);
+  const inputSel  = isYoutube ? 'input#search'
+    : isDDG ? 'input[name=q]'
+    : 'input[name=q], input[type=search], textarea[name=q]';
+  const primarySel = inputSel.split(',')[0].trim();
+
+  return [
+    { action: 'navigate', url },
+    { action: 'waitForSelector', selector: primarySel, timeout: 8000 },
+    { action: 'click', selector: primarySel },
+    { action: 'type', selector: primarySel, text: query, clear: true },
+    { action: 'pressKey', key: 'Enter' },
+    { action: 'waitForNavigation', timeout: 10000 },
+    { action: 'extractText', as: 'searchResults' },
+    { action: 'extract', selector: 'h3, [class*="result"] h2, [class*="result"] h3', as: 'resultTitles', multiple: true },
+  ];
+}
+
+function buildClickSteps(target) {
+  const clean = target.replace(/^(?:the|on)\s+/i, '').replace(/\s+(button|link|tab)$/i, '').trim();
+  if (!clean) return [];
+  const escaped = clean.toLowerCase().replace(/'/g, "\\'");
+  return [{
+    action:      'xpathClick',
+    expression:  `//*[self::a or self::button or self::input][ contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '${escaped}') ]`,
+    description: `click "${clean}"`,
+    required:    false,
+  }];
+}
+
+function buildLoginSteps(prompt) {
+  const emailMatch = prompt.match(/(?:email|user(?:name)?)\s+(\S+@\S+|\S+)/i);
+  const passMatch  = prompt.match(/(?:password|pass)\s+(\S+)/i);
+  return [
+    { action: 'waitForSelector', selector: 'input[type=email], input[name=email], input[name=username], #email, #username', timeout: 5000 },
+    { action: 'type', selector: 'input[type=email], input[name=email], #email', text: emailMatch?.[1] || 'YOUR_EMAIL', clear: true },
+    { action: 'type', selector: 'input[type=password], #password', text: passMatch?.[1] || 'YOUR_PASSWORD', clear: true },
+    { action: 'click', selector: 'button[type=submit], input[type=submit]' },
+    { action: 'waitForNavigation', timeout: 10000 },
+  ];
+}
+
+function buildWaitStep(prompt) {
+  const msMatch  = prompt.match(/(\d+)\s*(?:ms|milliseconds?)/i);
+  const secMatch = prompt.match(/(\d+)\s*(?:seconds?|s\b)/i);
+  if (msMatch)  return { action: 'wait', ms: parseInt(msMatch[1], 10) };
+  if (secMatch) return { action: 'wait', ms: parseInt(secMatch[1], 10) * 1000 };
+  return { action: 'wait', ms: 1000 }; // sensible default if no duration given
+}
+
+/**
+ * Main entry point: deterministic rule-based NL -> steps conversion.
+ * No guessing or invented capabilities — every output step type is one of
+ * the fixed action shapes the executor understands.
+ */
 function parsePromptToSteps(prompt) {
-  const steps = [];
-  const lower = prompt.toLowerCase();
-  const url   = inferUrl(prompt);
-
-  // Always navigate first if there's a URL or site reference
-  if (url) {
-    steps.push({ action: 'navigate', url });
+  const trimmed = (prompt || '').trim();
+  if (!trimmed) {
+    return [
+      { action: 'navigate', url: DEFAULT_URL },
+      { action: 'extractText', as: 'pageText' },
+    ];
   }
 
-  // Search intent
-  const searchQuery = extractSearchQuery(prompt);
-  if (searchQuery) {
-    const engineUrl = url || 'https://www.google.com';
-    if (!url) steps.unshift({ action: 'navigate', url: engineUrl });
+  const { intent, entity } = classifyIntent(trimmed);
+  const lower = trimmed.toLowerCase();
 
-    // Different engines have different search inputs
-    const isGoogle      = /google/.test(engineUrl);
-    const isDDG         = /duckduckgo/.test(engineUrl);
-    const isBing        = /bing/.test(engineUrl);
-    const isYoutube     = /youtube/.test(engineUrl);
-
-    const inputSel   = isYoutube ? 'input#search' : isDDG ? 'input[name=q]' : 'input[name=q], input[type=search], textarea[name=q]';
-    const submitSel  = isYoutube ? 'button#search-icon-legacy' : 'input[type=submit], button[type=submit]';
-
-    steps.push({ action: 'waitForSelector', selector: inputSel.split(',')[0].trim(), timeout: 8000 });
-    steps.push({ action: 'click', selector: inputSel.split(',')[0].trim() });
-    steps.push({ action: 'type', selector: inputSel.split(',')[0].trim(), text: searchQuery, clear: true });
-    steps.push({ action: 'pressKey', key: 'Enter' });
-    steps.push({ action: 'waitForNavigation', timeout: 10000 });
-    steps.push({ action: 'extractText', as: 'searchResults' });
-    steps.push({ action: 'extract', selector: 'h3, [class*="result"] h2, [class*="result"] h3', as: 'resultTitles', multiple: true });
-  }
-
-  // Login intent
-  if (/log\s?in|sign\s?in/.test(lower)) {
-    const emailMatch = prompt.match(/(?:email|user(?:name)?)\s+(\S+@\S+|\S+)/i);
-    const passMatch  = prompt.match(/(?:password|pass)\s+(\S+)/i);
-    steps.push({ action: 'waitForSelector', selector: 'input[type=email], input[name=email], input[name=username], #email, #username', timeout: 5000 });
-    steps.push({ action: 'type', selector: 'input[type=email], input[name=email], #email', text: emailMatch?.[1] || 'YOUR_EMAIL', clear: true });
-    steps.push({ action: 'type', selector: 'input[type=password], #password', text: passMatch?.[1] || 'YOUR_PASSWORD', clear: true });
-    steps.push({ action: 'click', selector: 'button[type=submit], input[type=submit]' });
-    steps.push({ action: 'waitForNavigation', timeout: 10000 });
-  }
-
-  // Click intent (but not if it was part of a search/login)
-  if (/\bclick\b/.test(lower) && !searchQuery && !/log\s?in|sign\s?in/.test(lower)) {
-    const clickMatch = prompt.match(/click(?:\s+on)?\s+(?:the\s+)?"?([^"]+?)"?(?:\s+(?:button|link|tab))?$/i);
-    if (clickMatch) {
-      const target = clickMatch[1].trim();
-      // Use XPath to find by text (fixes the :contains() bug)
-      steps.push({
-        action:     'xpathClick',
-        expression: `//*[self::a or self::button or self::input][ contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'), '${target.toLowerCase()}') ]`,
-        description: `click "${target}"`,
-        required:   false,
-      });
+  switch (intent) {
+    case 'navigate': {
+      const url = toFullUrl(entity) || (URL_LIKE_RE.test(entity) ? entity : null);
+      // NAVIGATE rule: if the target looks like a URL, navigate directly;
+      // otherwise this isn't really a navigable target, so rewrite as SEARCH.
+      if (url) {
+        return [
+          { action: 'navigate', url },
+          { action: 'extractText', as: 'pageText' },
+        ];
+      }
+      const { query, engineUrl } = splitEngineClause(entity);
+      return buildSearchSteps(query || entity, engineUrl);
     }
-  }
 
-  // Extract intent
-  if (/\b(?:get|grab|extract|scrape|read|fetch|list)\b/.test(lower) && !searchQuery) {
-    const target = extractSelectorTarget(prompt);
-    if (target) {
-      steps.push({ action: 'extract', selector: target.selector, as: 'extracted', multiple: target.multiple });
-    } else {
+    case 'search': {
+      const { query, engineUrl } = splitEngineClause(entity);
+      return buildSearchSteps(query || entity || trimmed, engineUrl);
+    }
+
+    case 'login': {
+      // "log in to <site>" — entity may carry the site name.
+      const steps = [];
+      const url = toFullUrl(entity) || (entity && SEARCH_ENGINES[entity.toLowerCase()]);
+      if (url) steps.push({ action: 'navigate', url });
+      return [...steps, ...buildLoginSteps(trimmed)];
+    }
+
+    case 'click': {
+      return buildClickSteps(entity);
+    }
+
+    case 'extract': {
+      const target = entity ? extractSelectorTarget(entity) : null;
+      if (target) return [{ action: 'extract', selector: target.selector, as: 'extracted', multiple: target.multiple }];
+      return [{ action: 'extractText', as: 'pageText' }];
+    }
+
+    case 'screenshot': {
+      const steps = [];
+      const url = toFullUrl(entity);
+      if (url) steps.push({ action: 'navigate', url });
+      steps.push({ action: 'screenshot', filename: `capture-${Date.now()}.png`, fullPage: true });
+      return steps;
+    }
+
+    case 'summarize': {
+      const steps = [];
+      const url = toFullUrl(entity);
+      if (url) steps.push({ action: 'navigate', url });
       steps.push({ action: 'extractText', as: 'pageText' });
+      return steps;
+    }
+
+    case 'scroll': {
+      return [{ action: 'scroll', selector: 'window' }];
+    }
+
+    case 'wait': {
+      return [buildWaitStep(trimmed)];
+    }
+
+    default: {
+      // Semantic fallback: unclear command -> treat as SEARCH.
+      const { query, engineUrl } = splitEngineClause(entity || trimmed);
+      return buildSearchSteps(query || trimmed, engineUrl);
     }
   }
+}
 
-  // Summarize intent
-  if (/\b(?:summarize|summary|overview|tldr)\b/.test(lower)) {
-    steps.push({ action: 'extractText', as: 'pageText' });
+/**
+ * Decide how to plan steps for a prompt: try the LLM first (unless disabled
+ * or Ollama is unreachable), fall back to the heuristic parser otherwise.
+ * This is the piece that was completely unused in the original script —
+ * planStepsWithLlama existed but nothing ever called it.
+ */
+async function planSteps(prompt, { useLlm = true, context = {} } = {}) {
+  if (useLlm && (await ollamaAvailable())) {
+    const llmSteps = await planStepsWithLlama(prompt, context);
+    if (llmSteps && llmSteps.length) return { steps: llmSteps, source: 'llm' };
+    console.warn('  [plan] LLM planning unavailable/failed — using heuristic parser');
   }
-
-  // Screenshot intent
-  if (/screenshot|capture/.test(lower)) {
-    steps.push({ action: 'screenshot', filename: `capture-${Date.now()}.png`, fullPage: true });
-  }
-
-  // Scroll intent
-  if (/scroll\s+down|scroll\s+to\s+bottom/.test(lower)) {
-    steps.push({ action: 'scroll', selector: 'window' });
-  }
-
-  // Wait intent
-  const waitMatch = prompt.match(/wait\s+(?:for\s+)?(\d+)\s*(?:seconds?|s\b)/i);
-  const waitMsMatch = prompt.match(/wait\s+(?:for\s+)?(\d+)\s*(?:ms|milliseconds?)/i);
-  if (waitMatch)   steps.push({ action: 'wait', ms: parseInt(waitMatch[1], 10) * 1000 });
-  if (waitMsMatch) steps.push({ action: 'wait', ms: parseInt(waitMsMatch[1], 10) });
-
-  // If we navigated but did nothing else, do a full text extraction by default
-  const hasDataStep = steps.some((s) => ['extract','extractText','screenshot'].includes(s.action));
-  if (url && !hasDataStep) {
-    steps.push({ action: 'extractText', as: 'pageText' });
-  }
-
-  // Nothing matched at all — safe default
-  if (steps.length === 0) {
-    steps.push({ action: 'navigate', url: DEFAULT_URL });
-    steps.push({ action: 'extractText', as: 'pageText' });
-  }
-
-  return steps;
+  return { steps: parsePromptToSteps(prompt), source: 'heuristic' };
 }
 
 // ─── Session Manager ──────────────────────────────────────────────────────────
@@ -459,10 +873,10 @@ async function executeSteps(steps, options = {}) {
 
   try {
     for (let i = 0; i < steps.length; i++) {
-      const step         = steps[i];
-      const { action }   = step;
-      const loc          = step.selector || step.url || step.expression || step.text || '';
-      const label        = `step[${i}] ${action}`;
+      const step       = steps[i];
+      const { action } = step;
+      const loc         = step.selector || step.url || step.expression || step.text || '';
+      const label       = `step[${i}] ${action}`;
 
       console.log(`[exec] ${label}${loc ? ' → ' + loc : ''}`);
 
@@ -473,7 +887,6 @@ async function executeSteps(steps, options = {}) {
           results.push({ step: i, action, url: step.url, status: 'ok' });
 
         } else if (action === 'click') {
-          // Try each selector in a comma list until one works
           const selectors = step.selector.split(',').map((s) => s.trim());
           let clicked = false;
           for (const sel of selectors) {
@@ -488,8 +901,12 @@ async function executeSteps(steps, options = {}) {
           results.push({ step: i, action, selector: step.selector, status: 'ok' });
 
         } else if (action === 'xpathClick') {
+          // page.$x() was removed in modern Puppeteer (v22+). The supported
+          // replacement is the `::-p-xpath()` pseudo-selector, used through
+          // the normal $$ / waitForSelector API.
           await withRetry(async () => {
-            const [el] = await page.$x(step.expression);
+            const xpathSelector = `::-p-xpath(${step.expression})`;
+            const el = await page.waitForSelector(xpathSelector, { timeout: step.timeout || 5000 });
             if (!el) throw new Error(`XPath not found: ${step.expression}`);
             await el.click();
           }, retries, label);
@@ -592,7 +1009,7 @@ async function executeSteps(steps, options = {}) {
                 const tag  = node.parentElement?.tagName;
                 const text = node.nodeValue?.trim();
                 if (!text) return NodeFilter.FILTER_REJECT;
-                if (['SCRIPT','STYLE','NOSCRIPT','IFRAME','NAV','FORM'].includes(tag))
+                if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'IFRAME', 'NAV', 'FORM'].includes(tag))
                   return NodeFilter.FILTER_REJECT;
                 return NodeFilter.FILTER_ACCEPT;
               },
@@ -605,8 +1022,16 @@ async function executeSteps(steps, options = {}) {
           results.push({ step: i, action, as: key, chars: value.length, status: 'ok' });
 
         } else if (action === 'evaluate') {
-          // eslint-disable-next-line no-new-func
-          const value = await page.evaluate(new Function(`return (${step.script})`));
+          // Original code built `new Function('return (' + script + ')')`
+          // and passed that FUNCTION REFERENCE into page.evaluate(fn). That
+          // mostly worked by accident for plain expressions, but
+          // page.evaluate serializes the function and runs it in-page —
+          // wrapping arbitrary script text in `return (...)` does not
+          // reliably round-trip for multi-statement scripts. Using
+          // page.evaluate with a *string* argument tells Puppeteer to eval
+          // it directly in the page context, which is what's actually
+          // wanted here, and is unambiguous about scope.
+          const value = await page.evaluate(step.script);
           const key   = step.as || `eval_${i}`;
           extractedData[key] = value;
           results.push({ step: i, action, as: key, value, status: 'ok' });
@@ -649,7 +1074,7 @@ async function executeParallel(taskList, options = {}) {
     taskList.map((task) => executeSteps(task.steps, { ...options, ...task.options }))
   );
   return settled.map((r, i) => ({
-    task:  i,
+    task:   i,
     status: r.status,
     value:  r.value,
     error:  r.reason?.message,
@@ -659,14 +1084,23 @@ async function executeParallel(taskList, options = {}) {
 // ─── PuppetAI High-Level API ──────────────────────────────────────────────────
 
 class PuppetAI {
-  run(prompt, options = {}) {
+  /**
+   * Run a natural-language instruction end to end.
+   * Tries the LLM planner (phi3:mini) first, falls back to the heuristic
+   * parser automatically. Pass { useLlm: false } to skip the LLM entirely.
+   */
+  async run(prompt, options = {}) {
     console.log(`\n[PuppetAI] Parsing: "${prompt}"`);
-    const steps = parsePromptToSteps(prompt);
-    console.log(`[PuppetAI] ${steps.length} steps planned.\n`);
-    return executeSteps(steps, options).then(({ results, extractedData }) => ({
-      prompt, steps, results, extractedData,
+    const { steps, source } = await planSteps(prompt, {
+      useLlm:  options.useLlm !== false,
+      context: options.context || {},
+    });
+    console.log(`[PuppetAI] ${steps.length} steps planned (source: ${source}).\n`);
+    const { results, extractedData } = await executeSteps(steps, options);
+    return {
+      prompt, steps, source, results, extractedData,
       success: results.every((r) => r.status !== 'error'),
-    }));
+    };
   }
 
   async summarize(url, options = {}) {
@@ -675,10 +1109,19 @@ class PuppetAI {
       { action: 'extractText', as: 'pageText' },
     ];
     const { results, extractedData } = await executeSteps(steps, options);
-    const raw     = extractedData.pageText || '';
-    const summary = summarize(raw, options.maxSentences || 5);
-    const terms   = extractKeyTerms(raw, 8);
-    return { url, summary, keyTerms: terms, charCount: raw.length, results };
+    const raw = extractedData.pageText || '';
+
+    // Prefer the LLM summary when available; TF-IDF is the offline fallback.
+    let summary = null;
+    let viaLlm  = false;
+    if (options.useLlm !== false) {
+      summary = await interpretWithLlama('Summarize this page in 2-4 sentences.', { pageText: raw });
+      viaLlm  = !!summary;
+    }
+    if (!summary) summary = summarize(raw, options.maxSentences || 5);
+
+    const terms = extractKeyTerms(raw, 8);
+    return { url, summary, viaLlm, keyTerms: terms, charCount: raw.length, results };
   }
 
   async ask(url, question, options = {}) {
@@ -689,19 +1132,32 @@ class PuppetAI {
     const { results, extractedData } = await executeSteps(steps, options);
     const text = extractedData.pageText || '';
 
-    // Simple keyword-matching answer extraction
-    const qWords    = tokenize(question);
-    const sentences = splitSentences(text);
-    const scored    = sentences.map((s) => ({
-      s,
-      score: qWords.filter((w) => s.toLowerCase().includes(w)).length,
-    })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
+    // Prefer the LLM's actual reading comprehension; fall back to naive
+    // keyword-overlap sentence matching if Ollama isn't available.
+    let answer = null;
+    let viaLlm = false;
+    if (options.useLlm !== false) {
+      answer = await interpretWithLlama(question, { pageText: text }, {
+        stream:  !!options.stream,
+        onToken: options.onToken,
+      });
+      viaLlm = !!answer;
+    }
 
-    const answer = scored.length
-      ? scored.slice(0, 3).map((x) => x.s).join(' ')
-      : summarize(text, 3);
+    if (!answer) {
+      const qWords    = tokenize(question);
+      const sentences = splitSentences(text);
+      const scored    = sentences.map((s) => ({
+        s,
+        score: qWords.filter((w) => s.toLowerCase().includes(w)).length,
+      })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
 
-    return { url, question, answer, results };
+      answer = scored.length
+        ? scored.slice(0, 3).map((x) => x.s).join(' ')
+        : summarize(text, 3);
+    }
+
+    return { url, question, answer, viaLlm, results };
   }
 
   async extract(url, schema, options = {}) {
@@ -718,11 +1174,12 @@ class PuppetAI {
   }
 
   async parallel(tasks, options = {}) {
-    const planned = tasks.map((task) => {
+    const planned = await Promise.all(tasks.map(async (task) => {
       const prompt = typeof task === 'string' ? task : task.prompt;
       const opts   = typeof task === 'object' ? task.options || {} : {};
-      return { steps: parsePromptToSteps(prompt), options: opts };
-    });
+      const { steps } = await planSteps(prompt, { useLlm: opts.useLlm !== false });
+      return { steps, options: opts };
+    }));
     return executeParallel(planned, options);
   }
 
@@ -739,13 +1196,14 @@ async function main() {
 
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
     console.log(`
-PuppetAI v2 — Zero-dependency browser automation (puppeteer only)
+PuppetAI v4 — Browser automation, planned by phi3:mini via Ollama,
+with an offline heuristic parser as automatic fallback.
 
 Commands:
   run       "<prompt>"           Execute from natural language
   plan      "<prompt>"           Show planned steps without running
-  summarize <url>                TF-IDF summarize a page
-  ask       <url> "<question>"   Find an answer on a page
+  summarize <url>                Summarize a page (LLM, falls back to TF-IDF)
+  ask       <url> "<question>"   Answer a question about a page
   extract   <url> "<schema>"     Extract structured data
 
 Options:
@@ -753,14 +1211,22 @@ Options:
   --headed          Show browser window
   --timeout <ms>    Per-step timeout (default: 30000)
   --output  <file>  Write JSON results to file
+  --no-llm          Skip Ollama entirely, use the offline heuristic parser
+  --stream          Stream LLM answer tokens to stdout as they arrive (ask only)
+
+Environment:
+  OLLAMA_URL         Ollama base URL (default: http://localhost:11434)
+  OLLAMA_MODEL       Model name (default: phi3:mini)
+  OLLAMA_TIMEOUT_MS  Per-call timeout in ms (default: 20000)
 
 Examples:
   node index.js run "search on google for cats and dogs"
   node index.js run "go to github.com and get all the headings"
   node index.js summarize https://en.wikipedia.org/wiki/Node.js
-  node index.js ask https://example.com "What is this page about?"
+  node index.js ask https://example.com "What is this page about?" --stream
   node index.js extract https://example.com "title, links, description"
   node index.js plan "click the login button on github.com"
+  node index.js run "click signup" --no-llm
 `);
     return;
   }
@@ -772,6 +1238,11 @@ Examples:
     else if (argv[i] === '--headed')  options.headless  = false;
     else if (argv[i] === '--timeout') options.timeout   = parseInt(argv[++i], 10);
     else if (argv[i] === '--output')  options._out      = argv[++i];
+    else if (argv[i] === '--no-llm')  options.useLlm    = false;
+    else if (argv[i] === '--stream') {
+      options.stream  = true;
+      options.onToken = (chunk) => process.stdout.write(chunk);
+    }
     else positional.push(argv[i]);
   }
 
@@ -780,7 +1251,8 @@ Examples:
   let result;
 
   if (command === 'plan') {
-    result = { steps: parsePromptToSteps(rest.join(' ')) };
+    const { steps, source } = await planSteps(rest.join(' '), { useLlm: options.useLlm !== false });
+    result = { steps, source };
   } else if (command === 'run') {
     result = await ai.run(rest.join(' '), options);
   } else if (command === 'summarize') {
@@ -788,6 +1260,7 @@ Examples:
   } else if (command === 'ask') {
     const [url, ...qParts] = rest;
     result = await ai.ask(url, qParts.join(' '), options);
+    if (options.stream) process.stdout.write('\n'); // tidy up after streamed tokens
   } else if (command === 'extract') {
     const [url, ...sParts] = rest;
     result = await ai.extract(url, sParts.join(' '), options);
@@ -805,11 +1278,34 @@ Examples:
   }
 }
 
-main().catch((err) => {
-  console.error('\n[PuppetAI] Fatal:', err.message || err);
-  process.exit(1);
-});
+// Only run the CLI when this file is executed directly (`node index.js ...`).
+// Without this guard, `require('./index.js')` from another script — using
+// the "Full programmatic API" the header advertises — would immediately
+// launch the CLI's main(), parse process.argv, and likely error out or do
+// something unintended. This was a real bug in the original script.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('\n[PuppetAI] Fatal:', err.message || err);
+    process.exit(1);
+  });
+}
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-module.exports = { PuppetAI, parsePromptToSteps, executeSteps, executeParallel, registerPlugin, summarize, extractKeyTerms };
+module.exports = {
+  PuppetAI,
+  parsePromptToSteps,
+  classifyIntent,
+  normalizeVerb,
+  planSteps,
+  planStepsWithLlama,
+  interpretWithLlama,
+  ollamaAvailable,
+  extractJsonArray,
+  executeSteps,
+  executeParallel,
+  registerPlugin,
+  summarize,
+  extractKeyTerms,
+  extractLinksFromText,
+};
