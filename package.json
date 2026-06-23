@@ -1,0 +1,25 @@
+{
+  "name": "puppeterr",
+  "version": "1.0.0",
+  "description": "An Ai that searches the web using browsing tools",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simrankumari24/Puppeterr.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/simrankumari24/Puppeterr/issues"
+  },
+  "homepage": "https://github.com/simrankumari24/Puppeterr#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "playwright": "^1.61.0"
+  }
+}
