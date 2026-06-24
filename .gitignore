@@ -1,3 +1,5 @@
 node_modules/
 screenshots/
+runs/
+.env
 *.log
