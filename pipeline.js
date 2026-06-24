@@ -4,37 +4,67 @@
  * Flow:
  *   Agent A (planner)  -> clarifies the raw goal
  *   Agent B (checker)  -> validates / tightens the prompt
- *   Agent C (tasker)   -> produces a high-level numbered plan
+ *   Agent C (tasker)   -> produces a high-level numbered plan (re-runs to replan)
  *   Agent D (compiler) -> turns the plan + live page state into JSON actions
  *   Goal checker       -> decides when the goal is achieved
  *
  * Actions are ONLY ever run through the safe library in actions.js — no
  * arbitrary code execution. The loop observes the page, asks the model for the
  * next 1-3 actions, runs them, feeds back results/errors, and repeats until the
- * goal is met or MAX_STEPS is hit.
+ * goal is met or MAX_STEPS is hit. Includes stealth, bot-wall detection,
+ * stall/loop detection with auto-replan, per-action timeouts, session
+ * persistence, screenshots, run transcripts, and a single-run mode.
  */
 
-const playwright = require("playwright");
+const { chromium } = require("playwright-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const readline = require("readline");
 const fs = require("fs");
 const path = require("path");
 const actions = require("./actions");
 
+chromium.use(StealthPlugin());
+
+// ─────────────────────────────────────────────
+// .env LOADER (no dependency)
+// ─────────────────────────────────────────────
+function loadDotenv(file = ".env") {
+  try {
+    if (!fs.existsSync(file)) return;
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      const m = line.match(/^\s*([\w.-]+)\s*=\s*(.*?)\s*$/);
+      if (!m || line.trim().startsWith("#")) continue;
+      const key = m[1];
+      const val = m[2].replace(/^["']|["']$/g, "");
+      if (!(key in process.env)) process.env[key] = val;
+    }
+  } catch { /* ignore malformed .env */ }
+}
+loadDotenv();
+
 // ─────────────────────────────────────────────
 // CONFIG (env-driven)
 // ─────────────────────────────────────────────
+const num = (v, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : d; };
 const CFG = {
   CF_API_TOKEN: process.env.CF_API_TOKEN,
   CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID,
   MODEL: process.env.MODEL || "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-  MAX_STEPS: parseInt(process.env.MAX_STEPS || "15", 10),
+  MAX_STEPS: num(process.env.MAX_STEPS, 15),
   HEADLESS: process.env.HEADLESS === "1",
+  STEALTH: process.env.STEALTH !== "0",
   START_URL: process.env.START_URL || "https://www.google.com",
   CHROME_PATH: process.env.CHROME_PATH || "",
   SESSION_FILE: process.env.SESSION_FILE || "session.json",
   SCREENSHOT_DIR: process.env.SCREENSHOT_DIR || "screenshots",
-  LLM_TIMEOUT_MS: parseInt(process.env.LLM_TIMEOUT_MS || "60000", 10),
-  LLM_RETRIES: parseInt(process.env.LLM_RETRIES || "2", 10)
+  RUN_LOG_DIR: process.env.RUN_LOG_DIR || "runs",
+  LLM_TIMEOUT_MS: num(process.env.LLM_TIMEOUT_MS, 60000),
+  LLM_RETRIES: num(process.env.LLM_RETRIES, 2),
+  ACTION_TIMEOUT_MS: num(process.env.ACTION_TIMEOUT_MS, 30000),
+  MAX_FAILS: num(process.env.MAX_FAILS, 3),
+  STALL_LIMIT: num(process.env.STALL_LIMIT, 2),
+  MAX_REPLANS: num(process.env.MAX_REPLANS, 1),
+  CAPTCHA_WAIT_MS: num(process.env.CAPTCHA_WAIT_MS, 20000)
 };
 
 const ACTION_NAMES = Object.keys(actions);
@@ -43,6 +73,10 @@ let browser, context, page;
 let shuttingDown = false;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const withTimeout = (promise, ms, label) => Promise.race([
+  promise,
+  new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms))
+]);
 
 // ─────────────────────────────────────────────
 // LOGGING
@@ -145,6 +179,17 @@ async function agentC(validated) {
   );
 }
 
+async function replan(validated, history, reason) {
+  log("INFO", "Replanning —", reason);
+  return callLLM(
+    `You are Agent C (tasker). The agent is stuck. Produce a FRESH short numbered list of concrete browser steps that takes a DIFFERENT approach than what already failed. Output ONLY the numbered list.`,
+    `Goal: "${validated}"
+Why stuck: ${reason}
+Recent history:
+${history.slice(-8).join("\n") || "none"}`
+  );
+}
+
 function agentDSystemPrompt() {
   return `You are Agent D (action compiler) inside an observe-think-act loop.
 Given the goal, the plan, the recent history, and the CURRENT page state, output the NEXT 1-3 browser actions to make progress.
@@ -217,6 +262,36 @@ async function getPageState() {
   return { url, title, text: data.text, elements: data.els };
 }
 
+// Detect CAPTCHA / bot-wall / interstitial pages. Returns a reason string or null.
+function detectBotWall(state) {
+  const hay = `${state.url}\n${state.title}\n${state.text}`.toLowerCase();
+  const signals = [
+    ["/sorry/", "google bot check"],
+    ["unusual traffic", "unusual traffic"],
+    ["are you a robot", "robot prompt"],
+    ["verify you are human", "human verification"],
+    ["i'm not a robot", "recaptcha"],
+    ["recaptcha", "recaptcha"],
+    ["hcaptcha", "hcaptcha"],
+    ["just a moment", "cloudflare challenge"],
+    ["cf-challenge", "cloudflare challenge"],
+    ["checking your browser", "cloudflare challenge"],
+    ["captcha", "captcha"]
+  ];
+  for (const [needle, reason] of signals) if (hay.includes(needle)) return reason;
+  return null;
+}
+
+async function handleBotWall(reason, step) {
+  await saveScreenshot(`captcha-step-${step}`);
+  if (!CFG.HEADLESS && process.stdin.isTTY) {
+    await ask(`Bot wall detected (${reason}). Solve it in the browser, then press Enter to continue...`);
+  } else {
+    log("INFO", `Waiting ${CFG.CAPTCHA_WAIT_MS}ms for the challenge to clear...`);
+    await sleep(CFG.CAPTCHA_WAIT_MS);
+  }
+}
+
 // ─────────────────────────────────────────────
 // EXECUTE (safe library only)
 // ─────────────────────────────────────────────
@@ -232,7 +307,11 @@ async function runSteps(steps) {
     }
     log("ACT", action, JSON.stringify(params));
     try {
-      const value = await fn({ page, context, browser, ...params });
+      const value = await withTimeout(
+        fn({ page, context, browser, ...params }),
+        CFG.ACTION_TIMEOUT_MS,
+        action
+      );
       const out = value !== undefined && typeof value !== "object" ? truncate(String(value), 200) : undefined;
       if (out !== undefined) log("OUT", out);
       results.push({ action, ok: true, value: out });
@@ -254,21 +333,58 @@ async function runAgent(rawGoal) {
 
   const clarified = await agentA(rawGoal);
   const validated = await agentB(clarified);
-  const plan = await agentC(validated);
+  let plan = await agentC(validated);
   log("PLAN", "\n" + plan);
 
   const history = [];
+  const transcript = { goal: rawGoal, validated, plan, startedAt: new Date().toISOString(), steps: [] };
+  let success = false;
+  let lastSig = "";
+  let stallCount = 0;
+  let failCount = 0;
+  let replans = 0;
 
   for (let step = 1; step <= CFG.MAX_STEPS && !shuttingDown; step++) {
     log("INFO", `── STEP ${step}/${CFG.MAX_STEPS} ──`);
     const state = await getPageState();
     log("STATE", `${state.title || "(no title)"} | ${state.url}`);
-
     await saveScreenshot(`step-${step}`);
 
+    const stepRec = { step, url: state.url, title: state.title };
+
+    // Bot-wall handling
+    const wall = detectBotWall(state);
+    if (wall) {
+      log("WARN", "Bot wall:", wall);
+      stepRec.botWall = wall;
+      history.push(`Encountered bot wall: ${wall}`);
+      await handleBotWall(wall, step);
+      transcript.steps.push(stepRec);
+      continue; // re-observe after the wall is (hopefully) cleared
+    }
+
+    // Goal check
     if (step > 1 && await checkGoalDone(validated, state)) {
       log("DONE", "Goal achieved.");
+      success = true;
+      transcript.steps.push({ ...stepRec, done: true });
       break;
+    }
+
+    // Stall / loop detection
+    const sig = state.url + "|" + (state.text || "").slice(0, 200);
+    stallCount = sig === lastSig ? stallCount + 1 : 0;
+    lastSig = sig;
+    if (stallCount >= CFG.STALL_LIMIT) {
+      if (replans < CFG.MAX_REPLANS) {
+        plan = await replan(validated, history, "page state has not changed");
+        log("PLAN", "\n" + plan);
+        replans++;
+        stallCount = 0;
+      } else {
+        log("WARN", "Stalled and out of replans; aborting goal.");
+        break;
+      }
     }
 
     const userContext = `Goal: "${validated}"
@@ -298,27 +414,33 @@ Output the next 1-3 actions as JSON.`;
       break;
     }
 
-    let steps;
+    let actionSteps;
     try {
-      steps = extractSteps(raw);
+      actionSteps = extractSteps(raw);
     } catch {
       log("WARN", "Bad JSON from Agent D, retrying once...");
       try {
         raw = await agentD(userContext + "\n\nYour last output was not valid JSON. Output ONLY a JSON array.");
-        steps = extractSteps(raw);
+        actionSteps = extractSteps(raw);
       } catch (err) {
         log("ERR", "Agent D still produced invalid JSON:", err.message);
         history.push("Agent D produced invalid JSON.");
+        transcript.steps.push({ ...stepRec, error: "invalid JSON" });
         continue;
       }
     }
 
-    if (!steps.length) {
+    if (!actionSteps.length) {
       log("WARN", "Empty action list; skipping.");
+      transcript.steps.push({ ...stepRec, actions: [] });
       continue;
     }
 
-    const results = await runSteps(steps);
+    const results = await runSteps(actionSteps);
+    stepRec.actions = actionSteps;
+    stepRec.results = results;
+    transcript.steps.push(stepRec);
+
     for (const r of results) {
       history.push(
         r.ok
@@ -327,15 +449,28 @@ Output the next 1-3 actions as JSON.`;
       );
     }
 
+    // Consecutive-failure guard
+    const allFailed = results.length > 0 && results.every(r => !r.ok);
+    failCount = allFailed ? failCount + 1 : 0;
+    if (failCount >= CFG.MAX_FAILS) {
+      log("WARN", `${failCount} consecutive failed steps; aborting goal.`);
+      break;
+    }
+
     await sleep(1200);
   }
 
-  log("INFO", "=== PIPELINE END ===");
+  transcript.success = success;
+  transcript.endedAt = new Date().toISOString();
+  saveTranscript(transcript);
+
+  log("INFO", "=== PIPELINE END === success=" + success);
   log("INFO", "History:\n  " + history.join("\n  "));
+  return { success, history };
 }
 
 // ─────────────────────────────────────────────
-// BROWSER / SESSION
+// BROWSER / SESSION / ARTIFACTS
 // ─────────────────────────────────────────────
 function findChrome() {
   if (CFG.CHROME_PATH && fs.existsSync(CFG.CHROME_PATH)) return CFG.CHROME_PATH;
@@ -352,10 +487,21 @@ function findChrome() {
 
 async function saveScreenshot(name) {
   try {
-    if (!fs.existsSync(CFG.SCREENSHOT_DIR)) fs.mkdirSync(CFG.SCREENSHOT_DIR, { recursive: true });
+    fs.mkdirSync(CFG.SCREENSHOT_DIR, { recursive: true });
     await page.screenshot({ path: path.join(CFG.SCREENSHOT_DIR, `${name}.png`) });
   } catch (err) {
     log("WARN", "Screenshot failed:", err.message.split("\n")[0]);
+  }
+}
+
+function saveTranscript(transcript) {
+  try {
+    fs.mkdirSync(CFG.RUN_LOG_DIR, { recursive: true });
+    const file = path.join(CFG.RUN_LOG_DIR, `run-${Date.now()}.json`);
+    fs.writeFileSync(file, JSON.stringify(transcript, null, 2));
+    log("INFO", "Transcript saved to", file);
+  } catch (err) {
+    log("WARN", "Could not save transcript:", err.message.split("\n")[0]);
   }
 }
 
@@ -384,7 +530,7 @@ async function shutdown() {
 // ─────────────────────────────────────────────
 (async () => {
   if (!CFG.CF_API_TOKEN || !CFG.CF_ACCOUNT_ID) {
-    console.error("Missing CF_API_TOKEN or CF_ACCOUNT_ID env vars.");
+    console.error("Missing CF_API_TOKEN or CF_ACCOUNT_ID env vars (set them or add a .env file).");
     process.exit(1);
   }
 
@@ -406,14 +552,16 @@ async function shutdown() {
   } else {
     log("INFO", "Using Playwright's bundled Chromium");
   }
+  log("INFO", `Stealth ${CFG.STEALTH ? "enabled" : "disabled"}, headless=${CFG.HEADLESS}`);
 
-  browser = await playwright.chromium.launch(launchOpts);
+  browser = await chromium.launch(launchOpts);
 
   const hasSession = fs.existsSync(CFG.SESSION_FILE);
   context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     storageState: hasSession ? CFG.SESSION_FILE : undefined
   });
+  context.setDefaultTimeout(CFG.ACTION_TIMEOUT_MS);
   if (hasSession) log("INFO", "Loaded session from", CFG.SESSION_FILE);
 
   page = await context.newPage();
@@ -423,7 +571,17 @@ async function shutdown() {
 
   await page.goto(CFG.START_URL, { waitUntil: "domcontentloaded" });
 
+  // Single-run mode: goal from CLI arg or GOAL env -> run once and exit.
+  const cliGoal = process.argv.slice(2).join(" ").trim() || (process.env.GOAL || "").trim();
+
   try {
+    if (cliGoal) {
+      const { success } = await runAgent(cliGoal);
+      await saveSession();
+      await browser.close();
+      process.exit(success ? 0 : 1);
+    }
+
     while (!shuttingDown) {
       const goal = await ask("\nGoal (or 'exit'): ");
       if (!goal.trim() || goal.trim().toLowerCase() === "exit") break;
