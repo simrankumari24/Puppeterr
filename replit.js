@@ -92,7 +92,7 @@ app.get("/", (req, res) => {
 
 // --+-- FORWARD CLICK --+--
 app.post("/click", async (req, res) => {
-  try { await page.mouse.click(req.body.x, req.body.y); res.send("ok"); }
+  try { await humanClick(req.body.x, req.body.y); res.send("ok"); }
   catch (e) { res.status(500).send(e.message); }
 });
 

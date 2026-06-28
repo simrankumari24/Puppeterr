@@ -189,7 +189,7 @@ Give me:
 // --+-- FORWARD CLICK --+--
 app.post("/click", async (req, res) => {
   try { 
-    await page.mouse.click(req.body.x, req.body.y); 
+    await humanClick(req.body.x, req.body.y); 
     res.send("ok"); 
   } catch (e) { 
     res.status(500).send(e.message); 

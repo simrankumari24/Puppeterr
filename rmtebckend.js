@@ -39,7 +39,7 @@ async function injectCursorOverlay(pg) {
 // Simple approach: we just move the playwright mouse to cursorX/Y before screenshotting
 async function getScreenshotWithCursor() {
   // Move mouse to last known position so it shows in screenshot
-  await page.mouse.move(cursorX, cursorY);
+  await humanMove(cursorX, cursorY);
   const buf = await page.screenshot({ type: "jpeg", quality: 80 });
   return buf;
 }
@@ -366,7 +366,7 @@ app.post("/mousemove", async (req, res) => {
   try {
     cursorX = req.body.x;
     cursorY = req.body.y;
-    await page.mouse.move(req.body.x, req.body.y);
+    await humanMove(req.body.x, req.body.y);
     res.send("ok");
   } catch (e) { res.status(500).send(e.message); }
 });
@@ -376,7 +376,7 @@ app.post("/click", async (req, res) => {
   try {
     cursorX = req.body.x;
     cursorY = req.body.y;
-    await page.mouse.click(req.body.x, req.body.y);
+    await humanClick(req.body.x, req.body.y);
     res.send("ok");
   } catch (e) { res.status(500).send(e.message); }
 });
@@ -384,7 +384,7 @@ app.post("/click", async (req, res) => {
 // --+-- RIGHT CLICK --+--
 app.post("/rightclick", async (req, res) => {
   try {
-    await page.mouse.click(req.body.x, req.body.y, { button: "right" });
+    await humanClick(req.body.x, req.body.y, { button: "right" });
     res.send("ok");
   } catch (e) { res.status(500).send(e.message); }
 });

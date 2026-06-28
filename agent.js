@@ -1,272 +1,2625 @@
 const { chromium } = require("playwright-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-const readline = require("readline");
-const fs = require("fs");
-const vm = require("vm");
+const fs   = require("fs");
+const http = require("http");
+const crypto = require("crypto");
+const path = require("path");
+const { execSync, exec } = require("child_process");
+const actions = require("./actions");
+const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
+async function humanMove(page, x, y, telemetry = {}) {
+  const steps = 25 + Math.floor(Math.random() * 10);
+  const start = await page.evaluate(() => ({
+    x: window.__puppeterrMouseX || 0,
+    y: window.__puppeterrMouseY || 0,
+    viewportWidth: Math.max(1, Math.round(window.innerWidth || 1920)),
+    viewportHeight: Math.max(1, Math.round(window.innerHeight || 1080))
+  })).catch(() => ({ x: 0, y: 0, viewportWidth: 1920, viewportHeight: 1080 }));
+
+  const telemetryKind = String(telemetry?.kind || "move");
+  const emitEvery = Math.max(1, Number(telemetry?.emitEvery || 3));
+
+  for (let i = 0; i < steps; i++) {
+    const nx = start.x + (x - start.x) * (i / steps) + (Math.random() * 3 - 1.5);
+    const ny = start.y + (y - start.y) * (i / steps) + (Math.random() * 3 - 1.5);
+
+    await page.mouse.move(nx, ny);
+    if (i % emitEvery === 0 || i === steps - 1) {
+      broadcast("mouse_move", {
+        x: Math.round(nx),
+        y: Math.round(ny),
+        viewportWidth: start.viewportWidth,
+        viewportHeight: start.viewportHeight,
+        kind: telemetryKind
+      });
+    }
+    await page.waitForTimeout(5 + Math.random() * 15);
+  }
+
+  await page.evaluate(({ mx, my, viewportWidth, viewportHeight }) => {
+    window.__puppeterrMouseX = mx;
+    window.__puppeterrMouseY = my;
+    window.__puppeterrViewportWidth = viewportWidth;
+    window.__puppeterrViewportHeight = viewportHeight;
+  }, {
+    mx: x,
+    my: y,
+    viewportWidth: start.viewportWidth,
+    viewportHeight: start.viewportHeight
+  }).catch(() => {});
+}
+async function humanClick(page, x, y) {
+  await humanMove(page, x + (Math.random() * 10 - 5), y + (Math.random() * 10 - 5), { kind: "preclick" });
+  await humanMove(page, x, y, { kind: "preclick" });
+  await page.mouse.click(x, y, { delay: 50 + Math.random() * 150 });
+
+  const viewport = await page.evaluate(() => ({
+    width: Math.max(1, Math.round(window.__puppeterrViewportWidth || window.innerWidth || 1920)),
+    height: Math.max(1, Math.round(window.__puppeterrViewportHeight || window.innerHeight || 1080))
+  })).catch(() => ({ width: 1920, height: 1080 }));
+
+  broadcast("mouse_click", {
+    x: Math.round(x),
+    y: Math.round(y),
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    kind: "click"
+  });
+}
+
 
 chromium.use(StealthPlugin());
 
-const CF_API_TOKEN = process.env.CF_API_TOKEN;
+// ── Auto-install browser ──────────────────────────────────────────────────────
+function ensureBrowser() {
+  try { execSync("npx playwright install --dry-run chromium 2>&1"); return; } catch {}
+  try {
+    console.log("🔧 Installing Chromium...");
+    execSync("npx playwright install chromium", { stdio: "inherit" });
+    console.log("✅ Done!");
+  } catch (err) { console.error("❌ Install failed:", err.message); process.exit(1); }
+}
+ensureBrowser();
+
+// ── .env loader ───────────────────────────────────────────────────────────────
+if (fs.existsSync(".env")) {
+  fs.readFileSync(".env", "utf8").split("\n").forEach(line => {
+    const [k, ...v] = line.split("=");
+    if (k && v.length && !process.env[k.trim()]) process.env[k.trim()] = v.join("=").trim();
+  });
+}
+
+const CF_API_TOKEN  = process.env.CF_API_TOKEN;
 const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
-const MODEL = "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b";
-const SESSION_FILE = "session1.json";
-const MAX_STEPS = 20;
+const SESSION_FILE  = "session.json";
+const CHAT_STORE_FILE = "chat-history.json";
+const LOG_FILE = "log.json";
+const PORT          = 3000;
+const MAX_STEPS     = 60;
+const MAX_RETRIES   = 3;
+const MODEL_CACHE_MS = 15 * 60 * 1000;
+const CAPTCHA_HUMAN_CHECK_LIMIT = 5;
+const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 2500);
+const ACTION_PACING_DELAY_MS = Number(process.env.ACTION_PACING_DELAY_MS || 120);
+const STEP_SETTLE_DELAY_MS = Number(process.env.STEP_SETTLE_DELAY_MS || 180);
+const PLANNER_RETRY_DELAY_MS = Number(process.env.PLANNER_RETRY_DELAY_MS || 700);
+const POST_STEP_DELAY_MS = Number(process.env.POST_STEP_DELAY_MS || 140);
+const VISION_SAMPLE_EVERY_STEPS = Math.max(1, Number(process.env.VISION_SAMPLE_EVERY_STEPS || 2));
+const VERIFY_EVERY_STEPS = Math.max(1, Number(process.env.VERIFY_EVERY_STEPS || 2));
+const BRIDGE_VISION_INTERVAL_MS = 1000;
+const BRIDGE_VISION_CLEAR_STREAK = 2;
+const IDLE_HUMAN_IDLE_MIN_MS = 1400;
+const IDLE_HUMAN_IDLE_MAX_MS = 4200;
+const MAX_LOG_ENTRIES = 4000;
+const AUTH_COOKIE_NAME = "puppeterr_auth";
+const AUTH_SECRET = process.env.APP_AUTH_SECRET || "puppeterr-local-secret";
+const APP_USERNAME = process.env.APP_USERNAME || "admin";
+const APP_PASSWORD = process.env.APP_PASSWORD || "puppeterr";
+const WORKSPACE_ROOT = process.cwd();
+// Cap how many turns of plannerHistory we keep. Without this, a long task
+// (many steps) makes the message array grow forever, eventually blowing
+// past the model's context window — which can ALSO surface as a confusing
+// "Bad input" error from Cloudflare that looks unrelated to its real cause.
+const MAX_PLANNER_HISTORY_MESSAGES = 15; // system + last N turns
+
+const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
+const DEFAULT_MODELS = {
+  // Internal Cloudflare IDs (for example @alibaba/...) are supported via env
+  // overrides and catalog resolution. These are only generic starting defaults.
+  router: process.env.DEFAULT_ROUTER_MODEL || "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+  planner: process.env.DEFAULT_PLANNER_MODEL || "@cf/nvidia/nemotron-3-120b-a12b",
+  reasoner: process.env.DEFAULT_REASONER_MODEL || "@anthropic/claude-sonnet-4.6",
+  vision: process.env.DEFAULT_VISION_MODEL || "@cf/meta/llama-3.2-11b-vision-instruct"
+};
+
+function isVisionLikeModel(model = {}) {
+  const text = [model.id, model.name, model.type, ...(Array.isArray(model.capabilities) ? model.capabilities : [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return /vision|image|multimodal/.test(text);
+}
+
+function pickModelId(catalog, preferredIds, wantVision) {
+  const items = Array.isArray(catalog) ? catalog : [];
+  const preferred = new Set((preferredIds || []).filter(Boolean));
+  const byPreference = items.find(item => preferred.has(item.id));
+  if (byPreference) return byPreference.id;
+
+  const byType = items.find(item => wantVision ? isVisionLikeModel(item) : !isVisionLikeModel(item));
+  if (byType) return byType.id;
+
+  return items[0]?.id || null;
+}
+
+function resolveDefaultModels(catalog) {
+  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], true) || DEFAULT_MODELS.router;
+  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/nvidia/nemotron-3-120b-a12b", router], true) || router;
+  const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
+  const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
+  return { router, planner, reasoner, vision };
+}
+
+function sanitizeModels(models, catalog) {
+  const defaults = resolveDefaultModels(catalog);
+  const merged = { ...defaults, ...(models || {}) };
+  const knownIds = new Set((Array.isArray(catalog) ? catalog : []).map(item => item.id));
+  if (!knownIds.size) return merged;
+  for (const role of MODEL_ROLES) {
+    if (!knownIds.has(merged[role])) merged[role] = defaults[role];
+  }
+  return merged;
+}
 
 let browser, context, page;
-let stepLog = [];
+let sessionHistory  = [];
+let agentRunning    = false;
+let modelCatalogCache = { expiresAt: 0, items: [] };
+let learningLogCache = null;
+let bridgeVisionTimer = null;
+let bridgeVisionInFlight = false;
+let bridgeVisionClearStreak = 0;
+let bridgeVisionModelId = DEFAULT_MODELS.vision;
+let idleHumanTimer = null;
+let idleHumanInFlight = false;
+let lastExecutorWorkAt = 0;
+let nextIdleNudgeAt = 0;
+let humanBridgeState = {
+  active: false,
+  checks: 0,
+  limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+  url: "about:blank",
+  reason: "",
+  closureReason: "",
+  visionLastCheckAt: null,
+  visionLastSummary: "",
+  clickCount: 0,
+  lastClickAt: null,
+  lastClick: null
+};
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function askQuestion(query) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => rl.question(query, ans => { rl.close(); resolve(ans); }));
+function randomIdleDelayMs() {
+  const min = Math.max(200, Number(IDLE_HUMAN_IDLE_MIN_MS) || 1400);
+  const max = Math.max(min, Number(IDLE_HUMAN_IDLE_MAX_MS) || 4200);
+  return Math.round(min + Math.random() * (max - min));
 }
 
-// ── STRIP <think> blocks from DeepSeek R1 responses ──────────────────────────
-function stripThinking(text) {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+function markExecutorWork() {
+  lastExecutorWorkAt = Date.now();
+  nextIdleNudgeAt = lastExecutorWorkAt + randomIdleDelayMs();
 }
 
-// ── Extract code block from markdown if present ───────────────────────────────
-function extractCode(text) {
-  const fenced = text.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
-  if (fenced) return fenced[1].trim();
-  // If no code block, return as-is (maybe it's raw code)
-  return text.trim();
-}
-
-// ── Call DeepSeek via Cloudflare Workers AI ───────────────────────────────────
-async function askDeepSeek(messages) {
-  const res = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${MODEL}`,
-    {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${CF_API_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ messages, max_tokens: 1024 })
-    }
-  );
-  const data = await res.json();
-  if (!data.success) throw new Error("CF AI error: " + JSON.stringify(data.errors));
-  return stripThinking(data.result.response);
-}
-
-// ── Take screenshot and return base64 ────────────────────────────────────────
-async function getScreenshotB64() {
-  const buf = await page.screenshot({ type: "jpeg", quality: 60 });
-  return buf.toString("base64");
-}
-
-// ── Get page state summary (URL + title + visible text snippet) ───────────────
-async function getPageState() {
-  const url = page.url();
-  const title = await page.title();
-  // Get visible text (truncated) — way cheaper than full DOM
-  const text = await page.evaluate(() => {
-    return document.body
-      ? document.body.innerText.slice(0, 2000)
-      : "";
-  });
-  return { url, title, text };
-}
-
-// ── Safely execute Playwright code returned by DeepSeek ──────────────────────
-// Runs in a vm sandbox with page/sleep injected
-async function executeCode(code) {
-  console.log("\n📦 Executing:\n" + code + "\n");
+async function withExecutorWork(workFn) {
+  markExecutorWork();
   try {
-    const script = new vm.Script(`(async () => { ${code} })()`);
-    const sandbox = {
-      page,
-      sleep,
-      console,
-      // expose common Playwright helpers so DeepSeek can use them
-      waitFor: (sel, opts) => page.waitForSelector(sel, opts),
-      click: (sel) => page.click(sel),
-      fill: (sel, val) => page.fill(sel, val),
-      type: (sel, val, opts) => page.type(sel, val, opts),
-      goto: (url) => page.goto(url, { waitUntil: "domcontentloaded" }),
-      screenshot: () => page.screenshot({ path: "view.png" }),
-      url: () => page.url(),
-    };
-    vm.createContext(sandbox);
-    await script.runInContext(sandbox);
-    return { ok: true };
-  } catch (err) {
-    console.log("❌ Execution error: " + err.message);
-    return { ok: false, error: err.message };
+    return await workFn();
+  } finally {
+    markExecutorWork();
   }
 }
 
-// ── Check if goal is done by asking DeepSeek ─────────────────────────────────
-async function checkGoalDone(goal, state) {
-  const prompt = `Goal: "${goal}"
-Current URL: ${state.url}
-Page title: ${state.title}
-Page text snippet: ${state.text}
+function startIdleHumanBehavior() {
+  stopIdleHumanBehavior();
+  markExecutorWork();
 
-Is the goal achieved? Reply with ONLY "YES" or "NO" and one sentence why.`;
+  idleHumanTimer = setInterval(async () => {
+    if (!agentRunning || !page || idleHumanInFlight) return;
+    if (Date.now() < nextIdleNudgeAt) return;
 
-  const res = await askDeepSeek([
-    { role: "system", content: "You are a goal-checking assistant. Be strict. Only say YES if the goal is clearly and fully achieved." },
-    { role: "user", content: prompt }
-  ]);
-
-  console.log("🎯 Goal check: " + res);
-  return res.toUpperCase().startsWith("YES");
+    idleHumanInFlight = true;
+    try {
+      await humanIdleNudge(page);
+    } catch {}
+    idleHumanInFlight = false;
+    markExecutorWork();
+  }, 350);
 }
 
-// ── Main agent loop ───────────────────────────────────────────────────────────
-async function runAgent(goal) {
-  console.log("\n🤖 AGENT START");
-  console.log("🎯 Goal: " + goal);
-  console.log("─".repeat(50));
+function stopIdleHumanBehavior() {
+  if (idleHumanTimer) {
+    clearInterval(idleHumanTimer);
+    idleHumanTimer = null;
+  }
+  idleHumanInFlight = false;
+  nextIdleNudgeAt = 0;
+}
 
-  const history = [
-    {
-      role: "system",
-      content: `You are a browser automation agent controlling a Playwright browser.
-Your job is to achieve the user's goal step by step.
+async function humanIdleNudge(page, state = {}) {
+  if (!page) return;
+  const viewport = await page.evaluate(() => ({
+    width: Math.max(1, Math.round(window.innerWidth || 1920)),
+    height: Math.max(1, Math.round(window.innerHeight || 1080))
+  })).catch(() => ({ width: 1920, height: 1080 }));
 
-Rules:
-- Output ONLY raw JavaScript code using Playwright's \`page\` object. No prose, no explanation.
-- Use async/await. The code runs inside an async function so await is available.
-- Use \`await sleep(ms)\` for waits.
-- Use \`await page.goto(url)\` to navigate.
-- Use \`await page.click(selector)\` to click.
-- Use \`await page.fill(selector, value)\` to fill inputs.
-- Use \`await page.waitForSelector(selector)\` to wait for elements.
-- Keep each step small — one or two actions max.
-- If you're unsure, navigate to the page first and wait.
-- NEVER output markdown, backticks, or explanations. Raw JS only.`
+  const baseX = Number.isFinite(state.x) ? state.x : Math.round(viewport.width * (0.35 + Math.random() * 0.3));
+  const baseY = Number.isFinite(state.y) ? state.y : Math.round(viewport.height * (0.28 + Math.random() * 0.38));
+  const jitterX = Math.round((Math.random() * 36) - 18);
+  const jitterY = Math.round((Math.random() * 28) - 14);
+  const targetX = Math.max(8, Math.min(viewport.width - 8, baseX + jitterX));
+  const targetY = Math.max(8, Math.min(viewport.height - 8, baseY + jitterY));
+
+  try {
+    await page.bringToFront().catch(() => {});
+    await humanMove(page, targetX, targetY, { kind: "idle", emitEvery: 4 });
+  } catch {}
+}
+
+async function sleepLikeHuman(ms, page, state = {}) {
+  const total = Math.max(0, Number(ms) || 0);
+  if (!total) return;
+  const slice = Math.min(650, Math.max(220, Math.round(total / 4)));
+  let elapsed = 0;
+  while (elapsed < total) {
+    const chunk = Math.min(slice, total - elapsed);
+    await sleep(chunk);
+    elapsed += chunk;
+    if (elapsed < total) await humanIdleNudge(page, state);
+  }
+}
+
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  res.writeHead(statusCode, { "Content-Type": "application/json", ...extraHeaders });
+  res.end(JSON.stringify(payload));
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      if (!body) return resolve({});
+      try { resolve(JSON.parse(body)); }
+      catch (err) { reject(err); }
+    });
+    req.on("error", reject);
+  });
+}
+
+function resolveWorkspacePath(targetPath = ".") {
+  const resolved = path.resolve(WORKSPACE_ROOT, String(targetPath || "."));
+  if (!resolved.startsWith(WORKSPACE_ROOT)) {
+    throw new Error("Path escapes workspace root");
+  }
+  return resolved;
+}
+
+function listWorkspaceDir(targetPath = ".") {
+  const absPath = resolveWorkspacePath(targetPath);
+  const entries = fs.readdirSync(absPath, { withFileTypes: true })
+    .filter(entry => entry.name !== ".git" && entry.name !== "node_modules")
+    .map(entry => {
+      const full = path.join(absPath, entry.name);
+      const rel = path.relative(WORKSPACE_ROOT, full) || ".";
+      return {
+        name: entry.name,
+        path: rel.split(path.sep).join("/"),
+        type: entry.isDirectory() ? "directory" : "file"
+      };
+    })
+    .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "directory" ? -1 : 1));
+
+  return {
+    cwd: path.relative(WORKSPACE_ROOT, absPath).split(path.sep).join("/") || ".",
+    entries
+  };
+}
+
+function runWorkspaceCommand(command, cwd = ".") {
+  return new Promise((resolve) => {
+    const absCwd = resolveWorkspacePath(cwd);
+    exec(command, { cwd: absCwd, timeout: 120000, maxBuffer: 1024 * 1024 * 8 }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        code: error && typeof error.code === "number" ? error.code : 0,
+        stdout: String(stdout || ""),
+        stderr: String(stderr || "")
+      });
+    });
+  });
+}
+
+function parseCookies(req) {
+  const raw = req.headers.cookie || "";
+  return raw.split(";").reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split("=");
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(rest.join("="));
+    return acc;
+  }, {});
+}
+
+function signValue(value) {
+  return crypto.createHmac("sha256", AUTH_SECRET).update(value).digest("hex");
+}
+
+function createAuthToken(username) {
+  const payload = Buffer.from(JSON.stringify({ u: username, exp: Date.now() + (7 * 24 * 60 * 60 * 1000) })).toString("base64url");
+  return `${payload}.${signValue(payload)}`;
+}
+
+function verifyAuthToken(token) {
+  if (!token || !token.includes(".")) return null;
+  const [payload, sig] = token.split(".");
+  if (signValue(payload) !== sig) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!parsed.u || !parsed.exp || parsed.exp < Date.now()) return null;
+    return { username: parsed.u };
+  } catch {
+    return null;
+  }
+}
+
+function getAuth(req) {
+  const cookies = parseCookies(req);
+  return verifyAuthToken(cookies[AUTH_COOKIE_NAME]);
+}
+
+function requireAuth(req, res) {
+  const auth = getAuth(req);
+  if (!auth) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return null;
+  }
+  return auth;
+}
+
+function setAuthCookie(res, token) {
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
+}
+
+function clearAuthCookie(res) {
+  res.setHeader("Set-Cookie", `${AUTH_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+}
+
+function createChatRecord(title = "New Chat") {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    title,
+    createdAt: now,
+    updatedAt: now,
+    models: { ...resolveDefaultModels(modelCatalogCache.items) },
+    messages: []
+  };
+}
+
+function loadChatStore() {
+  if (!fs.existsSync(CHAT_STORE_FILE)) {
+    const chat = createChatRecord("Welcome Chat");
+    return { selectedChatId: chat.id, chats: [chat] };
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CHAT_STORE_FILE, "utf8"));
+    const chats = Array.isArray(parsed.chats) && parsed.chats.length
+      ? parsed.chats.map(chat => ({
+          ...chat,
+          models: sanitizeModels(chat.models || {}, modelCatalogCache.items),
+          messages: Array.isArray(chat.messages) ? chat.messages : []
+        }))
+      : [createChatRecord("Welcome Chat")];
+    const selectedChatId = chats.some(chat => chat.id === parsed.selectedChatId)
+      ? parsed.selectedChatId
+      : chats[0].id;
+    return { selectedChatId, chats };
+  } catch {
+    const chat = createChatRecord("Welcome Chat");
+    return { selectedChatId: chat.id, chats: [chat] };
+  }
+}
+
+function saveChatStore(store) {
+  fs.writeFileSync(CHAT_STORE_FILE, JSON.stringify(store, null, 2));
+}
+
+function summarizeChat(chat) {
+  const lastMessage = [...chat.messages].reverse().find(message => message.role === "user" || message.role === "assistant");
+  return {
+    id: chat.id,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    preview: lastMessage ? String(lastMessage.content).slice(0, 96) : "No messages yet",
+    messageCount: chat.messages.length
+  };
+}
+
+function syncSessionHistory(chat) {
+  sessionHistory = (chat?.messages || [])
+    .filter(message => message.role === "user" || message.role === "assistant")
+    .map(message => ({ role: message.role, content: message.content }));
+}
+
+function ensureCurrentChat() {
+  const store = loadChatStore();
+  let chat = store.chats.find(item => item.id === store.selectedChatId);
+  if (!chat) {
+    chat = store.chats[0] || createChatRecord("Welcome Chat");
+    if (!store.chats.length) store.chats.push(chat);
+    store.selectedChatId = chat.id;
+    saveChatStore(store);
+  }
+  syncSessionHistory(chat);
+  return { store, chat };
+}
+
+function setCurrentChat(chatId) {
+  const store = loadChatStore();
+  const chat = store.chats.find(item => item.id === chatId);
+  if (!chat) return null;
+  store.selectedChatId = chatId;
+  saveChatStore(store);
+  syncSessionHistory(chat);
+  return chat;
+}
+
+function createChat(title = "New Chat") {
+  const store = loadChatStore();
+  const chat = createChatRecord(title);
+  store.chats.unshift(chat);
+  store.selectedChatId = chat.id;
+  saveChatStore(store);
+  syncSessionHistory(chat);
+  return chat;
+}
+
+function renameChatFromPrompt(chat, prompt) {
+  if (!chat || !prompt) return;
+  if (String(prompt).trim().startsWith("/")) return;
+  if (chat.title && chat.title !== "New Chat" && chat.title !== "Welcome Chat") return;
+  chat.title = prompt.trim().split(/\s+/).slice(0, 6).join(" ").slice(0, 48) || chat.title;
+}
+
+function normalizeCommandKey(value) {
+  return String(value || "").trim().replace(/^\/+/, "").toLowerCase();
+}
+
+function findModelByNameOrId(catalog, query) {
+  const items = Array.isArray(catalog) ? catalog : [];
+  const normalizedQuery = normalizeCommandKey(query);
+  const compactQuery = normalizedQuery.replace(/[^a-z0-9]+/g, "");
+  const exact = items.find(item => normalizeCommandKey(item.id) === normalizedQuery || normalizeCommandKey(item.name) === normalizedQuery);
+  if (exact) return exact.id;
+  const fuzzy = items.find(item => {
+    const combined = `${normalizeCommandKey(item.id)} ${normalizeCommandKey(item.name)}`;
+    const compactCombined = combined.replace(/[^a-z0-9]+/g, "");
+    return compactCombined.includes(compactQuery) || compactQuery.includes(compactCombined);
+  });
+  return fuzzy ? fuzzy.id : null;
+}
+
+function getRuntimeModelOverride(chat) {
+  const override = String(chat?.runtimeModelOverride || "").trim();
+  return override || null;
+}
+
+function setRuntimeModelOverride(chatId, modelId) {
+  const store = loadChatStore();
+  const chat = store.chats.find(item => item.id === chatId);
+  if (!chat) return null;
+  chat.runtimeModelOverride = modelId || null;
+  chat.updatedAt = new Date().toISOString();
+  saveChatStore(store);
+  syncSessionHistory(chat);
+  return chat;
+}
+
+function clearRuntimeModelOverride(chatId) {
+  return setRuntimeModelOverride(chatId, null);
+}
+
+function applyRuntimeModelOverride(models, chat) {
+  const override = getRuntimeModelOverride(chat);
+  if (!override) return sanitizeModels(models || {}, modelCatalogCache.items);
+  const defaults = sanitizeModels(models || {}, modelCatalogCache.items);
+  const catalogItem = (Array.isArray(modelCatalogCache.items) ? modelCatalogCache.items : []).find(item => item.id === override || item.name === override);
+  const chosen = catalogItem ? catalogItem.id : override;
+  const merged = {
+    ...defaults,
+    router: chosen,
+    planner: chosen,
+    reasoner: chosen
+  };
+  if (catalogItem && isVisionLikeModel(catalogItem)) {
+    merged.vision = chosen;
+  }
+  return sanitizeModels(merged, modelCatalogCache.items);
+}
+
+function parseSlashCommand(message) {
+  const raw = String(message || "").trim();
+  if (!raw.startsWith("/")) return null;
+  const [command, ...rest] = raw.slice(1).split(/\s+/);
+  return { command: normalizeCommandKey(command), args: rest.join(" ").trim() };
+}
+
+function resolveSlashModelCommand(command) {
+  const modelQuery = [command?.command, command?.args].filter(Boolean).join(" ").trim();
+  if (!modelQuery) return { kind: "unknown" };
+
+  const resetCommands = new Set(["default", "reset", "resetmodel", "clear", "clearmodel", "off"]);
+  if (resetCommands.has(command.command)) {
+    return { kind: "reset" };
+  }
+
+  const aliasMap = {
+    fable5: ["fable 5", "fable5", "fable"],
+    resnet50: ["resnet 50", "resnet-50", "resnet50"],
+    "resnet-50": ["resnet 50", "resnet-50", "resnet50"]
+  };
+
+  const candidateQueries = [modelQuery, ...(aliasMap[command.command] || [])];
+  for (const query of candidateQueries) {
+    const matched = findModelByNameOrId(modelCatalogCache.items, query);
+    if (matched) return { kind: "model", modelId: matched, query };
+  }
+
+  const modelLike = true;
+  return modelLike ? { kind: "model", modelId: null, query: modelQuery } : null;
+}
+
+function appendChatMessage(chatId, role, content, meta = {}) {
+  const store = loadChatStore();
+  const chat = store.chats.find(item => item.id === chatId);
+  if (!chat) return null;
+  renameChatFromPrompt(chat, role === "user" ? content : "");
+  chat.messages.push({ role, content, ts: new Date().toISOString(), ...meta });
+  chat.updatedAt = new Date().toISOString();
+  store.selectedChatId = chatId;
+  saveChatStore(store);
+  syncSessionHistory(chat);
+  return chat;
+}
+
+function updateChatModels(chatId, models) {
+  const store = loadChatStore();
+  const chat = store.chats.find(item => item.id === chatId);
+  if (!chat) return null;
+  chat.models = sanitizeModels({ ...(chat.models || {}), ...(models || {}) }, modelCatalogCache.items);
+  chat.updatedAt = new Date().toISOString();
+  saveChatStore(store);
+  syncSessionHistory(chat);
+  return chat;
+}
+
+function getActiveModels(chat) {
+  return applyRuntimeModelOverride(chat?.models || {}, chat);
+}
+
+function buildBootstrapPayload(catalog = modelCatalogCache.items) {
+  const { store, chat } = ensureCurrentChat();
+  const defaults = resolveDefaultModels(catalog);
+  return {
+    username: APP_USERNAME,
+    selectedChatId: store.selectedChatId,
+    chats: store.chats.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(summarizeChat),
+    currentChat: chat,
+    memory: loadMemory(),
+    models: {
+      catalog,
+      defaults,
+      current: applyRuntimeModelOverride(chat?.models || {}, chat)
+    },
+    browser: {
+      url: page ? page.url() : "about:blank"
     }
-  ];
+  };
+}
 
-  for (let step = 1; step <= MAX_STEPS; step++) {
-    console.log(`\n${"═".repeat(50)}`);
-    console.log(`STEP ${step}/${MAX_STEPS}`);
+function normalizeModelCatalog(data) {
+  const source = data?.result?.models || data?.result || data?.models || data;
+  if (!Array.isArray(source)) return [];
+  return source.map(item => ({
+    id: item.id || item.name || item.model || item.slug,
+    name: item.name || item.id || item.model || item.slug,
+    type: item.type || item.task || item.source || "",
+    capabilities: Array.isArray(item.capabilities)
+      ? item.capabilities
+      : Array.isArray(item.tags)
+        ? item.tags
+        : []
+  })).filter(item => item.id);
+}
 
-    // Get current page state
-    const state = await getPageState();
-    const screenshotB64 = await getScreenshotB64();
+async function fetchModelCatalog(force = false) {
+  if (!force && modelCatalogCache.items.length && modelCatalogCache.expiresAt > Date.now()) {
+    return modelCatalogCache.items;
+  }
 
-    console.log(`📍 URL: ${state.url}`);
-    console.log(`📄 Title: ${state.title}`);
+  const fallback = Object.values(resolveDefaultModels([])).map(id => ({
+    id,
+    name: id,
+    type: "default",
+    capabilities: []
+  }));
+  if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
+    modelCatalogCache = { items: fallback, expiresAt: Date.now() + MODEL_CACHE_MS };
+    return fallback;
+  }
 
-    // Save screenshot for viewing
-    const buf = Buffer.from(screenshotB64, "base64");
-    fs.writeFileSync("view.png", buf);
+  try {
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/models`,
+      {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${CF_API_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-    // Check if goal is already done
-    if (step > 1) {
-      const done = await checkGoalDone(goal, state);
-      if (done) {
-        console.log("\n✅ GOAL ACHIEVED! Agent stopping.");
-        break;
+    if (res.ok) {
+      const data = await res.json();
+      const models = normalizeModelCatalog(data);
+      if (models.length) {
+        modelCatalogCache = { items: models, expiresAt: Date.now() + MODEL_CACHE_MS };
+        const store = loadChatStore();
+        store.chats = store.chats.map(chat => ({
+          ...chat,
+          models: sanitizeModels(chat.models || {}, models)
+        }));
+        saveChatStore(store);
+        return models;
       }
     }
+  } catch {}
 
-    // Build prompt for this step
-    const stepPrompt = `Goal: "${goal}"
-Step: ${step}
-Current URL: ${state.url}
-Page title: ${state.title}
-Page visible text:
-${state.text}
-
-Step log so far:
-${stepLog.map((s, i) => `${i+1}. ${s}`).join("\n") || "none"}
-
-What is the next single action to take? Output ONLY Playwright JS code.`;
-
-    history.push({ role: "user", content: stepPrompt });
-
-    console.log("🧠 Asking DeepSeek...");
-    let code;
-    try {
-      const response = await askDeepSeek(history);
-      code = extractCode(response);
-      history.push({ role: "assistant", content: response });
-    } catch (err) {
-      console.log("❌ DeepSeek error: " + err.message);
-      await sleep(2000);
-      continue;
-    }
-
-    if (!code || code.length < 5) {
-      console.log("⚠️  DeepSeek returned empty code, retrying...");
-      continue;
-    }
-
-    // Execute the code
-    const result = await executeCode(code);
-    stepLog.push(`Step ${step}: ${code.slice(0, 80)}... → ${result.ok ? "OK" : "ERROR: " + result.error}`);
-
-    if (!result.ok) {
-      // Feed the error back so DeepSeek can self-correct
-      history.push({
-        role: "user",
-        content: `That code threw an error: "${result.error}". Try a different approach.`
-      });
-    }
-
-    // Wait a beat for page to settle
-    await sleep(1500);
-  }
-
-  console.log("\n📋 STEP LOG:");
-  stepLog.forEach(s => console.log("  " + s));
+  modelCatalogCache = { items: fallback, expiresAt: Date.now() + MODEL_CACHE_MS };
+  return fallback;
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── SSE broadcast to all connected frontend clients ──────────────────────────
+let sseClients = [];
+function broadcast(type, payload) {
+  const data = "data: " + JSON.stringify({ type, ...payload }) + "\n\n";
+  sseClients.forEach(res => { try { res.write(data); } catch {} });
+}
+
+function think(msg)   { console.log("  💭 " + msg); broadcast("think",   { msg }); }
+function status(msg)  { console.log("  ⚡ " + msg); broadcast("status",  { msg }); }
+function agentMsg(msg){ console.log("  🤖 " + msg); broadcast("agent",   { msg }); }
+function stepLogMsg(msg) { console.log("  📋 " + msg); broadcast("step", { msg }); }
+function errLog(msg)  { console.log("  ❌ " + msg); broadcast("error",   { msg }); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MESSAGE NORMALIZATION — fixes the "array not in string" Cloudflare error
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ROOT CAUSE OF YOUR ERROR:
+// Cloudflare's text models (Nemotron, DeepSeek R1) require every message's
+// `content` field to be a plain STRING. Only the vision model accepts
+// `content` as an ARRAY of { type: "image"|"text", ... } blocks. If a
+// vision-shaped message (or any non-string content) ever ends up in the
+// array passed to a TEXT model — for example because a history array got
+// reused across calls, or a message was constructed with the wrong shape —
+// Cloudflare rejects the WHOLE request with exactly the error you saw:
+//   "Type mismatch of '/messages/0/content', 'array' not in 'string'"
+// Note it can point at ANY message index, including index 0, depending on
+// which message actually has the bad shape — the index in the error isn't
+// necessarily "the most recent message you pushed."
+//
+// THE FIX: normalize defensively, every single call, regardless of model.
+// If content is an array AND every block in it is a {type:"text"} block,
+// flatten it into a plain string. If it contains an image block, this
+// function intentionally leaves it as an array — that's only ever valid
+// for a vision-model call, and callVisionAI (below) is the only caller
+// that should ever produce that shape in the first place.
+function normalizeMessages(messages) {
+  return messages.map((m) => {
+    if (typeof m.content === "string") return m;
+    if (Array.isArray(m.content)) {
+      const hasImage = m.content.some((block) => block && block.type === "image");
+      if (!hasImage) {
+        // All-text array -> flatten to a single string. This is the exact
+        // shape that breaks Nemotron/DeepSeek if it ever leaks into their
+        // call path.
+        const flattened = m.content
+          .map((block) => (block && typeof block.text === "string" ? block.text : ""))
+          .join("\n")
+          .trim();
+        return { ...m, content: flattened };
+      }
+      // Has an image block — leave as-is; only callVisionAI should send this.
+      return m;
+    }
+    // Anything else weird (null, object, number) — coerce to string so we
+    // fail loudly/obviously rather than crash deep inside the fetch call.
+    return { ...m, content: String(m.content ?? "") };
+  });
+}
+
+// ── CF AI wrapper (TEXT models — content is always normalized to string) ────
+async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2) {
+  const safeMessages = normalizeMessages(messages);
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t    = setTimeout(() => ctrl.abort(), 35000);
+      const res  = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
+        {
+          method:  "POST",
+          headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" },
+          body:    JSON.stringify({ messages: safeMessages, max_tokens: maxTokens }),
+          signal:  ctrl.signal
+        }
+      );
+      clearTimeout(t);
+      const data = await res.json();
+      if (!data.success) throw new Error(JSON.stringify(data.errors));
+      return data.result.response;
+    } catch (err) {
+      if (i === retries) throw err;
+      status(`CF retry ${i+1}: ${err.message}`);
+      await sleep(1500 * (i + 1));
+    }
+  }
+}
+
+// ── CF AI wrapper for the VISION model specifically — this is the ONLY ──────
+// place in the codebase allowed to send array-shaped `images`. Keeping it
+// isolated prevents multimodal schema from leaking into text-only models.
+async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = DEFAULT_MODELS.vision) {
+  const messages = [{
+    role: "user",
+    content: promptText,
+    images: [imageB64]   // ← THE CORRECT FORMAT FOR YOUR CLOUDFLARE ACCOUNT
+  }];
+
+  for (let i = 0; i <= 2; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t    = setTimeout(() => ctrl.abort(), 35000);
+
+      const res  = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
+        {
+          method:  "POST",
+          headers: {
+            "Authorization": `Bearer ${CF_API_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            messages,
+            max_tokens: maxTokens
+          }),
+          signal: ctrl.signal
+        }
+      );
+
+      clearTimeout(t);
+      const data = await res.json();
+
+      if (!data.success) {
+        throw new Error(JSON.stringify(data.errors));
+      }
+
+      return data.result.response;
+
+    } catch (err) {
+      if (i === 2) throw err;
+      status(`Vision retry ${i+1}: ${err.message}`);
+      await sleep(1200 * (i + 1));
+    }
+  }
+}
+
+  function stripThinking(text) { return String(text || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); }
+
+  function safeParseJSON(raw) {
+    const stripped = stripThinking(raw);
+    const clean = stripped.replace(/```(?:json)?\n?([\s\S]*?)```/, "$1").trim();
+    try { return JSON.parse(clean); } catch {
+      const m = clean.match(/\{[\s\S]*\}/);
+      if (m) { try { return JSON.parse(m[0]); } catch {} }
+      return null;
+    }
+  }
+
+  /**
+   * Keep plannerHistory bounded. Always preserves message[0] (the system
+   * prompt) and then keeps only the most recent N messages after it. Without
+   * this, a 30-step task accumulates 60+ messages and can eventually exceed
+   * the model's context window — which surfaces as a Cloudflare "Bad input"
+   * error that looks identical in shape to the content-type bug, but has a
+   * totally different cause. Trimming proactively avoids both failure modes.
+   */
+  function trimHistory(history, maxMessages) {
+    if (history.length <= maxMessages) return history;
+    const system = history[0];
+    const recent = history.slice(-(maxMessages - 1));
+    return [system, ...recent];
+  }
+
+  // ── Page state ────────────────────────────────────────────────────────────────
+  async function getPageState() {
+    const url   = page.url();
+    const title = await page.title().catch(() => "");
+    const text  = await page.evaluate(() =>
+      document.body ? document.body.innerText.slice(0, 3000) : ""
+    ).catch(() => "");
+    const links = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("a[href]")).slice(0, 15)
+        .map(a => ({ text: a.innerText.trim().slice(0, 60), href: a.href }))
+    ).catch(() => []);
+    const inputs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("input,textarea,select")).slice(0, 12)
+        .map(el => {
+          const rect = el.getBoundingClientRect();
+          return {
+            tag: el.tagName,
+            type: el.type,
+            name: el.name,
+            placeholder: el.placeholder,
+            id: el.id,
+            visible: rect.width > 0 && rect.height > 0,
+            value: (el.value || "").slice(0, 40)
+          };
+        })
+    ).catch(() => []);
+    const buttons = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button,input[type='button'],input[type='submit'],[role='button']"))
+        .slice(0, 10)
+        .map(el => {
+          const rect = el.getBoundingClientRect();
+          return {
+            text: (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().slice(0, 50),
+            visible: rect.width > 0 && rect.height > 0,
+            id: el.id,
+            name: el.name || ""
+          };
+        })
+        .filter(b => b.text)
+    ).catch(() => []);
+    const tabInfo = (() => {
+      const pages = context?.pages?.() || [];
+      const activeIndex = pages.findIndex(p => p === page);
+      return {
+        count: pages.length,
+        activeIndex: activeIndex >= 0 ? activeIndex : 0,
+        urls: pages.map(p => {
+          try { return p.url(); } catch { return "about:blank"; }
+        })
+      };
+    })();
+    return { url, title, text, links, inputs, buttons, tabs: tabInfo };
+  }
+
+  function getCaptchaPageKey(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl || "about:blank");
+      return parsed.origin + parsed.pathname;
+    } catch {
+      return String(rawUrl || "unknown");
+    }
+  }
+
+  async function detectCaptchaChallenge(state) {
+    const lowerText = `${state?.title || ""}\n${state?.text || ""}`.toLowerCase();
+    const currentUrl = String(state?.url || "").toLowerCase();
+
+    // Avoid false positives on normal auth routes like Google sign-in
+    // where "challenge" can appear in the URL without any CAPTCHA widget.
+    const strongTextHit = /(captcha|turnstile|hcaptcha|recaptcha|cf\s*challenge|cloudflare\s*challenge|cf-chl|ray\s+id)/.test(lowerText);
+    const weakTextHit = /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
+    const urlHit = /(captcha|cf_chl|turnstile|hcaptcha|recaptcha|challenge-platform|__cf_chl_)/.test(currentUrl);
+    const domHit = await page.evaluate(() => {
+      const selectors = [
+        '[id*="captcha" i]',
+        '[class*="captcha" i]',
+        'iframe[src*="captcha" i]',
+        'iframe[src*="challenge" i]',
+        'iframe[src*="recaptcha" i]',
+        'iframe[src*="hcaptcha" i]',
+        'iframe[src*="turnstile" i]',
+        '[name*="captcha" i]',
+        '[data-sitekey]',
+        '[class*="g-recaptcha" i]',
+        '.h-captcha',
+        '#cf-challenge-running',
+        '.cf-challenge',
+        '[class*="cf-turnstile" i]',
+        '[data-action="challenge" i]',
+        '[data-testid*="captcha" i]'
+      ];
+      return selectors.some(selector => document.querySelector(selector));
+    }).catch(() => false);
+
+    const score = (strongTextHit ? 2 : 0) + (weakTextHit ? 1 : 0) + (urlHit ? 2 : 0) + (domHit ? 3 : 0);
+    const detected = domHit || strongTextHit || score >= 3;
+    return {
+      detected,
+      reason: detected ? "Potential CAPTCHA/challenge detected" : ""
+    };
+  }
+
+  function setHumanBridgeState(patch) {
+    humanBridgeState = {
+      ...humanBridgeState,
+      ...(patch || {}),
+      limit: CAPTCHA_HUMAN_CHECK_LIMIT
+    };
+  }
+
+  function clearHumanBridgeState() {
+    setHumanBridgeState({
+      active: false,
+      checks: 0,
+      url: page ? page.url() : "about:blank",
+      reason: "",
+      closureReason: "",
+      visionLastCheckAt: null,
+      visionLastSummary: "",
+      lastClick: null
+    });
+  }
+
+  function parseVisionCaptchaSignal(raw) {
+    const parsed = safeParseJSON(raw);
+    if (parsed && typeof parsed.captcha === "boolean") {
+      return {
+        captcha: parsed.captcha,
+        reason: typeof parsed.reason === "string" ? parsed.reason : ""
+      };
+    }
+    const text = String(raw || "").toLowerCase();
+    if (/"captcha"\s*:\s*true|\bcaptcha\s+present\b|\bchallenge\s+present\b/.test(text)) {
+      return { captcha: true, reason: "vision-text-match" };
+    }
+    if (/"captcha"\s*:\s*false|\bno\s+captcha\b|\bchallenge\s+not\s+present\b|\bcleared\b/.test(text)) {
+      return { captcha: false, reason: "vision-text-match" };
+    }
+    return { captcha: true, reason: "vision-ambiguous-default-keep-open" };
+  }
+
+  function stopHumanBridgeWatchdog() {
+    if (bridgeVisionTimer) {
+      clearInterval(bridgeVisionTimer);
+      bridgeVisionTimer = null;
+    }
+    bridgeVisionInFlight = false;
+    bridgeVisionClearStreak = 0;
+  }
+
+  function startHumanBridgeWatchdog(models) {
+    stopHumanBridgeWatchdog();
+    bridgeVisionModelId = models?.vision || DEFAULT_MODELS.vision;
+
+    bridgeVisionTimer = setInterval(async () => {
+      if (!humanBridgeState.active || !page || bridgeVisionInFlight) return;
+      bridgeVisionInFlight = true;
+      try {
+        const screenshotB64 = await getScreenshotB64({ broadcastImage: false, writeFile: false });
+        const raw = await callVisionAI(
+          screenshotB64,
+          "Check this browser screenshot for anti-bot gates. Return JSON only: {\"captcha\": true|false, \"confidence\": 0-100, \"reason\": \"short\"}. captcha=true only if a CAPTCHA/challenge/security gate is clearly visible right now.",
+          120,
+          bridgeVisionModelId
+        );
+        const signal = parseVisionCaptchaSignal(raw);
+        setHumanBridgeState({
+          visionLastCheckAt: new Date().toISOString(),
+          visionLastSummary: String(signal.reason || "")
+        });
+
+        if (signal.captcha) {
+          bridgeVisionClearStreak = 0;
+        } else {
+          bridgeVisionClearStreak += 1;
+          if (bridgeVisionClearStreak >= BRIDGE_VISION_CLEAR_STREAK) {
+            setHumanBridgeState({
+              active: false,
+              closureReason: "Vision no longer detects CAPTCHA; bridge auto-closed.",
+              reason: ""
+            });
+            broadcast("bridge_closed", {
+              msg: "Human bridge auto-closed: vision no longer detects CAPTCHA.",
+              url: page.url()
+            });
+          }
+        }
+      } catch (err) {
+        setHumanBridgeState({
+          visionLastCheckAt: new Date().toISOString(),
+          visionLastSummary: `watchdog-error:${String(err.message || "unknown")}`
+        });
+      } finally {
+        bridgeVisionInFlight = false;
+      }
+    }, BRIDGE_VISION_INTERVAL_MS);
+  }
+
+  async function relayHumanClick(body) {
+    if (!page) throw new Error("Browser page is not ready");
+
+    const viewport = await page.evaluate(() => ({
+      width: Math.max(1, Math.round(window.innerWidth || 1920)),
+      height: Math.max(1, Math.round(window.innerHeight || 1080))
+    })).catch(() => ({ width: 1920, height: 1080 }));
+
+    const xRatio = Number(body?.xRatio);
+    const yRatio = Number(body?.yRatio);
+    if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio)) {
+      throw new Error("xRatio and yRatio are required numbers");
+    }
+
+    const safeRatioX = Math.min(1, Math.max(0, xRatio));
+    const safeRatioY = Math.min(1, Math.max(0, yRatio));
+    const x = clampNumber(safeRatioX * viewport.width, 1, viewport.width - 1);
+    const y = clampNumber(safeRatioY * viewport.height, 1, viewport.height - 1);
+    if (x === null || y === null) throw new Error("Could not resolve click coordinates");
+
+    const requestedButton = String(body?.button || "left").toLowerCase();
+    const button = ["left", "middle", "right"].includes(requestedButton) ? requestedButton : "left";
+
+    await page.bringToFront().catch(() => {});
+    await humanMove(page, x, y);
+    await sleep(50);
+    await page.mouse.down({ button });
+    await sleep(40);
+    await page.mouse.up({ button });
+
+    setHumanBridgeState({
+      clickCount: (humanBridgeState.clickCount || 0) + 1,
+      lastClickAt: new Date().toISOString(),
+      lastClick: { x, y, button },
+      url: page.url()
+    });
+    broadcast("human_click", {
+      msg: `Human click relayed at (${x}, ${y}) on ${page.url()}.`,
+      x,
+      y,
+      button,
+      url: page.url(),
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height
+    });
+
+    return { x, y, button, url: page.url(), viewport };
+  }
+
+  async function getScreenshotB64(options = {}) {
+    const broadcastImage = options.broadcastImage !== false;
+    const writeFile = options.writeFile !== false;
+    const buf = await page.screenshot({ type: "jpeg", quality: 75 });
+    const b64 = buf.toString("base64");
+    if (writeFile) fs.writeFileSync("view.png", buf);
+    if (broadcastImage) broadcast("screenshot", { img: b64 });
+    return b64;
+  }
+
+  // ── MEMORY: summarise past tasks for long-term context ───────────────────────
+  const MEMORY_FILE = "memory.json";
+  function loadMemory() {
+    if (fs.existsSync(MEMORY_FILE)) {
+      try { return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8")); } catch {}
+    }
+    return [];
+  }
+  function saveMemory(entry) {
+    const mem = loadMemory();
+    mem.push({ ts: new Date().toISOString(), ...entry });
+    if (mem.length > 50) mem.splice(0, mem.length - 50);
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(mem, null, 2));
+  }
+
+  // ── LEARNING LOG: persistent action/task outcomes for fast adaptation ───────
+  function loadLearningLog() {
+    if (Array.isArray(learningLogCache)) return learningLogCache;
+    if (fs.existsSync(LOG_FILE)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(LOG_FILE, "utf8"));
+        learningLogCache = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        learningLogCache = [];
+      }
+    } else {
+      learningLogCache = [];
+    }
+    return learningLogCache;
+  }
+
+  function saveLearningLog() {
+    if (!Array.isArray(learningLogCache)) learningLogCache = [];
+    fs.writeFileSync(LOG_FILE, JSON.stringify(learningLogCache, null, 2));
+  }
+
+  function getHostFromUrl(rawUrl) {
+    try {
+      return new URL(rawUrl || "about:blank").host.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  }
+
+  function buildActionSignature(action, params) {
+    const selector = params?.selector ? String(params.selector).slice(0, 180) : "";
+    return `${String(action || "unknown")}|${selector}`;
+  }
+
+  function appendLearningEvent(event) {
+    const log = loadLearningLog();
+    log.push({ ts: new Date().toISOString(), ...event });
+    if (log.length > MAX_LOG_ENTRIES) {
+      log.splice(0, log.length - MAX_LOG_ENTRIES);
+    }
+    saveLearningLog();
+  }
+
+  function getActionHints({ action, params, currentUrl }) {
+    const log = loadLearningLog();
+    const host = getHostFromUrl(currentUrl);
+    const signature = buildActionSignature(action, params);
+    const relevant = log
+      .filter(item => item.kind === "action" && item.host === host && item.signature === signature)
+      .slice(-60);
+    const attempts = relevant.length;
+    const successes = relevant.filter(item => item.status === "ok").length;
+    const failures = attempts - successes;
+    const lastError = [...relevant].reverse().find(item => item.error)?.error || "";
+    return {
+      attempts,
+      successes,
+      failures,
+      failureRate: attempts ? (failures / attempts) : 0,
+      lastError
+    };
+  }
+
+  function buildLearningContext(goal, state) {
+    const log = loadLearningLog();
+    const host = getHostFromUrl(state?.url || "");
+    const recentGoalWords = String(goal || "").toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8);
+    const recentTaskLearn = log
+      .filter(item => item.kind === "task" && item.goal)
+      .filter(item => recentGoalWords.some(word => String(item.goal).toLowerCase().includes(word)))
+      .slice(-3);
+    const hostActionLearn = log
+      .filter(item => item.kind === "action" && item.host === host)
+      .slice(-25);
+    const hostFailTop = Object.entries(hostActionLearn.reduce((acc, item) => {
+      if (item.status === "error") acc[item.signature] = (acc[item.signature] || 0) + 1;
+      return acc;
+    }, {})).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
+    return [
+      `Recent similar tasks: ${recentTaskLearn.length ? recentTaskLearn.map(t => `${t.completed ? "ok" : "fail"}:${String(t.goal).slice(0, 40)}`).join(" | ") : "none"}`,
+      `Host (${host || "unknown"}) frequent failures: ${hostFailTop.length ? hostFailTop.map(([sig, n]) => `${sig} x${n}`).join(" | ") : "none"}`
+    ].join("\n");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+// AGENT: ROUTER
+// ─────────────────────────────────────────────────────────────────────────────
+async function routeGoal(rawGoal, conversationHistory, models) {
+  status("Router thinking...");
+  if (looksLikeTaskGoal(rawGoal)) {
+    think("Router heuristic: classified as task from action-oriented intent.");
+    return { mode: "task", taskGoal: String(rawGoal || "").trim() };
+  }
+  const mem     = loadMemory().slice(-5);
+  const memCtx  = mem.map(m => `Past task: "${m.goal}" → ${m.result}`).join("\n");
+  const convCtx = (conversationHistory || []).slice(-6)
+    .map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n");
+
+  const system = `You are the Router for an autonomous browser agent.
+You have memory of past tasks and the current conversation.
+
+Classify as "chat" (answer directly) or "task" (needs browser automation).
+
+Long-term memory:
+${memCtx || "(none yet)"}
+
+Recent conversation:
+${convCtx || "(none)"}
+
+Output ONLY valid JSON:
+{
+  "mode": "chat" | "task",
+  "chatReply": "genuine helpful answer if chat",
+  "taskGoal": "precise cleaned goal if task",
+  "reasoning": "one sentence on why you classified it this way"
+}`;
+
+  try {
+    const raw    = await callCFAI(models.router, [
+      { role: "system", content: system },
+      { role: "user",   content: rawGoal }
+    ], 700);
+    const parsed = safeParseJSON(raw);
+    if (!parsed) throw new Error("unparseable");
+    think(`Router: ${parsed.reasoning || parsed.mode}`);
+    if (parsed.mode === "task") return { mode: "task", taskGoal: parsed.taskGoal || rawGoal };
+    return { mode: "chat", chatReply: parsed.chatReply || "What can I help you with?" };
+  } catch (err) {
+    errLog("Router fallback: " + err.message);
+    return { mode: "chat", chatReply: "I had trouble understanding that — could you rephrase?" };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT: VISION
+// ─────────────────────────────────────────────────────────────────────────────
+function percentPositionToPixels(xPercent, yPercent, viewport) {
+  const safeX = Math.max(0, Math.min(100, Number(xPercent) || 0));
+  const safeY = Math.max(0, Math.min(100, Number(yPercent) || 0));
+  return {
+    x: Math.round((safeX / 100) * viewport.width),
+    y: Math.round((safeY / 100) * viewport.height),
+  };
+}
+
+async function analyzeScreen(screenshotB64, state, lastAction, goal, models) {
+  status("Vision analyzing page...");
+
+  const promptText = `You are reporting to an autonomous Planner model that ONLY accepts exact,
+quotable, machine-usable facts. It cannot interpret vague description. Every
+line of your report must be something the Planner could paste directly into
+a Playwright selector or a coordinate call. Vague answers cause it to loop.
+
+Goal: "${goal}"
+Last action attempted: ${JSON.stringify(lastAction || "(none — this is the first look at the page)")}
+URL: ${state.url}
+Title: ${state.title}
+
+Report using EXACTLY this structure. Do not add prose outside these fields.
+Do not summarize — quote literal text and give literal numbers.
+
+1. ACTION_RESULT: "success" | "failed" | "unclear"
+   - If failed/unclear, state the ONE specific visual fact that proves it
+     (e.g. "URL bar still shows the search results page, no new page loaded"
+     — not "the action did not seem to work").
+
+2. VISIBLE_TEXT_EXACT: List every piece of literal text relevant to the goal,
+   each as its own quoted line, copied character-for-character from the
+   screen. No paraphrasing. Example:
+   - "Sign in to your account"
+   - "$42.99"
+   - "How extra time works in FIFA World Cup"
+   If nothing relevant is visible, write: NONE_VISIBLE
+
+3. CLICKABLE_ELEMENTS: For each interactive element relevant to the goal,
+   give ONE line in this exact format:
+   [TYPE] "EXACT_VISIBLE_TEXT" | approx_position: (x%, y%) | state: enabled|disabled|hidden
+   - TYPE is one of: button, link, input, checkbox, dropdown, tab
+   - approx_position is the element's center as a PERCENTAGE of the visible
+     screenshot width/height (0-100), e.g. (52, 31) — NOT pixel coordinates,
+     since you don't know the real viewport size. The Planner converts this.
+   - Example line:
+     button "Search" | approx_position: (50, 18) | state: enabled
+   If you cannot find any usable elements, write: NO_USABLE_ELEMENTS_FOUND
+
+4. BLOCKER: "none" | "captcha" | "login_wall" | "error_message" | "loading_spinner" | "popup"
+   - If not "none", quote the EXACT text of the blocker (e.g. the literal
+     error message string), not a description of it.
+
+5. DECOY_WARNING: State explicitly whether any element matching
+   [type='submit'] or a generically-named search/submit button is VISIBLE
+   but should NOT be the target (per the Planner's known rule that these are
+   usually hidden/decoy). If you see one, say so explicitly: e.g.
+   "A [type='submit'] button exists in the DOM area near (50,40) but appears
+   visually hidden — do not target it, use submitForm() instead."
+   If no such risk applies, write: NO_DECOY_RISK_DETECTED
+
+6. NEXT_ACTION_SUGGESTION: Exactly ONE suggested action, in this literal
+   JSON shape (the Planner will not use this verbatim, but it must be valid
+   enough to parse — do not write prose here):
+   { "action": "ACTION_NAME", "params": { "key": "value" } }
+   Use only action names the Planner already knows: click, fill, submitForm,
+   press, waitForVisible, mouseClick, scrollIntoView, getText. Base the
+   selector or coordinates STRICTLY on what you reported in section 3 — never
+   invent a selector you didn't already list as visible.
+
+Rules:
+- Every quoted string must be EXACT, copied text — never summarized or guessed.
+- Never invent an element, coordinate, or text string that isn't actually visible.
+- If you are not sure something is present, say so plainly rather than guessing
+  ("UNCERTAIN: cannot confirm whether X is present") — a false "yes" causes the
+  Planner to act on something that isn't there, which is worse than admitting
+  uncertainty.
+- Output ONLY the six numbered fields above. No introduction, no closing summary.`;
+
+  try {
+    const raw = await callVisionAI(screenshotB64, promptText, 600, models.vision);
+    think("Vision: " + raw.slice(0, 120) + "...");
+    return raw;
+  } catch (err) {
+    errLog("Vision failed: " + err.message);
+    return `ACTION_RESULT: unclear\nVISIBLE_TEXT_EXACT: NONE_VISIBLE (vision call failed: ${err.message})\nCLICKABLE_ELEMENTS: NO_USABLE_ELEMENTS_FOUND\nBLOCKER: none\nDECOY_WARNING: NO_DECOY_RISK_DETECTED\nNEXT_ACTION_SUGGESTION: { "action": "getAllText", "params": {} }`;
+  }
+}
+
+module.exports = { analyzeScreen, percentPositionToPixels };
+
+function clampNumber(value, min, max) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (num < min) return min;
+  if (num > max) return max;
+  return Math.round(num);
+}
+
+function dedupePoints(points, minDistance = 8) {
+  const deduped = [];
+  for (const point of points) {
+    const isDuplicate = deduped.some(existing => {
+      const dx = existing.x - point.x;
+      const dy = existing.y - point.y;
+      return Math.hypot(dx, dy) < minDistance;
+    });
+    if (!isDuplicate) deduped.push(point);
+  }
+  return deduped;
+}
+
+async function getVisionClickPointsForSelector(goal, selector, models) {
+  const screenshotB64 = await getScreenshotB64();
+  const viewport = await page.evaluate(() => ({
+    width: Math.max(1, Math.round(window.innerWidth || 1920)),
+    height: Math.max(1, Math.round(window.innerHeight || 1080))
+  })).catch(() => ({ width: 1920, height: 1080 }));
+
+  const promptText = `Goal: "${goal}"
+Target selector to click: ${selector}
+Viewport size: ${viewport.width}x${viewport.height}
+
+Using the screenshot only, locate the most likely visual target for the selector and return JSON only:
+{
+  "reason": "short reason",
+  "points": [
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 }
+  ]
+}
+
+Rules:
+- Coordinates use a top-left origin.
+- Prefer center-ish points inside the same button/control.
+- Keep points inside viewport bounds.
+- Return exactly 3 points.`;
+
+  const raw = await callVisionAI(screenshotB64, promptText, 280, models.vision);
+  const parsed = safeParseJSON(raw);
+  const points = Array.isArray(parsed?.points) ? parsed.points : [];
+
+  const cleaned = dedupePoints(points.map(point => ({
+    x: clampNumber(point?.x, 0, viewport.width - 1),
+    y: clampNumber(point?.y, 0, viewport.height - 1)
+  })).filter(point => point.x !== null && point.y !== null));
+
+  if (!cleaned.length) return [];
+
+  const [base] = cleaned;
+  const offsets = [[0, 0], [10, 0], [-10, 0], [0, 10], [0, -10], [14, 8], [-14, -8]];
+  const finalPoints = [...cleaned];
+  for (const [dx, dy] of offsets) {
+    if (finalPoints.length >= 3) break;
+    const candidate = {
+      x: clampNumber(base.x + dx, 0, viewport.width - 1),
+      y: clampNumber(base.y + dy, 0, viewport.height - 1)
+    };
+    if (candidate.x === null || candidate.y === null) continue;
+    finalPoints.push(candidate);
+  }
+
+  return dedupePoints(finalPoints).slice(0, 3);
+}
+
+async function expandVisionAssistedClicks(planActions, goal, models) {
+  const expanded = [];
+  for (const item of planActions || []) {
+    expanded.push(item);
+    const action = item?.action;
+    const selector = item?.params?.selector;
+    if (!selector || (action !== "click" && action !== "dblclick")) continue;
+    try {
+      const points = await getVisionClickPointsForSelector(goal, selector, models);
+      if (!points.length) continue;
+      stepLogMsg(`Vision click assist: ${selector} -> ${points.map(p => `(${p.x},${p.y})`).join(" ")}`);
+      const pointerAction = action === "dblclick" ? "mouseDblclick" : "mouseClick";
+      for (const point of points) {
+        expanded.push({ action: pointerAction, params: { x: point.x, y: point.y } });
+      }
+    } catch (err) {
+      think(`Vision click assist skipped for ${selector}: ${err.message}`);
+    }
+  }
+  return expanded;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT: PLANNER  (the "genius" brain)
+// ─────────────────────────────────────────────────────────────────────────────
+async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistory, stuck, failures, models) {
+  status("Planner reasoning...");
+  const learningContext = buildLearningContext(goal, state);
+
+  const userMsg = `Goal: "${goal}"
+
+Current URL: ${state.url}
+Page Title:  ${state.title}
+Active tab: ${state.tabs?.activeIndex ?? 0} / ${state.tabs?.count ?? 1}
+
+Open tabs:
+${(state.tabs?.urls || []).map((tabUrl, idx) => `  [${idx}] ${tabUrl}`).join("\n") || "  (single tab)"}
+
+Visible inputs (only interact with visible:true ones):
+${state.inputs?.map(i => `  [${i.visible ? "VISIBLE" : "hidden"}] ${i.tag}[type=${i.type}][name=${i.name}][id=${i.id}][placeholder=${i.placeholder}]${i.value ? ` value="${i.value}"` : ""}`).join("\n") || "  (none found)"}
+
+Visible buttons on page:
+${state.buttons?.filter(b => b.visible).map(b => `  [VISIBLE] "${b.text}"${b.id ? ` id=${b.id}` : ""}`).join("\n") || "  (none visible)"}
+
+Visible links (sample):
+${state.links?.slice(0,8).map(l => `  "${l.text}" → ${l.href}`).join("\n") || "  (none)"}
+
+Vision's analysis:
+${visionFeedback || "(first step — no prior action)"}
+
+Page text (3000 chars):
+${state.text}
+
+Step history (last 10):
+${taskLog.slice(-10).join("\n") || "none"}
+
+Consecutive failures: ${failures}
+${stuck ? "⚠️  STUCK LOOP detected — last actions identical. You MUST use a completely different strategy now." : ""}
+${failures >= 2 ? "⚠️  Multiple failures — switch selector family, try submitForm(), or navigate directly to the URL." : ""}
+
+Learning log context:
+${learningContext}
+
+REMINDER: Never click [type='submit'] — use submitForm() or press(inputSelector,'Enter') instead.
+
+Output JSON only.`;
+
+  plannerHistory.push({ role: "user", content: userMsg });
+  // Keep the conversation bounded BEFORE sending — see trimHistory's doc
+  // comment for why this matters (context-window overflow looks like a
+  // confusing "Bad input" error too, distinct from the content-shape bug).
+  const bounded = trimHistory(plannerHistory, MAX_PLANNER_HISTORY_MESSAGES);
+
+  try {
+    const raw    = await callCFAI(models.planner, bounded, 1500);
+    const parsed = safeParseJSON(raw);
+    if (!parsed) {
+      plannerHistory.push({ role: "assistant", content: raw });
+      think("Planner: parse failed — retrying with simpler prompt");
+      const fixed = await callCFAI(models.reasoner, [
+        { role: "system", content: "Fix this malformed JSON action plan. Output ONLY valid JSON with reasoning, confidence, done, actions fields." },
+        { role: "user",   content: raw }
+      ], 800);
+      const fixedParsed = safeParseJSON(fixed);
+      if (!fixedParsed) return { reasoning: "parse failed", done: false, actions: [], confidence: 0, _parseFailed: true };
+      return fixedParsed;
+    }
+    plannerHistory.push({ role: "assistant", content: raw });
+    think(`Planner [${parsed.confidence ?? "?"}%]: ${(parsed.reasoning || "").slice(0, 100)}`);
+    return parsed;
+  } catch (err) {
+    errLog("Planner error: " + err.message);
+    throw err;
+  }
+}
+
+// The Planner's system prompt — defined once, pushed once at task start.
+// (Pulled out as its own constant so it's easy to find/edit, and so it's
+// unambiguous that this is the ONLY place that ever sets plannerHistory[0].)
+const PLANNER_SYSTEM_PROMPT = `You are the Planner — the elite strategic brain of an autonomous browser agent.
+You are methodical, adaptive, and always make forward progress. You NEVER give up without exhausting every strategy.
+
+═══════════════════════════════════════════════════════
+AVAILABLE ACTIONS (EXACT action names only)
+═══════════════════════════════════════════════════════
+Navigation:   goto(url), reload(), goBack(), goForward()
+Interaction:  click(selector), dblclick(selector), hover(selector)
+              fill(selector, text), type(selector, text), press(selector, key)
+              check(selector), uncheck(selector), selectOption(selector, value)
+              scrollIntoView(selector)
+Submit:       submitForm(selector?)  ← USE THIS for search/forms instead of clicking hidden buttons
+Keyboard:     keyboardType(text), keyboardPress(key)
+Mouse:        mouseMove(x,y), mouseClick(x,y), mouseWheel(deltaX, deltaY)
+Wait:         waitForSelector(selector), waitForVisible(selector), waitForTimeout(ms)
+              waitForLoadState(state)  ← ONLY valid states: load | domcontentloaded | networkidle | commit
+              waitForURLChange(currentURL)  ← best for SPA navigation detection
+Extract:      getText(selector), getAttribute(selector, name), getAllText()
+Check:        isVisible(selector), elementExists(selector)
+Other:        evaluate(script), screenshot(path)
+Tabs:         openNewTab(url?), switchToTab(index|urlIncludes), listTabs(), closeCurrentTab()
+
+═══════════════════════════════════════════════════════
+SELECTOR PRIORITY (try in order)
+═══════════════════════════════════════════════════════
+1. Text:    button:has-text('Search')   a:has-text('Login')   [role='button']:has-text('Go')
+2. ARIA:    [aria-label='Search']   [placeholder='Search the web']   [role='searchbox']
+3. Data:    [data-testid='...']   [name='q']   [id='search-input']
+4. Type:    input[type='search']   input[type='text']:visible   textarea:visible
+5. SUBMIT:  submitForm() NOT click([type='submit']) — submit buttons are almost always hidden!
+6. JS:      evaluate('document.querySelector("...").click()')
+
+═══════════════════════════════════════════════════════
+CRITICAL RULES — MUST FOLLOW
+═══════════════════════════════════════════════════════
+CRITICAL RULES — MUST FOLLOW
+
+✦ NEVER use waitForLoadState("complete"). Valid states: "load", "domcontentloaded", "networkidle", "commit".
+
+✦ NEVER click [type='submit'] or [name='search']. These are hidden.
+→ Use submitForm() or press(inputSelector, "Enter").
+
+✦ NEVER repeat the same failing (action + selector) twice.
+→ If click fails: submitForm → press Enter → evaluate JS click → mouseClick via vision.
+
+✦ For ALL search engines (Bing/Google/DDG): fill input → submitForm(). Never click a button.
+
+✦ After fill/type: ALWAYS follow with submitForm() or press(selector, "Enter").
+
+✦ For SPA pages: use waitForURLChange(currentURL) or waitForVisible(expectedElement).
+
+✦ Set done:true ONLY when vision confirms goal completion with visible evidence.
+
+✦ Multi‑stage prompts (STAGE 1, STAGE 2…): complete in order. Never skip stages.
+
+✦ Validate each stage: confirm URL/title + at least one expected element/text.
+
+✦ If navigation fails: retry ONCE, then switch strategy.
+
+✦ If a stage requires a new tab: openNewTab(), then switchToTab() later.
+
+HUMAN‑MODE CURSOR BEHAVIOR (Human‑2.0)
+
+✦ For ANY click, dblclick, hover, press, fill, type, or selectOption: use human‑mode cursor motion.
+
+✦ Extract bounding box:
+evaluate("(() => { const el = document.querySelector('SELECTOR'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()")
+
+✦ If bounding box exists:
+• Compute realistic target point (±3–12px jitter, avoid exact center).
+• Generate 2–5 mouseMove steps (curved/diagonal path, micro‑jitter).
+• Include overshoot (4–18px) then correction.
+• Include micro‑pauses (40–180ms).
+• Brief hover before click (±2px drift, 60–120ms pause).
+• After click, optional natural drift (±3–10px).
+
+✦ If bounding box is null:
+• scrollIntoView(selector)
+• waitForVisible(selector)
+• try alternate selector families
+• fallback: click(selector) or JS evaluate click
+
+✦ Cursor MUST NOT teleport unless fallback is required.
+
+✦ Longer distances → longer movement paths with diagonal transitions + mid‑point corrections.
+
+✦ Human‑mode cursor behavior may span multiple turns (max 3 actions per turn).
+
+✦ These Human‑2.0 cursor rules override all previous cursor‑related behavior.
+
+✦ click(selector) vs mouseClick(x, y): these are different actions, never mix their params.
+  click takes { "selector": "..." } only. mouseClick takes { "x": <number>, "y": <number> }
+  only — never put a selector in mouseClick's params, it will fail every time with a Chrome
+  protocol error, not a normal retry-able failure. If you have a selector, use click(). Only
+  use mouseClick() when you have real numeric coordinates (e.g. from a Vision report), never
+  a selector string.
+CLICK FAILURE RECOVERY LADDER
+
+Step 1: scrollIntoView(selector) → click(selector)
+Step 2: submitForm(selector)
+Step 3: press(inputSelector, "Enter")
+Step 4: evaluate("document.querySelector('selector').click()")
+Step 5: mouseClick(x,y) using vision coordinates
+═══════════════════════════════════════════════════════
+CLICK FAILURE RECOVERY LADDER
+═══════════════════════════════════════════════════════
+Step 1: scrollIntoView(selector) then click(selector)
+Step 2: submitForm(selector)
+Step 3: press(inputSelector, 'Enter')
+Step 4: evaluate('document.querySelector("selector").click()')
+Step 5: Use vision coordinates with mouseClick(x, y)
+
+═══════════════════════════════════════════════════════
+OUTPUT — JSON ONLY, no markdown, no extra text
+═══════════════════════════════════════════════════════
+{
+  "reasoning": "What I see, what I'm doing, why this strategy will work",
+  "confidence": 0-100,
+  "done": false,
+  "actions": [
+    { "action": "actionName", "params": { "key": "value" } }
+  ]
+}
+
+- Max 3 actions per turn. Atomic, focused steps.
+- confidence < 35: goto the URL directly and start fresh.
+- Stuck or all-fail: completely switch selector family, submit method, or navigation path.`;
+
+const REASONER_INSTINCT_PROMPT = `You are the Reasoner instinct layer for an autonomous browser agent.
+IF the USER is merely talking you may ignore the rest of this prompt. However, if the USER is asking a browser task to be done, you must FOLLOW EVERY STEP of this prompt. You are the fast intuition that helps the Planner avoid dumb moves.
+You do not plan the whole task. You do not write long explanations.
+You act like fast intuition before the Planner moves.
+
+Your job is to inspect the current goal, page state, recent steps, and any vision notes,
+then return a sharp instinct that helps the Planner avoid dumb moves.
+
+Output JSON only:
+{
+  "instinct": "one short, concrete sentence about what matters right now",
+  "risk": "low" | "medium" | "high",
+  "next_focus": "one short phrase naming the most important target or action family",
+  "caution": "one short warning or failure pattern to avoid"
+}
+
+Rules:
+- Be immediate and operational.
+- Prefer the simplest useful interpretation.
+- If the page looks blocked, say so.
+- If the next move is obvious, state it plainly.
+- Do not restate the full task.
+- Do not be verbose. Think like instinct, not narration.`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT: EXECUTOR
+// ─────────────────────────────────────────────────────────────────────────────
+async function runActionWithFallback(item, goal, models) {
+  const { action, params } = item;
+  const currentUrl = (() => {
+    try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
+  })();
+  const host = getHostFromUrl(currentUrl);
+  const signature = buildActionSignature(action, params);
+  const hints = getActionHints({ action, params, currentUrl });
+
+  // Every action references the learning log before execution.
+  if (hints.attempts > 0) {
+    think(`Learning check for ${signature}: attempts=${hints.attempts}, ok=${hints.successes}, fail=${hints.failures}`);
+  }
+
+  function recordOutcome(statusValue, details = {}) {
+    appendLearningEvent({
+      kind: "action",
+      goal: String(goal || "").slice(0, 240),
+      host,
+      url: currentUrl,
+      action,
+      selector: params?.selector || "",
+      signature,
+      status: statusValue,
+      ...details
+    });
+  }
+
+  // Pseudo-actions for multi-tab missions
+  if (action === "openNewTab") {
+    const newPage = await context.newPage();
+    page = newPage;
+    if (params?.url) {
+      await page.goto(String(params.url), { waitUntil: "domcontentloaded" });
+    }
+    const resultText = `opened tab ${context.pages().length - 1}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    return { action, status: "ok", result: resultText };
+  }
+
+  if (action === "switchToTab") {
+    const pages = context.pages();
+    let targetIndex = Number.isInteger(params?.index) ? params.index : null;
+    if (targetIndex === null && params?.urlIncludes) {
+      targetIndex = pages.findIndex(p => {
+        try { return p.url().includes(String(params.urlIncludes)); } catch { return false; }
+      });
+    }
+    if (targetIndex === null || targetIndex < 0 || targetIndex >= pages.length) {
+      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(params || {})}`, path: "pseudo" });
+      throw new Error(`switchToTab failed: invalid index/urlIncludes (${JSON.stringify(params || {})})`);
+    }
+    page = pages[targetIndex];
+    await page.bringToFront().catch(() => {});
+    const resultText = `switched to tab ${targetIndex}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    return { action, status: "ok", result: resultText };
+  }
+
+  if (action === "closeCurrentTab") {
+    const pages = context.pages();
+    if (pages.length <= 1) {
+      recordOutcome("ok", { result: "single tab, skip close", path: "pseudo" });
+      return { action, status: "ok", result: "single tab, skip close" };
+    }
+    const currentIndex = pages.findIndex(p => p === page);
+    await page.close();
+    const remaining = context.pages();
+    page = remaining[Math.max(0, Math.min(currentIndex - 1, remaining.length - 1))] || remaining[0];
+    await page.bringToFront().catch(() => {});
+    const resultText = `closed tab ${currentIndex}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    return { action, status: "ok", result: resultText };
+  }
+
+  if (action === "listTabs") {
+    const pages = context.pages();
+    const items = pages.map((p, idx) => {
+      let currentUrl = "about:blank";
+      try { currentUrl = p.url(); } catch {}
+      return `${idx}:${currentUrl}`;
+    });
+    const resultText = items.join(" | ");
+    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    return { action, status: "ok", result: resultText };
+  }
+
+  // If the action has repeatedly failed on this host+selector, bias to safer fallback first.
+  if (action === "click" && params?.selector && hints.failures >= 3 && hints.successes === 0) {
+    try {
+      think(`Learning fast-path: skipping direct click and trying submitForm first for ${params.selector}`);
+      await actions.submitForm({ page, context, selector: params.selector });
+      recordOutcome("ok", { result: "learning submitForm fast-path", path: "learning-fast-path" });
+      return { action, status: "ok", result: "learning submitForm fast-path" };
+    } catch (err) {
+      // Continue into the normal ladder below.
+      think(`Learning fast-path failed, reverting to normal ladder: ${err.message}`);
+    }
+  }
+
+  // Primary attempt
+  try {
+    const result = await actions[action]({ page, context, ...(params || {}) });
+    think(`✓ ${action}`);
+    const resultText = String(result ?? "").slice(0, 200);
+    recordOutcome("ok", { result: resultText, path: "primary" });
+    return { action, status: "ok", result: resultText };
+  } catch (primaryErr) {
+    errLog(`${action} failed: ${primaryErr.message}`);
+
+    if (action === "goto" && params?.url) {
+      try {
+        think(`Fallback: retry goto once -> ${params.url}`);
+        await sleep(900);
+        await actions.goto({ page, context, url: String(params.url) });
+        recordOutcome("ok", { result: "goto retry success", path: "fallback-goto-retry" });
+        return { action, status: "ok", result: "goto retry success" };
+      } catch {}
+    }
+
+    // Fallback ladder for click failures
+    if (action === "click" && params?.selector) {
+      const sel = params.selector;
+
+      // Fallback 1: scrollIntoView then click
+      try {
+        think(`Fallback 1: scroll+click on ${sel}`);
+        await actions.scrollIntoView({ page, selector: sel });
+        await sleep(300);
+        await actions.click({ page, context, selector: sel });
+        recordOutcome("ok", { result: "scroll-click fallback", path: "fallback-scroll-click" });
+        return { action, status: "ok", result: "scroll-click fallback" };
+      } catch {}
+
+      // Fallback 2: submitForm (works for search/form submit buttons)
+      try {
+        think(`Fallback 2: submitForm on ${sel}`);
+        await actions.submitForm({ page, context, selector: sel });
+        recordOutcome("ok", { result: "submitForm fallback", path: "fallback-submit" });
+        return { action, status: "ok", result: "submitForm fallback" };
+      } catch {}
+
+      // Fallback 3: press Enter on selector (input fields)
+      try {
+        think(`Fallback 3: Enter keypress on ${sel}`);
+        await page.press(sel, "Enter");
+        recordOutcome("ok", { result: "Enter-key fallback", path: "fallback-enter" });
+        return { action, status: "ok", result: "Enter-key fallback" };
+      } catch {}
+
+      // Fallback 4: JS .click()
+      try {
+        think(`Fallback 4: JS click on ${sel}`);
+        await page.evaluate(selector => {
+          const el = document.querySelector(selector);
+          if (el) el.click();
+          else throw new Error("not found");
+        }, sel);
+        recordOutcome("ok", { result: "js-evaluate fallback", path: "fallback-js-click" });
+        return { action, status: "ok", result: "js-evaluate fallback" };
+      } catch {}
+    }
+
+    recordOutcome("error", { error: primaryErr.message, path: "primary" });
+    return { action, status: "error", error: primaryErr.message };
+  }
+}
+
+async function executeActionPlan(plan, goal, models) {
+  const results = [];
+  const actionPlan = await expandVisionAssistedClicks(plan.actions || [], goal, models);
+  const pseudoActions = new Set(["openNewTab", "switchToTab", "closeCurrentTab", "listTabs"]);
+  for (const item of actionPlan) {
+    const { action, params } = item;
+    if (!action || (!actions[action] && !pseudoActions.has(action))) {
+      errLog(`Unknown action: "${action}"`);
+      results.push({ action, status: "error", error: `Unknown action: ${action}` });
+      continue;
+    }
+    status(`${action}(${JSON.stringify(params || {}).slice(0, 60)})`);
+    const result = await runActionWithFallback(item, goal, models);
+    results.push(result);
+    await sleep(ACTION_PACING_DELAY_MS);
+  }
+  return results;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENT: REASONER — final answer + memory
+// ─────────────────────────────────────────────────────────────────────────────
+async function summarizeResult(goal, state, taskLog, visionFeedback, completed, models) {
+  status("Reasoner composing answer...");
+  try {
+    const raw = await callCFAI(models.reasoner, [{
+      role: "user",
+      content: `Goal: "${goal}"
+Result: ${completed ? "COMPLETED" : "INCOMPLETE"}
+Final URL: ${state.url}
+Final title: ${state.title}
+Vision last saw: ${visionFeedback ? visionFeedback.slice(0, 500) : "(none)"}
+Steps taken: ${taskLog.join("\n")}
+
+Write a natural, intelligent, specific answer (2-6 sentences).
+If completed: report exactly what you found/did with specific details (numbers, names, URLs, text).
+If incomplete: explain honestly what happened and what would be needed to complete it.
+Output ONLY the answer — no JSON, no markdown, no headers.`
+    }], 600);
+    return stripThinking(raw);
+  } catch (err) {
+    return completed
+      ? `Completed "${goal}". Check view.png for the result.`
+      : `Could not fully complete "${goal}". Last URL: ${state.url}`;
+  }
+}
+
+// Secondary completion guard: if the planner misses done:true, verify using
+// current page state + vision summary so successful runs can stop early.
+async function verifyGoalCompletion(goal, state, visionFeedback, taskLog, models) {
+  try {
+    const raw = await callCFAI(models.reasoner, [
+      {
+        role: "system",
+        content: "Decide if the user's browser task is already complete. Reply with JSON only: {\"done\":true|false,\"reason\":\"short reason\"}."
+      },
+      {
+        role: "user",
+        content: `Goal: "${goal}"
+Current URL: ${state.url}
+Current title: ${state.title}
+Vision summary: ${visionFeedback || "(none)"}
+Recent step log:
+${taskLog.slice(-6).join("\n") || "(none)"}
+
+Mark done=true only when there is clear evidence the goal is satisfied.`
+      }
+    ], 220, 1);
+
+    const parsed = safeParseJSON(raw);
+    return {
+      done: !!(parsed && parsed.done === true),
+      reason: (parsed && parsed.reason) ? String(parsed.reason) : ""
+    };
+  } catch {
+    return { done: false, reason: "" };
+  }
+}
+
+async function getReasonerInstinct(goal, state, visionFeedback, taskLog, models) {
+  try {
+    const raw = await callCFAI(models.reasoner, [
+      {
+        role: "system",
+        content: REASONER_INSTINCT_PROMPT
+      },
+      {
+        role: "user",
+        content: `Goal: "${goal}"
+Current URL: ${state.url}
+Current title: ${state.title}
+Vision notes: ${visionFeedback || "(none)"}
+Recent step log:
+${taskLog.slice(-6).join("\n") || "(none)"}
+
+Return the instinct JSON now.`
+      }
+    ], 220, 1);
+
+    const parsed = safeParseJSON(raw);
+    if (parsed) return parsed;
+    const fallback = stripThinking(raw);
+    return {
+      instinct: fallback.slice(0, 220) || "Focus on the current page state.",
+      risk: "medium",
+      next_focus: "current page",
+      caution: "keep the next step small"
+    };
+  } catch {
+    return {
+      instinct: "Focus on the current page state.",
+      risk: "medium",
+      next_focus: "current page",
+      caution: "keep the next step small"
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN TASK LOOP
+// ─────────────────────────────────────────────────────────────────────────────
+function detectStuck(log) {
+  if (log.length < 4) return false;
+  const last4 = log.slice(-4);
+  // Consider stuck if all 4 recent log lines have identical action+result summaries
+  const sig = (line) => {
+    const m = line.match(/:\s*([\w:,]+)\s*—/);
+    return m ? m[1].trim() : line.slice(0, 40).trim();
+  };
+  const sigs = last4.map(sig);
+  return sigs.every(s => s === sigs[0] && s.length > 2);
+}
+
+function looksLikeTaskGoal(goalText) {
+  const g = String(goalText || "").toLowerCase();
+  return /(navigate|go to|open|search|find|extract|scrape|click|fill|submit|tab|compare|summarize|lookup|look up|collect|report)/.test(g);
+}
+
+function extractUrlFromText(goalText) {
+  const m = String(goalText || "").match(/https?:\/\/[^\s)]+/i);
+  return m ? m[0] : null;
+}
+
+function extractSearchQuery(goalText) {
+  const g = String(goalText || "");
+  const quoted = g.match(/"([^"]{2,120})"/);
+  if (quoted) return quoted[1].trim();
+  const m = g.match(/search\s+for\s+([^\n\.]{2,120})/i) || g.match(/look\s+up\s+([^\n\.]{2,120})/i);
+  return m ? m[1].trim() : null;
+}
+
+function inferHeuristicPlan(goal, state, taskLog, failures) {
+  const lowerGoal = String(goal || "").toLowerCase();
+  const currentUrl = String(state?.url || "about:blank");
+  const directUrl = extractUrlFromText(goal);
+
+  // 1) If goal includes an explicit URL and we are not there, go directly.
+  if (directUrl) {
+    const host = (() => {
+      try { return new URL(directUrl).host; } catch { return ""; }
+    })();
+    if (host && !currentUrl.includes(host)) {
+      return {
+        reasoning: `Heuristic: navigate directly to target URL ${directUrl}`,
+        confidence: 78,
+        done: false,
+        actions: [{ action: "goto", params: { url: directUrl } }]
+      };
+    }
+  }
+
+  // 2) Search workflow: fill visible search input then submit via Enter.
+  const query = extractSearchQuery(goal);
+  if (query) {
+    const visibleInput = (state?.inputs || []).find(i => i.visible && /search|text/i.test(String(i.type || "")));
+    const inputSelector = visibleInput
+      ? (visibleInput.id ? `#${visibleInput.id}` : (visibleInput.name ? `[name='${visibleInput.name}']` : "input[type='search'],input[type='text'],textarea"))
+      : "input[type='search'],input[name='q'],textarea[name='q'],input[type='text']";
+    return {
+      reasoning: `Heuristic: fill search input and submit query \"${query}\"`,
+      confidence: 72,
+      done: false,
+      actions: [
+        { action: "fill", params: { selector: inputSelector, text: query } },
+        { action: "submitForm", params: { selector: inputSelector } }
+      ]
+    };
+  }
+
+  // 3) If goal mentions common domains and current page has a matching link, click it.
+  const linkHints = ["wikipedia", "britannica", "fao", "google", "bing"];
+  const hinted = linkHints.find(h => lowerGoal.includes(h));
+  if (hinted && !currentUrl.includes(hinted)) {
+    return {
+      reasoning: `Heuristic: open a visible link matching ${hinted}`,
+      confidence: 64,
+      done: false,
+      actions: [
+        { action: "click", params: { selector: `a:has-text('${hinted}')` } },
+        { action: "waitForURLChange", params: { currentURL: currentUrl, timeout: 10000 } }
+      ]
+    };
+  }
+
+  // 4) If repeatedly failing, recover by reloading and waiting for visible content.
+  if (failures >= 2 || detectStuck(taskLog)) {
+    return {
+      reasoning: "Heuristic recovery: reload and wait for a visible input or link.",
+      confidence: 58,
+      done: false,
+      actions: [
+        { action: "reload", params: {} },
+        { action: "waitForTimeout", params: { ms: 1200 } },
+        { action: "waitForVisible", params: { selector: "input,textarea,a,button", timeout: 8000 } }
+      ]
+    };
+  }
+
+  // 5) Last-resort bootstrap action for task-like prompts.
+  if (looksLikeTaskGoal(goal)) {
+    return {
+      reasoning: "Heuristic bootstrap: collect page text to orient next planner step.",
+      confidence: 45,
+      done: false,
+      actions: [
+        { action: "getAllText", params: {} }
+      ]
+    };
+  }
+
+  return null;
+}
+
+async function runTask(goal, models, chatId) {
+  agentRunning = true;
+  const plannerHistory = [{ role: "system", content: PLANNER_SYSTEM_PROMPT }];
+  const taskLog   = [];
+  let visionFeedback = null;
+  let lastAction     = null;
+  let completed      = false;
+  let finalState     = { url: "about:blank", title: "", text: "", links: [], inputs: [] };
+  let failures       = 0;
+  let requiresHuman  = false;
+  const captchaChecksByPage = new Map();
+
+  try {
+    clearHumanBridgeState();
+    setHumanBridgeState({ clickCount: 0, lastClickAt: null });
+    startIdleHumanBehavior();
+    startHumanBridgeWatchdog(models);
+    broadcast("task_start", { goal });
+    status("Starting task: " + goal);
+    appendLearningEvent({
+      kind: "task",
+      phase: "start",
+      goal: String(goal || "").slice(0, 240),
+      host: getHostFromUrl((() => {
+        try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
+      })())
+    });
+
+    for (let step = 1; step <= MAX_STEPS; step++) {
+      broadcast("step_start", { step, max: MAX_STEPS });
+      status(`Step ${step}/${MAX_STEPS}`);
+
+      const state = await getPageState();
+      finalState  = state;
+      status(`URL: ${state.url}`);
+
+      const captcha = await detectCaptchaChallenge(state);
+      if (captcha.detected) {
+        const pageKey = getCaptchaPageKey(state.url);
+        const checks = (captchaChecksByPage.get(pageKey) || 0) + 1;
+        captchaChecksByPage.set(pageKey, checks);
+        setHumanBridgeState({
+          active: true,
+          checks,
+          reason: captcha.reason,
+          url: state.url
+        });
+
+        const notice = `${captcha.reason}. Waiting for manual solve (${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT}) on ${state.url}`;
+        status(notice);
+        stepLogMsg(`Step ${step}: captcha-check ${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT} on ${state.url}`);
+        broadcast("human_needed", { msg: notice, checks, limit: CAPTCHA_HUMAN_CHECK_LIMIT, url: state.url, bridgeUrl: "/human-bridge" });
+
+        if (checks >= CAPTCHA_HUMAN_CHECK_LIMIT) {
+          requiresHuman = true;
+          errLog(`CAPTCHA persisted after ${CAPTCHA_HUMAN_CHECK_LIMIT} checks. Human handoff required.`);
+          break;
+        }
+
+        await sleepLikeHuman(CAPTCHA_RECHECK_DELAY_MS, page, { x: state.inputs?.[0]?.visible ? 120 : undefined, y: 160 });
+        continue;
+      }
+
+      if (humanBridgeState.active) {
+        clearHumanBridgeState();
+        broadcast("human_resolved", { msg: "CAPTCHA signals cleared. Resuming autonomous execution.", url: state.url });
+      }
+
+      const stuck = detectStuck(taskLog);
+      const instinct = await getReasonerInstinct(goal, state, visionFeedback, taskLog, models);
+      if (instinct?.instinct) {
+        think(`Instinct: ${instinct.instinct}${instinct?.next_focus ? ` | focus: ${instinct.next_focus}` : ""}`);
+      }
+      const instinctFeedback = [
+        visionFeedback,
+        instinct?.instinct ? `Reasoner instinct: ${instinct.instinct}` : "",
+        instinct?.risk ? `Reasoner risk: ${instinct.risk}` : "",
+        instinct?.next_focus ? `Reasoner focus: ${instinct.next_focus}` : "",
+        instinct?.caution ? `Reasoner caution: ${instinct.caution}` : ""
+      ].filter(Boolean).join("\n");
+
+      let plan;
+      try {
+        plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models));
+      } catch (err) {
+        errLog("Planning failed: " + err.message);
+        const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
+        if (heuristicPlan) {
+          plan = heuristicPlan;
+          think(`Heuristic planner fallback engaged: ${heuristicPlan.reasoning}`);
+        } else {
+          taskLog.push(`Step ${step}: planner error`);
+          failures++;
+          if (failures >= MAX_RETRIES) { errLog("Too many failures — stopping."); break; }
+          await sleep(2000);
+          continue;
+        }
+      }
+
+      if (plan.done) {
+        stepLogMsg(`Step ${step}: DONE — ${plan.reasoning}`);
+        taskLog.push(`Step ${step}: DONE`);
+        completed = true;
+        break;
+      }
+
+      if (!plan.actions?.length) {
+        const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
+        if (heuristicPlan && heuristicPlan.actions?.length) {
+          plan = heuristicPlan;
+          think(`Heuristic no-actions recovery: ${heuristicPlan.reasoning}`);
+        } else {
+          taskLog.push(`Step ${step}: no actions`);
+          if (plan._parseFailed) failures++;
+          if (failures >= MAX_RETRIES) break;
+          continue;
+        }
+      }
+
+      if (plan.reasoning) think(plan.reasoning);
+
+      const results = await withExecutorWork(() => executeActionPlan(plan, goal, models));
+      lastAction    = plan.actions[plan.actions.length - 1];
+      const summary = results.map(r => `${r.action}:${r.status}`).join(", ");
+      const logLine = `Step ${step} [${plan.confidence ?? "?"}%]: ${summary} — ${(plan.reasoning || "").slice(0, 60)}`;
+      taskLog.push(logLine);
+      stepLogMsg(logLine);
+
+      const allFailed = results.every(r => r.status === "error");
+      failures = allFailed ? failures + 1 : 0;
+      if (failures >= MAX_RETRIES) { errLog("Circuit breaker: stopping."); break; }
+
+      await sleepLikeHuman(600, page, { x: Math.round((finalState.inputs?.length ? 0.2 : 0.55) * 1000), y: Math.round((finalState.buttons?.length ? 0.35 : 0.45) * 1000) });
+      const screenshotB64 = await withExecutorWork(() => getScreenshotB64());
+      const newState      = await withExecutorWork(() => getPageState());
+      visionFeedback      = await withExecutorWork(() => analyzeScreen(screenshotB64, newState, lastAction, goal, models));
+      finalState          = newState;
+
+      const verification = await withExecutorWork(() => verifyGoalCompletion(goal, newState, visionFeedback, taskLog, models));
+      if (verification.done) {
+        const doneLine = `Step ${step}: DONE (verified)${verification.reason ? ` — ${verification.reason}` : ""}`;
+        taskLog.push(doneLine);
+        stepLogMsg(doneLine);
+        completed = true;
+        break;
+      }
+
+      plannerHistory.push({
+        role: "user",
+        content: `Results: ${JSON.stringify(results)}\nVision: ${visionFeedback}`
+      });
+
+      await sleepLikeHuman(600, page);
+    }
+
+    const answer = requiresHuman
+      ? `I hit a CAPTCHA/challenge on ${finalState.url} and paused for manual help after ${CAPTCHA_HUMAN_CHECK_LIMIT} checks. Please complete the challenge in the browser, then retry the task.`
+      : await summarizeResult(goal, finalState, taskLog, visionFeedback, completed, models);
+    appendLearningEvent({
+      kind: "task",
+      phase: "end",
+      goal: String(goal || "").slice(0, 240),
+      host: getHostFromUrl(finalState.url),
+      completed: !!(completed && !requiresHuman),
+      steps: taskLog.length,
+      result: String(answer || "").slice(0, 260)
+    });
+    saveMemory({ goal, result: answer.slice(0, 200), completed, steps: taskLog.length });
+    if (chatId) {
+      appendChatMessage(chatId, "assistant", answer, { goal, completed });
+      broadcast("chat_sync", { chatId });
+    }
+    broadcast("task_done", { answer, completed: completed && !requiresHuman });
+    return answer;
+  } finally {
+    stopIdleHumanBehavior();
+    stopHumanBridgeWatchdog();
+    clearHumanBridgeState();
+    broadcast("bridge_closed", { msg: "Human bridge closed for this run.", url: page ? page.url() : "about:blank" });
+    agentRunning = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTTP SERVER (REST + SSE + Frontend)
+// ─────────────────────────────────────────────────────────────────────────────
+const FRONTEND_HTML = require("./frontend").FRONTEND_HTML;
+
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch(err => {
+    console.error("[server] unhandled:", err.message);
+    if (!res.headersSent) { try { res.writeHead(500); res.end("internal error"); } catch {} }
+  });
+});
+
+async function handleRequest(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const pathname = requestUrl.pathname;
+  const chatMatch = pathname.match(/^\/api\/chats\/([^/]+)$/);
+  const selectMatch = pathname.match(/^\/api\/chats\/([^/]+)\/select$/);
+  const modelsMatch = pathname.match(/^\/api\/chats\/([^/]+)\/models$/);
+
+  if (pathname === "/" || pathname === "/index.html") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(FRONTEND_HTML);
+    return;
+  }
+
+  if (pathname === "/auth/session") {
+    const auth = getAuth(req);
+    sendJson(res, 200, {
+      authenticated: !!auth,
+      username: auth?.username || null,
+      usingDefaultCredentials: APP_USERNAME === "admin" && APP_PASSWORD === "puppeterr"
+    });
+    return;
+  }
+
+  if (pathname === "/auth/login" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (body.username !== APP_USERNAME || body.password !== APP_PASSWORD) {
+        sendJson(res, 401, { error: "Invalid username or password" });
+        return;
+      }
+      setAuthCookie(res, createAuthToken(APP_USERNAME));
+      sendJson(res, 200, { ok: true, username: APP_USERNAME });
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+    }
+    return;
+  }
+
+  if (pathname === "/auth/logout" && req.method === "POST") {
+    clearAuthCookie(res);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // Human bridge is opened in a new tab by the main UI.
+  // State endpoint is read-only so no auth needed. Click relay keeps auth.
+  if (pathname === "/human-bridge") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(HUMAN_BRIDGE_HTML);
+    return;
+  }
+
+  if (pathname === "/api/human/state") {
+    sendJson(res, 200, {
+      active: !!humanBridgeState.active,
+      checks: Number(humanBridgeState.checks || 0),
+      limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+      url: humanBridgeState.url || (page ? page.url() : "about:blank"),
+      reason: humanBridgeState.reason || "",
+      closureReason: humanBridgeState.closureReason || "",
+      visionLastCheckAt: humanBridgeState.visionLastCheckAt || null,
+      visionLastSummary: humanBridgeState.visionLastSummary || "",
+      clickCount: Number(humanBridgeState.clickCount || 0),
+      lastClickAt: humanBridgeState.lastClickAt || null,
+      lastClick: humanBridgeState.lastClick || null,
+      agentRunning: !!agentRunning
+    });
+    return;
+  }
+
+  if (pathname === "/api/human/click" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const result = await relayHumanClick(body);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (err) {
+      sendJson(res, 400, { error: err.message || "Failed to relay click" });
+    }
+    return;
+  }
+
+  const auth = requireAuth(req, res);
+  if (!auth) return;
+
+  if (pathname === "/events") {
+    res.writeHead(200, {
+      "Content-Type":  "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection":    "keep-alive"
+    });
+    res.write("data: " + JSON.stringify({ type: "status", msg: "Connected" }) + "\n\n");
+    sseClients.push(res);
+    req.on("close", () => { sseClients = sseClients.filter(client => client !== res); });
+    return;
+  }
+
+  if (pathname === "/screenshot") {
+    try {
+      if (!page) { res.writeHead(503); res.end("browser not ready"); return; }
+      const buf = await page.screenshot({ type: "jpeg", quality: 75 });
+      res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "no-store" });
+      res.end(buf);
+    } catch {
+      res.writeHead(500);
+      res.end("error");
+    }
+    return;
+  }
+
+  if (pathname === "/url") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(page ? page.url() : "about:blank");
+    return;
+  }
+
+  if (pathname === "/memory") {
+    sendJson(res, 200, loadMemory());
+    return;
+  }
+
+  if (pathname === "/api/bootstrap") {
+    const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
+    sendJson(res, 200, buildBootstrapPayload(catalog));
+    return;
+  }
+
+  if (pathname === "/api/models") {
+    const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
+    const { chat } = ensureCurrentChat();
+    sendJson(res, 200, { catalog, current: getActiveModels(chat), defaults: DEFAULT_MODELS });
+    return;
+  }
+
+  if (pathname === "/api/chats" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const chat = createChat(body.title || "New Chat");
+      sendJson(res, 201, { chat, selectedChatId: chat.id });
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+    }
+    return;
+  }
+
+  if (chatMatch && req.method === "GET") {
+    const { store } = ensureCurrentChat();
+    const chat = store.chats.find(item => item.id === chatMatch[1]);
+    if (!chat) {
+      sendJson(res, 404, { error: "Chat not found" });
+      return;
+    }
+    sendJson(res, 200, { chat, selectedChatId: store.selectedChatId });
+    return;
+  }
+
+  if (selectMatch && req.method === "POST") {
+    const chat = setCurrentChat(selectMatch[1]);
+    if (!chat) {
+      sendJson(res, 404, { error: "Chat not found" });
+      return;
+    }
+    const catalog = await fetchModelCatalog(false);
+    sendJson(res, 200, buildBootstrapPayload(catalog));
+    return;
+  }
+
+  if (modelsMatch && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const chat = updateChatModels(modelsMatch[1], body.models || {});
+      if (!chat) {
+        sendJson(res, 404, { error: "Chat not found" });
+        return;
+      }
+      const catalog = await fetchModelCatalog(false);
+      sendJson(res, 200, { current: getActiveModels(chat), catalog, chat });
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+    }
+    return;
+  }
+
+  if (pathname === "/chat" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const message = String(body.message || "").trim();
+      const chatId = body.chatId || ensureCurrentChat().chat.id;
+
+      if (!message) {
+        sendJson(res, 400, { error: "Message is required" });
+        return;
+      }
+
+      if (agentRunning) {
+        sendJson(res, 409, { error: "Agent is already running a task" });
+        return;
+      }
+
+      const activeChat = setCurrentChat(chatId);
+      if (!activeChat) {
+        sendJson(res, 404, { error: "Chat not found" });
+        return;
+      }
+
+      const command = parseSlashCommand(message);
+      const slashModel = command ? resolveSlashModelCommand(command) : null;
+      if (slashModel && command) {
+        if (slashModel.kind === "reset") {
+          clearRuntimeModelOverride(chatId);
+          appendChatMessage(chatId, "user", message, { command: command.command });
+          appendChatMessage(chatId, "assistant", "Model override cleared. I’ll go back to the chat’s saved models until you set another command.", {
+            completed: true,
+            command: command.command,
+            model: null
+          });
+          sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, reset: true });
+          broadcast("chat_sync", { chatId });
+          return;
+        }
+
+        if (slashModel.kind === "model") {
+          if (!slashModel.modelId) {
+            appendChatMessage(chatId, "user", message, { command: command.command });
+            appendChatMessage(chatId, "assistant", `I couldn’t find a model matching "${slashModel.query}" in the catalog, so I left the current model active.`, {
+              completed: true,
+              command: command.command,
+              model: null,
+              matched: false
+            });
+            sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, matched: false });
+            broadcast("chat_sync", { chatId });
+            return;
+          }
+
+          setRuntimeModelOverride(chatId, slashModel.modelId);
+          appendChatMessage(chatId, "user", message, { command: command.command });
+          appendChatMessage(chatId, "assistant", `Model override set to ${slashModel.modelId}. I’ll keep using it until you start a new task or reset it.`, {
+            completed: true,
+            command: command.command,
+            model: slashModel.modelId,
+            matched: true
+          });
+          sendJson(res, 200, { ok: true, chatId, command: command.command, model: slashModel.modelId, matched: true });
+          broadcast("chat_sync", { chatId });
+          return;
+        }
+      }
+
+      if (getRuntimeModelOverride(activeChat) && looksLikeTaskGoal(message)) {
+        clearRuntimeModelOverride(chatId);
+      }
+
+      appendChatMessage(chatId, "user", message);
+      sendJson(res, 202, { ok: true, chatId });
+
+      const { chat } = ensureCurrentChat();
+      const models = getActiveModels(chat);
+      const routed = await routeGoal(message, sessionHistory, models);
+
+      if (routed.mode === "chat") {
+        appendChatMessage(chatId, "assistant", routed.chatReply, { completed: true });
+        agentMsg(routed.chatReply);
+        broadcast("chat_sync", { chatId });
+      } else {
+        await runTask(routed.taskGoal, models, chatId);
+        broadcast("url", { url: page.url() });
+      }
+    } catch (err) {
+      errLog("Chat handler: " + err.message);
+      broadcast("task_done", { answer: "Something went wrong: " + err.message, completed: false });
+      agentRunning = false;
+    }
+    return;
+  }
+
+  res.writeHead(404);
+  res.end("not found");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOOT
+// ─────────────────────────────────────────────────────────────────────────────
 (async () => {
   try {
-    // Validate env vars
     if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
-      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID env vars!");
-      process.exit(1);
+      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID"); process.exit(1);
     }
 
     console.log("🚀 Launching browser...");
     browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+      headless: false,
+      executablePath: require("playwright").chromium.executablePath(),
+      args: [
+        "--no-sandbox","--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars","--start-maximized",
+        "--window-position=0,0","--window-size=1920,1080"
+      ]
     });
-
     const hasSession = fs.existsSync(SESSION_FILE);
     context = await browser.newContext({
-      storageState: hasSession ? SESSION_FILE : undefined,
+      storageState:  hasSession ? SESSION_FILE : undefined,
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       locale: "en-US",
-      viewport: { width: 1280, height: 800 }
+      viewport: { width: 1366, height: 768 },
+      screen:   { width: 1366, height: 768 },
+      permissions:   ["geolocation"],
+      colorScheme:   "light"
+    });
+
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver",           { get: () => undefined });
+      Object.defineProperty(navigator, "plugins",             { get: () => [1, 2, 3] });
+      Object.defineProperty(navigator, "languages",           { get: () => ["en-US", "en"] });
+      Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
+      const gp = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function(p) {
+        if (p === 37445) return "Intel Inc.";
+        if (p === 37446) return "Intel Iris OpenGL Engine";
+        return gp.call(this, p);
+      };
     });
 
     page = await context.newPage();
+    if (hasSession) console.log("📋 Session: " + SESSION_FILE);
 
-    if (hasSession) {
-      console.log("📋 Loaded saved session from " + SESSION_FILE);
-    }
+    await page.goto("https://www.bing.com", { waitUntil: "domcontentloaded" });
+    ensureCurrentChat();
+    loadLearningLog();
 
-    // Start on Google (looks human)
-    await page.goto("https://www.google.com", { waitUntil: "domcontentloaded" });
-    await sleep(1000);
+    server.listen(PORT, () => {
+      console.log(`\n✅ AGI Terminal running!`);
+      console.log(`   Open: http://localhost:${PORT}`);
+      console.log(`   (Codespaces: forward port ${PORT})\n`);
+    });
 
-    // Ask user for goal
-    console.log("\n🤖 Autonomous Browser Agent");
-    console.log("   Powered by DeepSeek R1 + Playwright");
-    console.log("   Screenshots save to view.png each step\n");
+    setInterval(async () => {
+      if (page) broadcast("url", { url: page.url() });
+    }, 2000);
 
-    const goal = await askQuestion("🎯 What is your goal? > ");
-    if (!goal.trim()) {
-      console.log("No goal given, exiting.");
-      process.exit(0);
-    }
-
-    await runAgent(goal);
-
-    console.log("\nDone! Press Ctrl+C to exit.");
     await new Promise(() => {});
 
   } catch (err) {

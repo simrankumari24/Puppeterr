@@ -10,3 +10,10 @@ Prompt Checker	 |LLaMA 3.1	    |isolated	|validate clarity
 Tasker      	 |DeepSeek R1	|isolated	|break into steps
 Task Exec Helper |DeepSeek R1 	|isolated	|convert steps to JS + handle CAPTCHAs
 Execution	     |Our V-browser	|no LLM	    |run JS
+
+
+
+use "sudo find / -type f -iname "*chrome*" 2>/dev/null" fr a full nuke search and
+
+"npx playwright install chromium" if u dont find it anyway
+
