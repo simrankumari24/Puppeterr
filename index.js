@@ -6,7 +6,8 @@ const EMAIL = "Naimish.sah@gmail.com";
 const PASSWORD = "N@imish@1";
 const PROJECT_URL = "https://replit.com/@supermanss/Eaglercraft-112-Server-Hosting";
 const SESSION_FILE = "session1.json";
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+const HOST = "0.0.0.0";
 
 const app = express();
 app.use(express.json());
@@ -265,7 +266,7 @@ app.post("/action", async (req, res) => {
 
     page = await context.newPage();
 
-    app.listen(PORT, () => {
+    app.listen(PORT, HOST, () => {
       console.log("Remote Control running!");
       console.log("Open in browser: http://localhost:" + PORT);
       console.log("(Codespaces: forward port " + PORT + " and open preview)\n");

@@ -1,0 +1,11 @@
+{
+  "name": "Puppeterr",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Puppeterr",
+      "onAutoForward": "openBrowser",
+      "visibility": "public"
+    }
+  }
+}

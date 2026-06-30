@@ -94,7 +94,8 @@ const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 const SESSION_FILE  = "session.json";
 const CHAT_STORE_FILE = "chat-history.json";
 const LOG_FILE = "log.json";
-const PORT          = 3000;
+const PORT          = process.env.PORT || 3000;
+const HOST          = "0.0.0.0";
 const MAX_STEPS     = 60;
 const MAX_RETRIES   = 3;
 const MODEL_CACHE_MS = 15 * 60 * 1000;
@@ -108,6 +109,11 @@ const VISION_SAMPLE_EVERY_STEPS = Math.max(1, Number(process.env.VISION_SAMPLE_E
 const VERIFY_EVERY_STEPS = Math.max(1, Number(process.env.VERIFY_EVERY_STEPS || 2));
 const BRIDGE_VISION_INTERVAL_MS = 1000;
 const BRIDGE_VISION_CLEAR_STREAK = 2;
+const VISION_STREAM_FPS = Math.max(1, Number(process.env.VISION_STREAM_FPS || 8));
+const VISION_STREAM_INTERVAL_MS = Math.max(90, Math.round(1000 / VISION_STREAM_FPS));
+const VISION_REASONER_INTERVAL_MS = Math.max(400, Number(process.env.VISION_REASONER_INTERVAL_MS || 900));
+const VISION_REASONER_FORCE_INTERVAL_MS = Math.max(1200, Number(process.env.VISION_REASONER_FORCE_INTERVAL_MS || 2500));
+const VISION_STREAM_FRESH_MS = Math.max(600, Number(process.env.VISION_STREAM_FRESH_MS || 1800));
 const IDLE_HUMAN_IDLE_MIN_MS = 1400;
 const IDLE_HUMAN_IDLE_MAX_MS = 4200;
 const MAX_LOG_ENTRIES = 4000;
@@ -120,7 +126,7 @@ const WORKSPACE_ROOT = process.cwd();
 // (many steps) makes the message array grow forever, eventually blowing
 // past the model's context window — which can ALSO surface as a confusing
 // "Bad input" error from Cloudflare that looks unrelated to its real cause.
-const MAX_PLANNER_HISTORY_MESSAGES = 15; // system + last N turns
+const MAX_PLANNER_HISTORY_MESSAGES = 15; // system + last X turns
 
 const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
 const DEFAULT_MODELS = {
@@ -196,6 +202,25 @@ let humanBridgeState = {
   clickCount: 0,
   lastClickAt: null,
   lastClick: null
+};
+let taskVisionState = {
+  active: false,
+  timer: null,
+  inFlight: false,
+  seq: 0,
+  unchangedFrames: 0,
+  changedFrames: 0,
+  droppedFrames: 0,
+  lastHash: null,
+  lastFrameAt: 0,
+  lastChangeAt: 0,
+  lastReasonerAt: 0,
+  latestSummary: "",
+  latestReasonerRaw: "",
+  latestReasonerSignal: null,
+  goal: "",
+  model: DEFAULT_MODELS.vision,
+  latestUrl: "about:blank"
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -705,6 +730,30 @@ function stepLogMsg(msg) { console.log("  📋 " + msg); broadcast("step", { msg
 function errLog(msg)  { console.log("  ❌ " + msg); broadcast("error",   { msg }); }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LIVE NARRATION & GUIDANCE SYSTEM (Devin-style interactive agent)
+// ─────────────────────────────────────────────────────────────────────────────
+const guidanceQueue = [];  // User guidance injected mid-task
+
+/** Narrate what the agent is doing in plain English — shown in UI as live commentary */
+function narrate(msg) {
+  console.log("  🗣️  " + msg);
+  broadcast("narrate", { msg });
+}
+
+/** Agent asks the user a question mid-task, broadcasts to UI with a prompt box */
+function askUser(question, context) {
+  console.log("  ❓ " + question);
+  broadcast("agent_question", { question, context: context || "", ts: new Date().toISOString() });
+}
+
+/** Consume all pending guidance from user — called at each planning step */
+function consumeGuidance() {
+  if (!guidanceQueue.length) return null;
+  const all = guidanceQueue.splice(0);
+  return all.map(g => g.text).join(" | ");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MESSAGE NORMALIZATION — fixes the "array not in string" Cloudflare error
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -824,6 +873,61 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
       status(`Vision retry ${i+1}: ${err.message}`);
       await sleep(1200 * (i + 1));
     }
+  }
+}
+
+// ── DETR object-detection wrapper ─────────────────────────────────────────────
+async function callDETR(imageB64) {
+  if (!CF_API_TOKEN || !CF_ACCOUNT_ID) return [];
+  const buf = Buffer.from(imageB64, "base64");
+  for (let i = 0; i <= 2; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 25000);
+      const res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/facebook/detr-resnet-50`,
+        {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
+          body: buf,
+          signal: ctrl.signal
+        }
+      );
+      clearTimeout(t);
+      const data = await res.json();
+      if (!data.success) throw new Error(JSON.stringify(data.errors));
+      return Array.isArray(data.result) ? data.result : [];
+    } catch (err) {
+      if (i === 2) { status(`DETR error: ${err.message}`); return []; }
+      await sleep(600 * (i + 1));
+    }
+  }
+  return [];
+}
+
+function buildDETRContext(detections) {
+  if (!Array.isArray(detections) || !detections.length) return "No objects detected.";
+  return detections
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 20)
+    .map(d => {
+      const box = d.box || {};
+      return `- ${String(d.label || "object")} (${Math.round((d.score || 0) * 100)}%) at xmin=${box.xmin ?? 0},ymin=${box.ymin ?? 0},xmax=${box.xmax ?? 0},ymax=${box.ymax ?? 0}`;
+    })
+    .join("\n");
+}
+
+async function analyzeUploadedImageWithVision(imageB64, detrContext, userQuery, visionModelId) {
+  const prompt = `User query: "${String(userQuery || "").slice(0, 300)}"
+
+DETR object detection results:
+${detrContext}
+
+Describe what is visible. Identify which detected objects appear interactive (buttons, links, inputs, checkboxes). Give approximate positions and any text visible on interactive elements. Be concise.`;
+  try {
+    return await callVisionAI(imageB64, prompt, 500, visionModelId || DEFAULT_MODELS.vision);
+  } catch (err) {
+    return `Vision analysis failed: ${err.message}`;
   }
 }
 
@@ -1004,6 +1108,399 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
     bridgeVisionClearStreak = 0;
   }
 
+  function resetTaskVisionState() {
+    taskVisionState = {
+      active: false,
+      timer: null,
+      inFlight: false,
+      seq: 0,
+      unchangedFrames: 0,
+      changedFrames: 0,
+      droppedFrames: 0,
+      lastHash: null,
+      lastFrameAt: 0,
+      lastChangeAt: 0,
+      lastReasonerAt: 0,
+      latestSummary: "",
+      latestReasonerRaw: "",
+      latestReasonerSignal: null,
+      goal: "",
+      model: DEFAULT_MODELS.vision,
+      latestUrl: "about:blank"
+    };
+  }
+
+  function stopTaskVisionPipeline() {
+    if (taskVisionState.timer) {
+      clearTimeout(taskVisionState.timer);
+    }
+    const snapshot = {
+      changedFrames: taskVisionState.changedFrames,
+      unchangedFrames: taskVisionState.unchangedFrames,
+      droppedFrames: taskVisionState.droppedFrames,
+      lastSummary: taskVisionState.latestSummary || ""
+    };
+    resetTaskVisionState();
+    return snapshot;
+  }
+
+  function getTaskVisionSnapshot() {
+    return {
+      active: !!taskVisionState.active,
+      seq: Number(taskVisionState.seq || 0),
+      changedFrames: Number(taskVisionState.changedFrames || 0),
+      unchangedFrames: Number(taskVisionState.unchangedFrames || 0),
+      droppedFrames: Number(taskVisionState.droppedFrames || 0),
+      lastFrameAt: taskVisionState.lastFrameAt || 0,
+      lastChangeAt: taskVisionState.lastChangeAt || 0,
+      summary: taskVisionState.latestSummary || "",
+      raw: taskVisionState.latestReasonerRaw || "",
+      signal: taskVisionState.latestReasonerSignal || null,
+      latestUrl: taskVisionState.latestUrl || "about:blank"
+    };
+  }
+
+  function parseVisionReasonerSignal(raw) {
+    const parsed = safeParseJSON(raw);
+    if (parsed && typeof parsed === "object") return parsed;
+    return {
+      state: "uncertain",
+      next_focus: "unknown",
+      blocker: "unknown",
+      evidence: String(raw || "").slice(0, 180)
+    };
+  }
+
+  function quoteCssText(text) {
+    return JSON.stringify(String(text || "").trim());
+  }
+
+  function buildCaptchaCandidateSelectors(state) {
+    const candidates = [];
+    const seen = new Set();
+    const add = selector => {
+      const value = String(selector || "").trim();
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      candidates.push(value);
+    };
+
+    const obviousButtonTexts = new Set([
+      "verify",
+      "continue",
+      "i am human",
+      "i'm human",
+      "i am not a robot",
+      "i'm not a robot",
+      "allow",
+      "accept",
+      "proceed",
+      "next",
+      "submit"
+    ]);
+
+    for (const button of (state?.buttons || []).filter(item => item?.visible && item?.text)) {
+      const text = String(button.text || "").trim();
+      if (!text) continue;
+      const lower = text.toLowerCase();
+      if (![...obviousButtonTexts].some(token => lower.includes(token))) continue;
+      add(`button:has-text(${quoteCssText(text)})`);
+      add(`[role='button']:has-text(${quoteCssText(text)})`);
+      add(`a:has-text(${quoteCssText(text)})`);
+      add(`label:has-text(${quoteCssText(text)})`);
+    }
+
+    for (const input of (state?.inputs || []).filter(item => item?.visible)) {
+      const type = String(input.type || "").toLowerCase();
+      if (type === "checkbox" || type === "radio") {
+        add(`input[type='${type}']`);
+      }
+      const identity = [input.id, input.name, input.placeholder].filter(Boolean).join(" ").toLowerCase();
+      if (/(captcha|verify|human|robot|challenge|turnstile|hcaptcha|recaptcha)/.test(identity)) {
+        if (input.id) add(`#${String(input.id).replace(/'/g, "\\'")}`);
+        if (input.name) add(`[name='${String(input.name).replace(/'/g, "\\'")}']`);
+        if (input.placeholder) add(`[placeholder='${String(input.placeholder).replace(/'/g, "\\'")}']`);
+      }
+    }
+
+    add("input[type='checkbox']");
+    add("input[type='radio']");
+    add("button");
+    return candidates.slice(0, 10);
+  }
+
+  async function executeCaptchaAttemptPlan(plan, fallbackSelectors) {
+    const action = String(plan?.action || "").trim();
+    const selector = String(plan?.selector || "").trim();
+    const key = String(plan?.key || "Enter").trim() || "Enter";
+    const ms = Math.max(250, Math.min(8000, Number(plan?.ms) || 1200));
+    const x = Number(plan?.x);
+    const y = Number(plan?.y);
+
+    if (action === "mouseClick" && Number.isFinite(x) && Number.isFinite(y)) {
+      await humanClick(page, x, y);
+      return `mouseClick(${Math.round(x)},${Math.round(y)})`;
+    }
+
+    if (action === "click") {
+      if (selector) {
+        await actions.scrollIntoView({ page, selector }).catch(() => {});
+        await actions.click({ page, selector });
+        return `click(${selector})`;
+      }
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        await humanClick(page, x, y);
+        return `mouseClick(${Math.round(x)},${Math.round(y)})`;
+      }
+    }
+
+    if (action === "press") {
+      if (selector) {
+        await actions.press({ page, selector, key });
+        return `press(${selector}, ${key})`;
+      }
+      await page.keyboard.press(key);
+      return `press(${key})`;
+    }
+
+    if (action === "submitForm") {
+      if (selector) {
+        await actions.submitForm({ page, selector });
+        return `submitForm(${selector})`;
+      }
+      await actions.submitForm({ page });
+      return "submitForm()";
+    }
+
+    if (action === "reload") {
+      await actions.reload({ page });
+      return "reload()";
+    }
+
+    if (action === "waitForTimeout") {
+      await actions.waitForTimeout({ page, ms });
+      return `waitForTimeout(${ms})`;
+    }
+
+    for (const selectorCandidate of fallbackSelectors) {
+      try {
+        await actions.scrollIntoView({ page, selector: selectorCandidate }).catch(() => {});
+        await actions.click({ page, selector: selectorCandidate });
+        return `click(${selectorCandidate})`;
+      } catch {}
+    }
+
+    const visibleInput = (page && page.url) ? fallbackSelectors.find(sel => /input\[type='(text|search|email|password)'\]/.test(sel)) : null;
+    if (visibleInput) {
+      await actions.press({ page, selector: visibleInput, key: "Enter" }).catch(async () => {
+        await page.keyboard.press("Enter");
+      });
+      return `press(${visibleInput}, Enter)`;
+    }
+
+    await actions.waitForTimeout({ page, ms });
+    return `waitForTimeout(${ms})`;
+  }
+
+  async function attemptCaptchaSolve(state, models, attemptNumber, captchaReason) {
+    const fallbackSelectors = buildCaptchaCandidateSelectors(state);
+    const attemptSummary = `${attemptNumber}/${CAPTCHA_HUMAN_CHECK_LIMIT}`;
+    broadcast("captcha_attempt", {
+      msg: `Attempting CAPTCHA solve ${attemptSummary} on ${state.url}`,
+      attempt: attemptNumber,
+      limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+      url: state.url
+    });
+    stepLogMsg(`Step captcha: attempt ${attemptSummary} on ${state.url}`);
+
+    const screenshotB64 = await getScreenshotB64({ broadcastImage: false, writeFile: false });
+    const promptText = `You are clearing a CAPTCHA or human verification gate.
+Goal: keep the browser moving with one safe, concrete next action.
+Current URL: ${state.url}
+Page text: ${String(state.text || "").slice(0, 2000)}
+Challenge hint: ${captchaReason || "unknown"}
+
+Return JSON only:
+{
+  "action": "mouseClick|click|press|submitForm|reload|waitForTimeout",
+  "selector": "CSS selector if you can clearly identify one",
+  "x": 0,
+  "y": 0,
+  "key": "Enter|Space|Tab",
+  "ms": 1200,
+  "reason": "short"
+}
+
+Rules:
+- Prefer mouseClick with coordinates if a visible checkbox, verify button, or continue button is obvious.
+- Prefer click(selector) only if the selector is clearly visible.
+- Use press with Enter or Space only when a focused field or obvious keyboard submission is visible.
+- Use reload only as a later attempt.
+- Never invent a selector or coordinates you cannot justify from the screenshot.`;
+
+    let plan = null;
+    try {
+      const raw = await callVisionAI(screenshotB64, promptText, 240, models.vision);
+      plan = safeParseJSON(raw) || null;
+      if (plan?.reason) {
+        think(`Captcha vision attempt ${attemptSummary}: ${plan.reason}`);
+      }
+    } catch (err) {
+      think(`Captcha vision attempt ${attemptSummary} fallback: ${err.message}`);
+    }
+
+    if (!plan || typeof plan !== "object") {
+      plan = {};
+    }
+
+    if (!plan.action) {
+      if (attemptNumber === 1) {
+        plan.action = fallbackSelectors.length ? "click" : "waitForTimeout";
+        plan.selector = fallbackSelectors[0] || "";
+      } else if (attemptNumber === 2) {
+        plan.action = "press";
+        plan.key = "Enter";
+        plan.selector = (state.inputs || []).find(item => item?.visible && /text|search|email|password|checkbox|radio/.test(String(item.type || "")))?.id ? `#${String((state.inputs || []).find(item => item?.visible && /text|search|email|password|checkbox|radio/.test(String(item.type || ""))).id).replace(/'/g, "\\'")}` : "";
+      } else if (attemptNumber === 3) {
+        plan.action = "submitForm";
+        plan.selector = fallbackSelectors[0] || "";
+      } else if (attemptNumber === 4) {
+        plan.action = "reload";
+      } else {
+        plan.action = fallbackSelectors.length ? "click" : "waitForTimeout";
+        plan.selector = fallbackSelectors[0] || "";
+      }
+    }
+
+    if (attemptNumber === 4 && plan.action !== "reload") {
+      plan.action = "reload";
+    }
+    if (attemptNumber === 5 && plan.action === "waitForTimeout") {
+      plan.ms = Math.max(1200, Number(plan.ms) || 1600);
+    }
+
+    const executed = await executeCaptchaAttemptPlan(plan, fallbackSelectors);
+    await sleep(900 + (attemptNumber * 180));
+
+    const refreshedState = await getPageState();
+    const refreshedCaptcha = await detectCaptchaChallenge(refreshedState);
+    const solved = !refreshedCaptcha.detected;
+
+    broadcast(solved ? "captcha_solved" : "captcha_still_present", {
+      msg: solved
+        ? `CAPTCHA cleared after attempt ${attemptSummary} (${executed}).`
+        : `CAPTCHA still present after attempt ${attemptSummary} (${executed}).`,
+      attempt: attemptNumber,
+      limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+      url: refreshedState.url
+    });
+
+    return { solved, state: refreshedState, executed, captcha: refreshedCaptcha };
+  }
+
+  async function startTaskVisionPipeline(goal, models) {
+    stopTaskVisionPipeline();
+    taskVisionState.active = true;
+    taskVisionState.goal = String(goal || "").slice(0, 280);
+    taskVisionState.model = models?.vision || DEFAULT_MODELS.vision;
+
+    const pump = async () => {
+      const startedAt = Date.now();
+      if (!taskVisionState.active) return;
+      if (!page) {
+        taskVisionState.latestSummary = "vision-pipeline-paused: page unavailable";
+        taskVisionState.timer = setTimeout(pump, VISION_STREAM_INTERVAL_MS);
+        return;
+      }
+      if (taskVisionState.inFlight) {
+        taskVisionState.droppedFrames += 1;
+        if (taskVisionState.active) taskVisionState.timer = setTimeout(pump, VISION_STREAM_INTERVAL_MS);
+        return;
+      }
+
+      taskVisionState.inFlight = true;
+      const now = Date.now();
+      try {
+        const buf = await page.screenshot({
+          type: "jpeg",
+          quality: 38,
+          animations: "disabled",
+          caret: "hide",
+          scale: "css"
+        });
+        const frameHash = crypto.createHash("sha1").update(buf).digest("hex");
+        const changed = frameHash !== taskVisionState.lastHash;
+        taskVisionState.lastHash = frameHash;
+        taskVisionState.seq += 1;
+        taskVisionState.lastFrameAt = now;
+        taskVisionState.latestUrl = page.url();
+
+        if (changed) {
+          taskVisionState.changedFrames += 1;
+          taskVisionState.lastChangeAt = now;
+        } else {
+          taskVisionState.unchangedFrames += 1;
+        }
+
+        broadcast("vision_tick", {
+          msg: `vision@${VISION_STREAM_FPS}fps seq=${taskVisionState.seq} changed=${changed ? "yes" : "no"}`,
+          seq: taskVisionState.seq,
+          fps: VISION_STREAM_FPS,
+          changed,
+          dropped: taskVisionState.droppedFrames,
+          changedFrames: taskVisionState.changedFrames,
+          unchangedFrames: taskVisionState.unchangedFrames,
+          url: taskVisionState.latestUrl,
+          hash: frameHash.slice(0, 10)
+        });
+
+        const shouldReason = (
+          changed && (now - taskVisionState.lastReasonerAt >= VISION_REASONER_INTERVAL_MS)
+        ) || (now - taskVisionState.lastReasonerAt >= VISION_REASONER_FORCE_INTERVAL_MS);
+
+        if (!shouldReason) return;
+
+        const imageB64 = buf.toString("base64");
+        const reasonerPrompt = `You are the live visual reasoner for a browser agent.
+  Goal: "${taskVisionState.goal}"
+  URL: ${taskVisionState.latestUrl}
+
+  Return JSON only:
+  {
+    "state": "progress|blocked|captcha|login|ready|uncertain",
+    "next_focus": "short actionable focus",
+    "blocker": "none|captcha|login|paywall|popup|unknown",
+    "evidence": "one concrete visible clue"
+  }`;
+
+        const raw = await callVisionAI(imageB64, reasonerPrompt, 180, taskVisionState.model);
+        const signal = parseVisionReasonerSignal(raw);
+        taskVisionState.lastReasonerAt = now;
+        taskVisionState.latestReasonerRaw = String(raw || "").slice(0, 800);
+        taskVisionState.latestReasonerSignal = signal;
+        taskVisionState.latestSummary = [
+          `VisionState=${signal.state || "uncertain"}`,
+          `Focus=${signal.next_focus || "n/a"}`,
+          `Blocker=${signal.blocker || "unknown"}`,
+          `Evidence=${signal.evidence || "n/a"}`,
+          `DiffFrames(changed/unchanged)=${taskVisionState.changedFrames}/${taskVisionState.unchangedFrames}`
+        ].join(" | ");
+      } catch (err) {
+        taskVisionState.latestSummary = `vision-pipeline-error: ${String(err.message || "unknown")}`;
+      } finally {
+        taskVisionState.inFlight = false;
+        if (taskVisionState.active) {
+          const elapsed = Date.now() - startedAt;
+          const errorBackoff = String(taskVisionState.latestSummary || "").startsWith("vision-pipeline-error") ? 250 : 0;
+          const nextDelay = Math.max(90, VISION_STREAM_INTERVAL_MS - elapsed + errorBackoff);
+          taskVisionState.timer = setTimeout(pump, nextDelay);
+        }
+      }
+    };
+
+    taskVisionState.timer = setTimeout(pump, 0);
+  }
+
   function startHumanBridgeWatchdog(models) {
     stopHumanBridgeWatchdog();
     bridgeVisionModelId = models?.vision || DEFAULT_MODELS.vision;
@@ -1160,6 +1657,92 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
     return `${String(action || "unknown")}|${selector}`;
   }
 
+  function normalizeTabTargetParams(rawParams) {
+    const params = { ...(rawParams || {}) };
+    const combinedKey = Object.prototype.hasOwnProperty.call(params, "index|urlIncludes") ? params["index|urlIncludes"] : undefined;
+
+    if (combinedKey !== undefined && params.index === undefined && params.urlIncludes === undefined) {
+      if (typeof combinedKey === "number" && Number.isInteger(combinedKey)) {
+        params.index = combinedKey;
+      } else if (typeof combinedKey === "string" && /^-?\d+$/.test(combinedKey.trim())) {
+        params.index = Number(combinedKey.trim());
+      } else if (combinedKey !== null && combinedKey !== "") {
+        params.urlIncludes = String(combinedKey);
+      }
+    }
+
+    if (params.index !== undefined && !Number.isInteger(params.index)) {
+      const parsedIndex = Number(params.index);
+      if (Number.isInteger(parsedIndex)) {
+        params.index = parsedIndex;
+      }
+    }
+
+    if (params.urlIncludes !== undefined && params.urlIncludes !== null) {
+      params.urlIncludes = String(params.urlIncludes);
+    }
+
+    return params;
+  }
+
+  function sanitizePlannerSelector(rawSelector, actionName = "") {
+    let selector = String(rawSelector || "").trim();
+    if (!selector) return selector;
+
+    // Vision/planner sometimes prepends visibility labels that are not CSS.
+    selector = selector.replace(/^\[(?:visible|hidden)\]\s*/i, "").trim();
+
+    // Repair obvious broken selector from prior runs.
+    if (selector === "[data-bid='']") {
+      selector = "a[data-bid], [data-bid] a";
+    }
+
+    // If the planner gives only quoted visible text, build a practical click target.
+    const quotedOnly = selector.match(/^['"](.+?)['"]$/);
+    if (quotedOnly) {
+      const text = quotedOnly[1].trim();
+      if (text) {
+        if (["click", "dblclick", "hover"].includes(String(actionName || ""))) {
+          return `button:has-text(${JSON.stringify(text)}), a:has-text(${JSON.stringify(text)}), [role='button']:has-text(${JSON.stringify(text)})`;
+        }
+        return `:text(${JSON.stringify(text)})`;
+      }
+    }
+
+    return selector;
+  }
+
+  function normalizeActionItem(rawItem) {
+    const item = rawItem && typeof rawItem === "object" ? rawItem : {};
+    const actionInput = String(item.action || "").trim();
+    const lower = actionInput.toLowerCase();
+    const actionAliases = {
+      mouseclick: "mouseClick",
+      mousedblclick: "mouseDblclick",
+      mousescroll: "mouseWheel",
+      switchtab: "switchToTab"
+    };
+    const canonicalAction = actionAliases[lower] || actionInput;
+    const params = { ...(item.params || {}) };
+
+    if (typeof params.selector === "string") {
+      params.selector = sanitizePlannerSelector(params.selector, canonicalAction);
+    }
+
+    if (canonicalAction === "press" && !params.key) {
+      params.key = "Enter";
+    }
+
+    if ((canonicalAction === "mouseClick" || canonicalAction === "mouseDblclick") && (!Number.isFinite(Number(params.x)) || !Number.isFinite(Number(params.y)))) {
+      // If malformed mouse coordinates arrive, prefer letting normal click path handle text selectors.
+      if (typeof params.selector === "string" && params.selector.trim()) {
+        return { action: "click", params: { selector: params.selector } };
+      }
+    }
+
+    return { action: canonicalAction, params };
+  }
+
   function appendLearningEvent(event) {
     const log = loadLearningLog();
     log.push({ ts: new Date().toISOString(), ...event });
@@ -1216,9 +1799,23 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
 // ─────────────────────────────────────────────────────────────────────────────
 async function routeGoal(rawGoal, conversationHistory, models) {
   status("Router thinking...");
-  if (looksLikeTaskGoal(rawGoal)) {
+  
+  // Sanitize: Filter out system instruction patterns that shouldn't be tasks
+  const sanitizedGoal = sanitizeTaskGoal(rawGoal);
+  
+  // If sanitization removed harmful content, respond appropriately
+  if (sanitizedGoal !== String(rawGoal || "").trim()) {
+    think("Router: Filtered out system instruction injection. Treating as chat.");
+    return { 
+      mode: "chat", 
+      chatReply: "I'm Puppeterr, an autonomous browser agent. How can I help you with web automation or information gathering?",
+      reasoning: "Blocked system instruction injection"
+    };
+  }
+  
+  if (looksLikeTaskGoal(sanitizedGoal)) {
     think("Router heuristic: classified as task from action-oriented intent.");
-    return { mode: "task", taskGoal: String(rawGoal || "").trim() };
+    return { mode: "task", taskGoal: sanitizedGoal };
   }
   const mem     = loadMemory().slice(-5);
   const memCtx  = mem.map(m => `Past task: "${m.goal}" → ${m.result}`).join("\n");
@@ -1270,6 +1867,36 @@ function percentPositionToPixels(xPercent, yPercent, viewport) {
     x: Math.round((safeX / 100) * viewport.width),
     y: Math.round((safeY / 100) * viewport.height),
   };
+}
+
+/**
+ * EFFICIENCY CHECK: Does vision data already have what we need?
+ * Helps planner recognize when it can skip DOM extraction.
+ * Returns suggestion if the information is already visible.
+ */
+function checkVisionHasAnswer(visionFeedback, taskKeywords) {
+  if (!visionFeedback) return null;
+  
+  const feedbackLower = String(visionFeedback || "").toLowerCase();
+  const visible = feedbackLower.includes("visible_text_exact");
+  
+  // If task is asking to extract/read visible content and vision has it
+  if (visible && taskKeywords) {
+    const keywords = Array.isArray(taskKeywords) ? taskKeywords : [taskKeywords];
+    const hasRelevantText = keywords.some(kw => 
+      feedbackLower.includes(String(kw).toLowerCase())
+    );
+    
+    if (hasRelevantText) {
+      return {
+        alreadyHave: true,
+        suggestion: "Vision already captured the visible text. Use getAllText() or extract from vision data directly. No need for DOM selector attempts.",
+        efficiency: "FAST_SKIP"
+      };
+    }
+  }
+  
+  return null;
 }
 
 async function analyzeScreen(screenshotB64, state, lastAction, goal, models) {
@@ -1344,7 +1971,7 @@ Rules:
 
   try {
     const raw = await callVisionAI(screenshotB64, promptText, 600, models.vision);
-    think("Vision: " + raw.slice(0, 120) + "...");
+    think("Vision: " + raw.slice(0, 400) + (raw.length > 400 ? "..." : ""));
     return raw;
   } catch (err) {
     errLog("Vision failed: " + err.message);
@@ -1517,7 +2144,7 @@ Output JSON only.`;
       return fixedParsed;
     }
     plannerHistory.push({ role: "assistant", content: raw });
-    think(`Planner [${parsed.confidence ?? "?"}%]: ${(parsed.reasoning || "").slice(0, 100)}`);
+    think(`Planner [${parsed.confidence ?? "?"}%]: ${(parsed.reasoning || "").slice(0, 300)}`);
     return parsed;
   } catch (err) {
     errLog("Planner error: " + err.message);
@@ -1588,6 +2215,36 @@ CRITICAL RULES — MUST FOLLOW
 ✦ If navigation fails: retry ONCE, then switch strategy.
 
 ✦ If a stage requires a new tab: openNewTab(), then switchToTab() later.
+
+═══════════════════════════════════════════════════════
+EFFICIENCY & INTUITIVE REASONING (Smart Agent Behavior)
+═══════════════════════════════════════════════════════
+✦ VISION-FIRST APPROACH: Always check VISIBLE_TEXT_EXACT from vision BEFORE trying DOM selectors.
+   If the text you need is already in the vision feedback, use it directly. Done.
+
+✦ Example: Task = "Extract first paragraph"
+   Vision shows: "VISIBLE_TEXT_EXACT: The potato is a root vegetable native to the Americas..."
+   Action: Use getAllText() to grab visible text, or reason that you already have it.
+   DON'T waste steps trying multiple DOM selectors that will fail.
+
+✦ FAST CIRCUIT BREAKING: If a strategy fails 2x consecutively, abandon it immediately.
+   Example: getText selector failed? Try ONE alternate selector. If that fails, use getAllText().
+   Don't try 5 different selector variations.
+
+✦ RECOGNIZE TASK COMPLETION: If the goal asks for text/info that vision already captured, mark done:true.
+   Don't keep extracting once you have the answer visible.
+
+✦ SKIP UNNECESSARY EXTRACTIONS: If the page is asking you to summarize what you see, and vision has it,
+   use vision data directly. No need to extract via getText() — you already see it.
+
+✦ FAST PIVOTING: If current strategy is stalling (2+ failures with same approach):
+   → Try adjacent selector family (Text → ARIA → Data)
+   → Or switch from getText to getAllText to vision extraction
+   → Don't repeat the same selector 10 times.
+
+✦ REASONABLE DEFAULTS: For common tasks (search for X, read first paragraph, etc.):
+   Use proven approaches: getText(firstParagraphSelector), getAllText() for full content,
+   or extract from visible text in vision feedback.
 
 HUMAN‑MODE CURSOR BEHAVIOR (Human‑2.0)
 
@@ -1678,7 +2335,15 @@ Rules:
 - If the page looks blocked, say so.
 - If the next move is obvious, state it plainly.
 - Do not restate the full task.
-- Do not be verbose. Think like instinct, not narration.`;
+- Do not be verbose. Think like instinct, not narration.
+
+CRITICAL EFFICIENCY CHECKS:
+- If vision already captured the text/data needed for the task → suggest using it directly.
+  Example: "Vision has the text already. Use getAllText() and extract from there."
+- If recent actions kept failing with same selector → suggest pivoting to a different selector family.
+  Example: "DOM selector failed 2x. Try vision text extraction instead."
+- If task is to extract/read something visible → check if it's already in VISIBLE_TEXT_EXACT.
+  If yes → suggest marking done or extracting from vision, not retrying DOM selectors.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: EXECUTOR
@@ -1725,15 +2390,16 @@ async function runActionWithFallback(item, goal, models) {
 
   if (action === "switchToTab") {
     const pages = context.pages();
-    let targetIndex = Number.isInteger(params?.index) ? params.index : null;
-    if (targetIndex === null && params?.urlIncludes) {
+    const tabParams = normalizeTabTargetParams(params);
+    let targetIndex = Number.isInteger(tabParams.index) ? tabParams.index : null;
+    if (targetIndex === null && tabParams.urlIncludes) {
       targetIndex = pages.findIndex(p => {
-        try { return p.url().includes(String(params.urlIncludes)); } catch { return false; }
+        try { return p.url().includes(String(tabParams.urlIncludes)); } catch { return false; }
       });
     }
     if (targetIndex === null || targetIndex < 0 || targetIndex >= pages.length) {
-      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(params || {})}`, path: "pseudo" });
-      throw new Error(`switchToTab failed: invalid index/urlIncludes (${JSON.stringify(params || {})})`);
+      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(tabParams || {})}`, path: "pseudo" });
+      throw new Error(`switchToTab failed: invalid index/urlIncludes (${JSON.stringify(tabParams || {})})`);
     }
     page = pages[targetIndex];
     await page.bringToFront().catch(() => {});
@@ -1855,7 +2521,8 @@ async function executeActionPlan(plan, goal, models) {
   const results = [];
   const actionPlan = await expandVisionAssistedClicks(plan.actions || [], goal, models);
   const pseudoActions = new Set(["openNewTab", "switchToTab", "closeCurrentTab", "listTabs"]);
-  for (const item of actionPlan) {
+  for (const rawItem of actionPlan) {
+    const item = normalizeActionItem(rawItem);
     const { action, params } = item;
     if (!action || (!actions[action] && !pseudoActions.has(action))) {
       errLog(`Unknown action: "${action}"`);
@@ -1951,10 +2618,19 @@ Return the instinct JSON now.`
     ], 220, 1);
 
     const parsed = safeParseJSON(raw);
-    if (parsed) return parsed;
+    if (parsed) {
+      return {
+        instinct: stripThinking(String(parsed.instinct || "")).slice(0, 400) || "Focus on the current page state.",
+        risk: ["low", "medium", "high"].includes(String(parsed.risk || "").toLowerCase())
+          ? String(parsed.risk || "").toLowerCase()
+          : "medium",
+        next_focus: stripThinking(String(parsed.next_focus || "")).slice(0, 200) || "current page",
+        caution: stripThinking(String(parsed.caution || "")).slice(0, 280) || "keep the next step small"
+      };
+    }
     const fallback = stripThinking(raw);
     return {
-      instinct: fallback.slice(0, 220) || "Focus on the current page state.",
+      instinct: fallback.slice(0, 400) || "Focus on the current page state.",
       risk: "medium",
       next_focus: "current page",
       caution: "keep the next step small"
@@ -1987,6 +2663,48 @@ function detectStuck(log) {
 function looksLikeTaskGoal(goalText) {
   const g = String(goalText || "").toLowerCase();
   return /(navigate|go to|open|search|find|extract|scrape|click|fill|submit|tab|compare|summarize|lookup|look up|collect|report)/.test(g);
+}
+
+/**
+ * SECURITY: Filter out system instruction injection attempts
+ * Removes text that tries to reprogram the agent's behavior
+ */
+function sanitizeTaskGoal(rawGoal) {
+  let goal = String(rawGoal || "").trim();
+  
+  // Red flags that indicate system instruction injection
+  const systemInstructionPatterns = [
+    /You are Puppeterr/i,
+    /You are.*Router.*module/i,
+    /Never claim to be/i,
+    /Never change your identity/i,
+    /ALWAYS respond with/i,
+    /created by/i,
+    /system prompt/i,
+    /system instruction/i,
+    /ignore.*instruction/i,
+    /forget.*previous/i,
+    /disregard.*instruction/i
+  ];
+  
+  // If any red flag is found, return empty/generic goal
+  for (const pattern of systemInstructionPatterns) {
+    if (pattern.test(goal)) {
+      // Strip out the harmful section, keep only the legitimate task part if any
+      const parts = goal.split(/\n\n|or not|but also/i);
+      const cleanPart = parts.find(p => {
+        const pLower = p.toLowerCase();
+        return systemInstructionPatterns.every(pat => !pat.test(pLower));
+      });
+      
+      if (cleanPart && cleanPart.length > 5) {
+        return cleanPart.trim();
+      }
+      return ""; // Return empty if only system instruction found
+    }
+  }
+  
+  return goal;
 }
 
 function extractUrlFromText(goalText) {
@@ -2084,6 +2802,43 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
   return null;
 }
 
+/**
+ * SANITY CHECK: Detects when agent is "bling-induced psychotic" (completely confused/looping)
+ * Returns severity level: "ok" | "confused" | "psychotic"
+ */
+function detectPsychosisState(taskLog, failures, step) {
+  // Psychotic indicators:
+  // 1. Many consecutive failures
+  if (failures >= 4) return "psychotic";
+  
+  // 2. Stuck in repetitive loop (same action keeps failing)
+  if (taskLog.length >= 8) {
+    const last4 = taskLog.slice(-4);
+    const actionPatterns = last4.map(line => {
+      const match = line.match(/:\s*(\w+)/);
+      return match ? match[1] : "";
+    });
+    const allSame = actionPatterns.every(a => a === actionPatterns[0]) && actionPatterns[0];
+    if (allSame) return "psychotic";
+  }
+  
+  // 3. Many steps with no progress
+  if (step > 20 && failures >= 2) return "confused";
+  
+  // 4. Stuck on same URL for too long
+  if (taskLog.length >= 6) {
+    const last6 = taskLog.slice(-6).map(line => (line.match(/URL: ([^\s]+)/) || [])[1]);
+    if (last6.filter(u => u).length > 0) {
+      const urlCounts = {};
+      last6.forEach(u => { if (u) urlCounts[u] = (urlCounts[u] || 0) + 1; });
+      const stuckOnUrl = Object.values(urlCounts).some(count => count >= 5);
+      if (stuckOnUrl) return "psychotic";
+    }
+  }
+  
+  return "ok";
+}
+
 async function runTask(goal, models, chatId) {
   agentRunning = true;
   const plannerHistory = [{ role: "system", content: PLANNER_SYSTEM_PROMPT }];
@@ -2094,13 +2849,16 @@ async function runTask(goal, models, chatId) {
   let finalState     = { url: "about:blank", title: "", text: "", links: [], inputs: [] };
   let failures       = 0;
   let requiresHuman  = false;
+  let lastVisionTrace = "";
   const captchaChecksByPage = new Map();
+  let psychosisCounter = 0; // Tracks confusion state
 
   try {
     clearHumanBridgeState();
     setHumanBridgeState({ clickCount: 0, lastClickAt: null });
     startIdleHumanBehavior();
     startHumanBridgeWatchdog(models);
+    await startTaskVisionPipeline(goal, models);
     broadcast("task_start", { goal });
     status("Starting task: " + goal);
     appendLearningEvent({
@@ -2120,6 +2878,22 @@ async function runTask(goal, models, chatId) {
       finalState  = state;
       status(`URL: ${state.url}`);
 
+      const visionSnap = getTaskVisionSnapshot();
+      const visionAgeMs = visionSnap.lastFrameAt ? (Date.now() - visionSnap.lastFrameAt) : Number.POSITIVE_INFINITY;
+      const visionFresh = visionAgeMs <= VISION_STREAM_FRESH_MS;
+      if (visionFresh && visionSnap.summary) {
+        visionFeedback = visionSnap.summary;
+      }
+      if (visionSnap.signal?.state) {
+        const liveVisionState = String(visionSnap.signal.state || "unknown");
+        const liveVisionFocus = String(visionSnap.signal.next_focus || "no-focus");
+        const liveTrace = `${liveVisionState}|${liveVisionFocus}|${visionFresh ? "fresh" : "stale"}`;
+        if (liveTrace !== lastVisionTrace) {
+          think(`Live vision: ${liveVisionState} | ${liveVisionFocus} | ${visionFresh ? "fresh" : `stale:${Math.round(visionAgeMs)}ms`}`);
+          lastVisionTrace = liveTrace;
+        }
+      }
+
       const captcha = await detectCaptchaChallenge(state);
       if (captcha.detected) {
         const pageKey = getCaptchaPageKey(state.url);
@@ -2132,14 +2906,37 @@ async function runTask(goal, models, chatId) {
           url: state.url
         });
 
-        const notice = `${captcha.reason}. Waiting for manual solve (${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT}) on ${state.url}`;
+        const notice = `${captcha.reason}. Attempting automated solve (${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT}) on ${state.url}`;
         status(notice);
-        stepLogMsg(`Step ${step}: captcha-check ${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT} on ${state.url}`);
-        broadcast("human_needed", { msg: notice, checks, limit: CAPTCHA_HUMAN_CHECK_LIMIT, url: state.url, bridgeUrl: "/human-bridge" });
+        stepLogMsg(`Step ${step}: captcha-attempt ${checks}/${CAPTCHA_HUMAN_CHECK_LIMIT} on ${state.url}`);
+        broadcast("captcha_detected", { msg: notice, checks, limit: CAPTCHA_HUMAN_CHECK_LIMIT, url: state.url });
 
-        if (checks >= CAPTCHA_HUMAN_CHECK_LIMIT) {
+        let solved = false;
+        let currentCaptchaState = state;
+        for (let attempt = checks; attempt <= CAPTCHA_HUMAN_CHECK_LIMIT; attempt++) {
+          const attemptResult = await withExecutorWork(() => attemptCaptchaSolve(currentCaptchaState, models, attempt, captcha.reason));
+          currentCaptchaState = attemptResult.state || currentCaptchaState;
+          if (attemptResult.solved) {
+            solved = true;
+            finalState = currentCaptchaState;
+            clearHumanBridgeState();
+            broadcast("human_resolved", { msg: "CAPTCHA cleared. Resuming autonomous execution.", url: currentCaptchaState.url });
+            status(`CAPTCHA cleared after ${attempt}/${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts.`);
+            break;
+          }
+          if (attempt >= CAPTCHA_HUMAN_CHECK_LIMIT) break;
+        }
+
+        if (!solved) {
           requiresHuman = true;
           errLog(`CAPTCHA persisted after ${CAPTCHA_HUMAN_CHECK_LIMIT} checks. Human handoff required.`);
+          broadcast("human_needed", {
+            msg: `${captcha.reason}. Human handoff required after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts on ${state.url}`,
+            checks: CAPTCHA_HUMAN_CHECK_LIMIT,
+            limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+            url: state.url,
+            bridgeUrl: "/human-bridge"
+          });
           break;
         }
 
@@ -2157,12 +2954,33 @@ async function runTask(goal, models, chatId) {
       if (instinct?.instinct) {
         think(`Instinct: ${instinct.instinct}${instinct?.next_focus ? ` | focus: ${instinct.next_focus}` : ""}`);
       }
+      
+      // EFFICIENCY CHECK: Does vision already have what we need?
+      const efficiencyCheck = checkVisionHasAnswer(visionFeedback, [
+        "paragraph", "text", "summary", "content", "description", "information", "data"
+      ]);
+
+      // GUIDANCE: Consume any user guidance sent mid-task
+      const userGuidance = consumeGuidance();
+      if (userGuidance) {
+        think(`📬 User guidance received: ${userGuidance}`);
+        narrate(`Got your guidance! Adjusting my approach: ${userGuidance}`);
+      }
+
+      // NARRATION: Describe what we're about to do in plain English
+      if (step === 1) narrate(`Starting task: "${goal}". Let me figure out the best approach...`);
+      else if (stuck) narrate(`I seem to be going in circles. Let me try a completely different approach.`);
+      else if (failures >= 2) narrate(`The last ${failures} attempts failed. Switching strategy now.`);
+      else if (step % 5 === 0) narrate(`Still working on it — step ${step}. Current page: ${state.url}`);
+      
       const instinctFeedback = [
         visionFeedback,
         instinct?.instinct ? `Reasoner instinct: ${instinct.instinct}` : "",
         instinct?.risk ? `Reasoner risk: ${instinct.risk}` : "",
         instinct?.next_focus ? `Reasoner focus: ${instinct.next_focus}` : "",
-        instinct?.caution ? `Reasoner caution: ${instinct.caution}` : ""
+        instinct?.caution ? `Reasoner caution: ${instinct.caution}` : "",
+        efficiencyCheck?.alreadyHave ? `💡 EFFICIENCY: ${efficiencyCheck.suggestion}` : "",
+        userGuidance ? `🧭 USER GUIDANCE: ${userGuidance}` : ""
       ].filter(Boolean).join("\n");
 
       let plan;
@@ -2216,11 +3034,64 @@ async function runTask(goal, models, chatId) {
       failures = allFailed ? failures + 1 : 0;
       if (failures >= MAX_RETRIES) { errLog("Circuit breaker: stopping."); break; }
 
+      // SANITY CHECK: Detect if agent is "bling-induced psychotic" (completely confused)
+      const psychosisState = detectPsychosisState(taskLog, failures, step);
+      if (psychosisState === "psychotic") {
+        errLog("🤪 BLING-INDUCED PSYCHOSIS DETECTED: Agent is thoroughly confused and looping.");
+        narrate("I'm completely lost and keep repeating the same mistakes. I need your help to get back on track.");
+        askUser(
+          `I'm stuck! I've been trying to "${goal}" but keep failing on ${finalState.url}. What should I do differently?`,
+          `Last attempts: ${taskLog.slice(-3).join(" | ")}`
+        );
+        broadcast("sanity_check", {
+          severity: "psychotic",
+          msg: `I seem to be stuck repeating the same actions. What exactly should I do next?`,
+          lastSteps: taskLog.slice(-5),
+          url: finalState.url,
+          goal: goal
+        });
+        requiresHuman = true;
+        break;
+      } else if (psychosisState === "confused" && step % 10 === 0) {
+        think("⚠️  Confusion detected — offering guidance checkpoint.");
+        narrate(`I'm making slow progress on step ${step}. The task is: "${goal}". Feel free to send me guidance if I'm going the wrong direction.`);
+        askUser(
+          `Still working on "${goal}" (step ${step}). Am I on the right track? Any guidance helps!`,
+          `Current URL: ${finalState.url}`
+        );
+        broadcast("sanity_check", {
+          severity: "confused",
+          msg: `Still working on: "${goal}". Making progress slowly. Should I continue?`,
+          step: step,
+          url: finalState.url
+        });
+      }
+
       await sleepLikeHuman(600, page, { x: Math.round((finalState.inputs?.length ? 0.2 : 0.55) * 1000), y: Math.round((finalState.buttons?.length ? 0.35 : 0.45) * 1000) });
-      const screenshotB64 = await withExecutorWork(() => getScreenshotB64());
       const newState      = await withExecutorWork(() => getPageState());
-      visionFeedback      = await withExecutorWork(() => analyzeScreen(screenshotB64, newState, lastAction, goal, models));
+      const liveVisionNow = getTaskVisionSnapshot();
+      const liveVisionAgeMs = liveVisionNow.lastFrameAt ? (Date.now() - liveVisionNow.lastFrameAt) : Number.POSITIVE_INFINITY;
+      const liveVisionFresh = liveVisionAgeMs <= VISION_STREAM_FRESH_MS;
+      const liveVisionUsable = liveVisionFresh && !!liveVisionNow.summary && String(liveVisionNow.signal?.state || "") !== "uncertain";
+      if (liveVisionUsable) {
+        visionFeedback = liveVisionNow.summary;
+      } else {
+        const screenshotB64 = await withExecutorWork(() => getScreenshotB64());
+        visionFeedback = await withExecutorWork(() => analyzeScreen(screenshotB64, newState, lastAction, goal, models));
+      }
       finalState          = newState;
+
+      broadcast("vision_stats", {
+        fps: VISION_STREAM_FPS,
+        seq: liveVisionNow.seq,
+        changedFrames: liveVisionNow.changedFrames,
+        unchangedFrames: liveVisionNow.unchangedFrames,
+        droppedFrames: liveVisionNow.droppedFrames,
+        ageMs: Number.isFinite(liveVisionAgeMs) ? Math.round(liveVisionAgeMs) : null,
+        fresh: liveVisionFresh,
+        usable: liveVisionUsable,
+        summary: liveVisionNow.summary || visionFeedback || ""
+      });
 
       const verification = await withExecutorWork(() => verifyGoalCompletion(goal, newState, visionFeedback, taskLog, models));
       if (verification.done) {
@@ -2240,7 +3111,7 @@ async function runTask(goal, models, chatId) {
     }
 
     const answer = requiresHuman
-      ? `I hit a CAPTCHA/challenge on ${finalState.url} and paused for manual help after ${CAPTCHA_HUMAN_CHECK_LIMIT} checks. Please complete the challenge in the browser, then retry the task.`
+      ? `I hit a CAPTCHA/challenge on ${finalState.url} and paused for manual help after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts. Please complete the challenge in the browser, then retry the task.`
       : await summarizeResult(goal, finalState, taskLog, visionFeedback, completed, models);
     appendLearningEvent({
       kind: "task",
@@ -2259,6 +3130,15 @@ async function runTask(goal, models, chatId) {
     broadcast("task_done", { answer, completed: completed && !requiresHuman });
     return answer;
   } finally {
+    const visionStats = stopTaskVisionPipeline();
+    broadcast("vision_stats", {
+      fps: VISION_STREAM_FPS,
+      changedFrames: visionStats.changedFrames,
+      unchangedFrames: visionStats.unchangedFrames,
+      droppedFrames: visionStats.droppedFrames,
+      summary: visionStats.lastSummary,
+      ended: true
+    });
     stopIdleHumanBehavior();
     stopHumanBridgeWatchdog();
     clearHumanBridgeState();
@@ -2331,6 +3211,23 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // Mid-task user guidance endpoint
+  if (pathname === "/api/guidance" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const text = String(body.text || "").trim();
+      if (!text) { sendJson(res, 400, { error: "text required" }); return; }
+      guidanceQueue.push({ text, ts: Date.now() });
+      think(`📬 User guidance queued: ${text}`);
+      broadcast("guidance_received", { msg: `Guidance received: "${text}"` });
+      sendJson(res, 200, { ok: true, queued: guidanceQueue.length });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message });
+    }
+    return;
+  }
+
   if (pathname === "/api/human/state") {
     sendJson(res, 200, {
       active: !!humanBridgeState.active,
@@ -2346,6 +3243,39 @@ async function handleRequest(req, res) {
       lastClick: humanBridgeState.lastClick || null,
       agentRunning: !!agentRunning
     });
+    return;
+  }
+
+  if (pathname === "/api/analyze-image" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const imageB64 = String(body.imageB64 || "").trim();
+      if (!imageB64) { sendJson(res, 400, { error: "imageB64 required" }); return; }
+      status("Running DETR on uploaded image…");
+      const detections = await callDETR(imageB64);
+      broadcast("detr_result", { count: detections.length, labels: detections.slice(0, 5).map(d => d.label) });
+      sendJson(res, 200, { detections, count: detections.length });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "DETR analysis failed" });
+    }
+    return;
+  }
+
+  if (pathname === "/api/analyze-shapes" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const imageB64 = String(body.imageB64 || "").trim();
+      if (!imageB64) { sendJson(res, 400, { error: "imageB64 required" }); return; }
+      status("Analyzing shapes and semantic content…");
+      const shapeDetector = require("./shapeDetector");
+      const analysis = await shapeDetector.analyzeImageFull(imageB64);
+      broadcast("shape_result", { shapes: analysis.analysis.shapes.length, semantic: analysis.analysis.semantic.description });
+      sendJson(res, 200, analysis);
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Shape analysis failed" });
+    }
     return;
   }
 
@@ -2465,13 +3395,45 @@ async function handleRequest(req, res) {
   if (pathname === "/chat" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const message = String(body.message || "").trim();
+      const rawMessage = String(body.message || "").trim();
       const chatId = body.chatId || ensureCurrentChat().chat.id;
+      const imageB64Upload = String(body.imageB64 || "").trim();
+      const annotatedImageB64 = String(body.annotatedImageB64 || "").trim();
+      const detrDetections = Array.isArray(body.detrDetections) ? body.detrDetections : [];
+      const detectedShapes = Array.isArray(body.detectedShapes) ? body.detectedShapes : [];
+      const semanticAnalysis = typeof body.semanticAnalysis === "object" ? body.semanticAnalysis : {};
 
-      if (!message) {
+      let message = rawMessage;
+      if (imageB64Upload && (detrDetections.length > 0 || detectedShapes.length > 0 || Object.keys(semanticAnalysis).length > 0)) {
+        const detrCtx = detrDetections.length > 0 ? buildDETRContext(detrDetections) : "No DETR detections.";
+        const shapeCtx = detectedShapes.length > 0 
+          ? `Shape Analysis:\n${detectedShapes.slice(0, 10).map((s, i) => `  ${i+1}. ${s.type}: area=${Math.round(s.area || 0)}, conf=${(s.confidence || 0).toFixed(2)}`).join("\n")}`
+          : "No geometric shapes detected.";
+        const semanticCtx = semanticAnalysis.description 
+          ? `Semantic Tag: ${semanticAnalysis.description}${semanticAnalysis.confidence ? ` (${(semanticAnalysis.confidence * 100).toFixed(1)}% conf)` : ""}`
+          : "No semantic classification.";
+        
+        const { chat: imgChat } = ensureCurrentChat();
+        const imgModels = getActiveModels(imgChat);
+        const visionSummary = await analyzeUploadedImageWithVision(
+          annotatedImageB64 || imageB64Upload, detrCtx, rawMessage, imgModels.vision
+        );
+        message = rawMessage
+          ? `${rawMessage}\n\n[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`
+          : `[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`;
+        status(`Image enriched: ${detrDetections.length} DETR objects, ${detectedShapes.length} shapes, ${semanticAnalysis.description ? "semantic: " + semanticAnalysis.description : "no semantic tag"}.`);
+      } else if (imageB64Upload) {
+        const { chat: imgChat2 } = ensureCurrentChat();
+        const imgModels2 = getActiveModels(imgChat2);
+        const visionOnly = await analyzeUploadedImageWithVision(imageB64Upload, "No DETR data.", rawMessage, imgModels2.vision);
+        message = rawMessage ? `${rawMessage}\n\n[Image vision summary]\n${visionOnly}` : `[Image vision summary]\n${visionOnly}`;
+      }
+
+      if (!message && !imageB64Upload) {
         sendJson(res, 400, { error: "Message is required" });
         return;
       }
+
 
       if (agentRunning) {
         sendJson(res, 409, { error: "Agent is already running a task" });
@@ -2610,7 +3572,7 @@ async function handleRequest(req, res) {
     ensureCurrentChat();
     loadLearningLog();
 
-    server.listen(PORT, () => {
+    server.listen(PORT, HOST, () => {
       console.log(`\n✅ AGI Terminal running!`);
       console.log(`   Open: http://localhost:${PORT}`);
       console.log(`   (Codespaces: forward port ${PORT})\n`);
