@@ -4,7 +4,9 @@
   "description": "An Ai that searches the web using browsing tools",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "repository": {
     "type": "git",
@@ -30,5 +32,8 @@
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "undici": "^8.5.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.106.0"
   }
 }
