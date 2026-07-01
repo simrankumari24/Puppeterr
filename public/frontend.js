@@ -1,5 +1,4 @@
-  module.exports = {
-    FRONTEND_HTML: `
+const FRONTEND_HTML = `
   <!DOCTYPE html>
   <html lang="en">
   <head>
@@ -2060,5 +2059,15 @@
     </script>
   </body>
   </html>
-  `
-  };
+`;
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { FRONTEND_HTML };
+} else if (typeof window !== "undefined") {
+  window.FRONTEND_HTML = FRONTEND_HTML;
+  if (typeof document !== "undefined") {
+    document.open();
+    document.write(FRONTEND_HTML);
+    document.close();
+  }
+}
