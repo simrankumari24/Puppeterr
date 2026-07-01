@@ -4004,7 +4004,7 @@ async function runTask(goal, models, chatId) {
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP SERVER (REST + SSE + Frontend)
 // ─────────────────────────────────────────────────────────────────────────────
-const FRONTEND_HTML = require("./frontend").FRONTEND_HTML;
+const FRONTEND_HTML = require("./public/frontend").FRONTEND_HTML;
 
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch(err => {
