@@ -8,3 +8,9 @@ chat-history.json
 memory.json
 log.json
 view.png
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
