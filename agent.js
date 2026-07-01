@@ -94,6 +94,7 @@ const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 const SESSION_FILE  = "session.json";
 const CHAT_STORE_FILE = "chat-history.json";
 const LOG_FILE = "log.json";
+const { loadSessionState } = require("./sessionStore");
 const BROWSER_PROFILE_DIR = process.env.BROWSER_PROFILE_DIR || path.join(process.cwd(), ".puppeterr-profile");
 const PORT          = process.env.PORT || 3000;
 const HOST          = "0.0.0.0";
@@ -4416,15 +4417,14 @@ async function handleRequest(req, res) {
       "Accept-Language": "en-US,en;q=0.9"
     });
 
-    const hasSession = fs.existsSync(SESSION_FILE);
-    if (hasSession) console.log("📋 Found legacy storage state file: " + SESSION_FILE);
+    const sessionState = await loadSessionState({ localPath: SESSION_FILE });
+    if (sessionState) console.log("📋 Found legacy storage state file: " + SESSION_FILE);
 
     await context.addCookies([]).catch(() => {});
-    if (hasSession) {
+    if (sessionState) {
       try {
-        const storage = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
-        if (Array.isArray(storage.cookies) && storage.cookies.length) {
-          await context.addCookies(storage.cookies);
+        if (Array.isArray(sessionState.cookies) && sessionState.cookies.length) {
+          await context.addCookies(sessionState.cookies);
         }
       } catch (err) {
         console.warn("⚠️ Could not import legacy session storage:", err.message);

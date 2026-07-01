@@ -22,6 +22,7 @@ const readline = require("readline");
 const fs = require("fs");
 const path = require("path");
 const actions = require("./actions");
+const { loadSessionState, saveSessionState } = require("./sessionStore");
 
 chromium.use(StealthPlugin());
 
@@ -509,7 +510,7 @@ async function saveSession() {
   try {
     if (!context) return;
     const state = await context.storageState();
-    fs.writeFileSync(CFG.SESSION_FILE, JSON.stringify(state, null, 2));
+    await saveSessionState({ localPath: CFG.SESSION_FILE }, state);
     log("INFO", "Session saved to", CFG.SESSION_FILE);
   } catch (err) {
     log("WARN", "Could not save session:", err.message.split("\n")[0]);
@@ -556,13 +557,13 @@ async function shutdown() {
 
   browser = await chromium.launch(launchOpts);
 
-  const hasSession = fs.existsSync(CFG.SESSION_FILE);
+  const sessionState = await loadSessionState({ localPath: CFG.SESSION_FILE });
   context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
-    storageState: hasSession ? CFG.SESSION_FILE : undefined
+    storageState: sessionState || undefined
   });
   context.setDefaultTimeout(CFG.ACTION_TIMEOUT_MS);
-  if (hasSession) log("INFO", "Loaded session from", CFG.SESSION_FILE);
+  if (sessionState) log("INFO", "Loaded session from", CFG.SESSION_FILE);
 
   page = await context.newPage();
 

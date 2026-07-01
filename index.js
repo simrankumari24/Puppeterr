@@ -1,6 +1,7 @@
 const express = require("express");
 const { chromium } = require("playwright");
 const fs = require("fs");
+const { loadSessionState, saveSessionState, deleteSessionState } = require("./sessionStore");
 
 const EMAIL = "Naimish.sah@gmail.com";
 const PASSWORD = "N@imish@1";
@@ -223,7 +224,7 @@ app.post("/action", async (req, res) => {
         break;
       case "save_session":
         const storage = await context.storageState();
-        fs.writeFileSync(SESSION_FILE, JSON.stringify(storage, null, 2));
+        await saveSessionState({ localPath: SESSION_FILE }, storage);
         res.send("Session saved to session1.json!");
         break;
       case "goto_dashboard":
@@ -255,10 +256,10 @@ app.post("/action", async (req, res) => {
       ]
     });
 
-    const hasSession = fs.existsSync(SESSION_FILE);
+    const sessionState = await loadSessionState({ localPath: SESSION_FILE });
 
     context = await browser.newContext({
-      storageState: hasSession ? SESSION_FILE : undefined,
+      storageState: sessionState || undefined,
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       locale: "en-US",
       viewport: null
@@ -272,7 +273,7 @@ app.post("/action", async (req, res) => {
       console.log("(Codespaces: forward port " + PORT + " and open preview)\n");
     });
 
-    if (hasSession) {
+    if (sessionState) {
       console.log("Found session1.json — loading saved session...");
       await page.goto("https://copilot.microsoft.com/chats/XMkQs7FSyAuoj3zEX9gmu", { waitUntil: "domcontentloaded" });
       await sleep(3000);
@@ -285,7 +286,7 @@ app.post("/action", async (req, res) => {
         console.log("On project page: " + page.url());
       } else {
         console.log("Session expired — deleting session1.json, please log in via Remote Control.");
-        fs.unlinkSync(SESSION_FILE);
+        await deleteSessionState({ localPath: SESSION_FILE });
         await page.goto("https://replit.com/login", { waitUntil: "domcontentloaded" });
       }
     } else {
