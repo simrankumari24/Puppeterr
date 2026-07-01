@@ -3,3 +3,8 @@ screenshots/
 runs/
 .env
 *.log
+.puppeterr-profile/
+chat-history.json
+memory.json
+log.json
+view.png

@@ -94,17 +94,28 @@ const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 const SESSION_FILE  = "session.json";
 const CHAT_STORE_FILE = "chat-history.json";
 const LOG_FILE = "log.json";
+const BROWSER_PROFILE_DIR = process.env.BROWSER_PROFILE_DIR || path.join(process.cwd(), ".puppeterr-profile");
 const PORT          = process.env.PORT || 3000;
 const HOST          = "0.0.0.0";
 const MAX_STEPS     = 60;
 const MAX_RETRIES   = 3;
 const MODEL_CACHE_MS = 15 * 60 * 1000;
-const CAPTCHA_HUMAN_CHECK_LIMIT = 5;
-const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 2500);
-const ACTION_PACING_DELAY_MS = Number(process.env.ACTION_PACING_DELAY_MS || 120);
-const STEP_SETTLE_DELAY_MS = Number(process.env.STEP_SETTLE_DELAY_MS || 180);
+const CAPTCHA_HUMAN_CHECK_LIMIT = Math.max(1, Number(process.env.CAPTCHA_HUMAN_CHECK_LIMIT || 10));
+const CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES = Math.max(1, Number(process.env.CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES || 3));
+const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 6000);
+const CAPTCHA_GENTLE_MODE_MS = Math.max(30000, Number(process.env.CAPTCHA_GENTLE_MODE_MS || 180000));
+const CAPTCHA_GENTLE_PACING_MULTIPLIER = Math.max(1, Number(process.env.CAPTCHA_GENTLE_PACING_MULTIPLIER || 1.8));
+const CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS = Math.max(200, Number(process.env.CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS || 900));
+const CAPTCHA_GENTLE_BURST_ACTIONS = Math.max(1, Number(process.env.CAPTCHA_GENTLE_BURST_ACTIONS || 2));
+const CAPTCHA_GENTLE_MICRO_BREAK_MS = Math.max(400, Number(process.env.CAPTCHA_GENTLE_MICRO_BREAK_MS || 1600));
+const BASE_NAVIGATION_COOLDOWN_MS = Math.max(0, Number(process.env.BASE_NAVIGATION_COOLDOWN_MS || 2500));
+const CAPTCHA_GENTLE_NAVIGATION_COOLDOWN_MS = Math.max(BASE_NAVIGATION_COOLDOWN_MS, Number(process.env.CAPTCHA_GENTLE_NAVIGATION_COOLDOWN_MS || 12000));
+const BASE_POST_STEP_PAUSE_MS = Math.max(200, Number(process.env.BASE_POST_STEP_PAUSE_MS || 600));
+const CAPTCHA_GENTLE_POST_STEP_PAUSE_MS = Math.max(BASE_POST_STEP_PAUSE_MS, Number(process.env.CAPTCHA_GENTLE_POST_STEP_PAUSE_MS || 1500));
+const ACTION_PACING_DELAY_MS = Number(process.env.ACTION_PACING_DELAY_MS || 350);
+const STEP_SETTLE_DELAY_MS = Number(process.env.STEP_SETTLE_DELAY_MS || 450);
 const PLANNER_RETRY_DELAY_MS = Number(process.env.PLANNER_RETRY_DELAY_MS || 700);
-const POST_STEP_DELAY_MS = Number(process.env.POST_STEP_DELAY_MS || 140);
+const POST_STEP_DELAY_MS = Number(process.env.POST_STEP_DELAY_MS || 300);
 const VISION_SAMPLE_EVERY_STEPS = Math.max(1, Number(process.env.VISION_SAMPLE_EVERY_STEPS || 2));
 const VERIFY_EVERY_STEPS = Math.max(1, Number(process.env.VERIFY_EVERY_STEPS || 2));
 const BRIDGE_VISION_INTERVAL_MS = 1000;
@@ -114,8 +125,18 @@ const VISION_STREAM_INTERVAL_MS = Math.max(90, Math.round(1000 / VISION_STREAM_F
 const VISION_REASONER_INTERVAL_MS = Math.max(400, Number(process.env.VISION_REASONER_INTERVAL_MS || 900));
 const VISION_REASONER_FORCE_INTERVAL_MS = Math.max(1200, Number(process.env.VISION_REASONER_FORCE_INTERVAL_MS || 2500));
 const VISION_STREAM_FRESH_MS = Math.max(600, Number(process.env.VISION_STREAM_FRESH_MS || 1800));
-const IDLE_HUMAN_IDLE_MIN_MS = 1400;
-const IDLE_HUMAN_IDLE_MAX_MS = 4200;
+const VISION_CLICK_CANDIDATE_COUNT = 10;
+const HYBRID_SELECTOR_VARIANTS = Math.max(1, Math.min(5, Number(process.env.HYBRID_SELECTOR_VARIANTS || 5)));
+const HYBRID_URL_CHANGE_MAX_CYCLES = Math.max(1, Number(process.env.HYBRID_URL_CHANGE_MAX_CYCLES || 2));
+const CONFUSION_RESEARCH_COOLDOWN_MS = Math.max(30000, Number(process.env.CONFUSION_RESEARCH_COOLDOWN_MS || 180000));
+const CONFUSION_RESEARCH_RESULT_LIMIT = Math.max(3, Number(process.env.CONFUSION_RESEARCH_RESULT_LIMIT || 5));
+const DYNAMIC_UI_CHANGED_FRAME_THRESHOLD = Math.max(4, Number(process.env.DYNAMIC_UI_CHANGED_FRAME_THRESHOLD || 8));
+const DYNAMIC_UI_CHANGE_RATIO = Math.max(1, Number(process.env.DYNAMIC_UI_CHANGE_RATIO || 1.5));
+const IDLE_HUMAN_IDLE_MIN_MS = Number(process.env.IDLE_HUMAN_IDLE_MIN_MS || 2500);
+const IDLE_HUMAN_IDLE_MAX_MS = Number(process.env.IDLE_HUMAN_IDLE_MAX_MS || 7000);
+const IDLE_HUMAN_SCHEDULE_FLOOR_MS = Math.max(120, Number(process.env.IDLE_HUMAN_SCHEDULE_FLOOR_MS || 180));
+const IDLE_HUMAN_HOTSPOT_SAMPLE_LIMIT = Math.max(8, Number(process.env.IDLE_HUMAN_HOTSPOT_SAMPLE_LIMIT || 28));
+const IDLE_HUMAN_MAX_TARGET_REUSE = Math.max(2, Number(process.env.IDLE_HUMAN_MAX_TARGET_REUSE || 3));
 const MAX_LOG_ENTRIES = 4000;
 const AUTH_COOKIE_NAME = "puppeterr_auth";
 const AUTH_SECRET = process.env.APP_AUTH_SECRET || "puppeterr-local-secret";
@@ -190,6 +211,24 @@ let idleHumanTimer = null;
 let idleHumanInFlight = false;
 let lastExecutorWorkAt = 0;
 let nextIdleNudgeAt = 0;
+let idleHumanState = {
+  lastX: 0,
+  lastY: 0,
+  lastKind: "",
+  reuseCount: 0,
+  lastUrl: "",
+  sampleCursor: 0,
+  hotspotTrail: []
+};
+let confusionResearchState = {
+  lastKey: "",
+  lastAt: 0,
+  lastQuery: "",
+  hints: [],
+  sources: [],
+  targetDomain: "",
+  currentGoal: ""
+};
 let humanBridgeState = {
   active: false,
   checks: 0,
@@ -231,9 +270,180 @@ function randomIdleDelayMs() {
   return Math.round(min + Math.random() * (max - min));
 }
 
+function clampToViewport(value, max, min = 1) {
+  return Math.max(min, Math.min(max - min, Math.round(Number(value) || min)));
+}
+
+function resolveIdleHintCoordinate(value, axisSize, fallbackRatio = 0.5) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return Math.round(axisSize * fallbackRatio);
+  if (n >= 0 && n <= 1) return Math.round(n * axisSize);
+  if (n >= 0 && n <= 1000) return Math.round((n / 1000) * axisSize);
+  return Math.round(n);
+}
+
+function weightedPick(items) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const total = items.reduce((sum, item) => sum + Math.max(0.01, Number(item?.weight || 1)), 0);
+  let roll = Math.random() * total;
+  for (const item of items) {
+    roll -= Math.max(0.01, Number(item?.weight || 1));
+    if (roll <= 0) return item;
+  }
+  return items[items.length - 1];
+}
+
+async function getIdleHotspotSnapshot(page) {
+  if (!page) return null;
+  return page.evaluate((limit) => {
+    const width = Math.max(1, Math.round(window.innerWidth || 1920));
+    const height = Math.max(1, Math.round(window.innerHeight || 1080));
+    const isVisible = (el) => {
+      if (!el) return false;
+      const style = window.getComputedStyle(el);
+      if (!style || style.visibility === "hidden" || style.display === "none" || Number(style.opacity || 1) < 0.05) return false;
+      const rect = el.getBoundingClientRect();
+      return rect && rect.width >= 8 && rect.height >= 8 && rect.bottom >= 0 && rect.right >= 0 && rect.left <= width && rect.top <= height;
+    };
+
+    const selector = [
+      "button",
+      "a[href]",
+      "input:not([type='hidden'])",
+      "textarea",
+      "select",
+      "[role='button']",
+      "[role='tab']",
+      "[role='menuitem']",
+      "[aria-label]"
+    ].join(",");
+
+    const nodes = Array.from(document.querySelectorAll(selector)).filter(isVisible).slice(0, Math.max(8, Number(limit) || 24));
+    const hotspots = nodes.map((el) => {
+      const rect = el.getBoundingClientRect();
+      const tag = String(el.tagName || "").toLowerCase();
+      const role = String(el.getAttribute("role") || "").toLowerCase();
+      const type = String(el.getAttribute("type") || "").toLowerCase();
+      const text = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim().slice(0, 60).toLowerCase();
+      const centerX = rect.left + (rect.width / 2);
+      const centerY = rect.top + (rect.height / 2);
+      return {
+        x: Math.round(centerX),
+        y: Math.round(centerY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        tag,
+        role,
+        type,
+        text
+      };
+    });
+
+    const active = document.activeElement;
+    let activeRect = null;
+    if (active && typeof active.getBoundingClientRect === "function") {
+      const r = active.getBoundingClientRect();
+      if (r && r.width > 0 && r.height > 0) {
+        activeRect = {
+          left: Math.round(r.left),
+          top: Math.round(r.top),
+          right: Math.round(r.right),
+          bottom: Math.round(r.bottom)
+        };
+      }
+    }
+
+    return {
+      width,
+      height,
+      hotspots,
+      activeRect,
+      url: String(location.href || "about:blank")
+    };
+  }, IDLE_HUMAN_HOTSPOT_SAMPLE_LIMIT).catch(() => null);
+}
+
+function pickIdleTarget(snapshot, state = {}) {
+  const width = Math.max(1, Number(snapshot?.width || 1920));
+  const height = Math.max(1, Number(snapshot?.height || 1080));
+  const url = String(snapshot?.url || "about:blank");
+  const explicitX = resolveIdleHintCoordinate(state.x, width, 0.52);
+  const explicitY = resolveIdleHintCoordinate(state.y, height, 0.42);
+
+  const hasExplicit = Number.isFinite(Number(state.x)) || Number.isFinite(Number(state.y));
+  if (hasExplicit) {
+    const x = clampToViewport(explicitX + (Math.random() * 22 - 11), width);
+    const y = clampToViewport(explicitY + (Math.random() * 18 - 9), height);
+    return { x, y, kind: "hinted", url };
+  }
+
+  const hotspots = Array.isArray(snapshot?.hotspots) ? snapshot.hotspots : [];
+  const weightedHotspots = hotspots.map(h => {
+    let weight = 1;
+    if (h.tag === "a" || h.role === "tab") weight += 0.7;
+    if (h.tag === "button" || h.role === "button") weight += 0.5;
+    if (/(search|menu|more|spec|detail|ticket|buy|shop)/.test(h.text)) weight += 1.4;
+    if (h.type === "password" || h.type === "email") weight = Math.max(0.25, weight - 0.6);
+    return { ...h, weight };
+  });
+
+  let chosen = weightedPick(weightedHotspots);
+  if (chosen && idleHumanState.lastX && idleHumanState.lastY) {
+    const dx = Number(chosen.x || 0) - idleHumanState.lastX;
+    const dy = Number(chosen.y || 0) - idleHumanState.lastY;
+    const dist = Math.hypot(dx, dy);
+    const sameKind = idleHumanState.lastKind === "hotspot";
+    if (sameKind && dist < 18 && idleHumanState.reuseCount >= IDLE_HUMAN_MAX_TARGET_REUSE) {
+      const rotated = weightedHotspots[(idleHumanState.sampleCursor++) % Math.max(1, weightedHotspots.length)] || chosen;
+      chosen = rotated;
+    }
+  }
+
+  if (chosen) {
+    const x = clampToViewport(Number(chosen.x || (width * 0.5)) + (Math.random() * 14 - 7), width);
+    const y = clampToViewport(Number(chosen.y || (height * 0.45)) + (Math.random() * 12 - 6), height);
+    return { x, y, kind: "hotspot", url };
+  }
+
+  const centerLaneX = width * (0.28 + Math.random() * 0.44);
+  const centerLaneY = height * (0.25 + Math.random() * 0.5);
+  return {
+    x: clampToViewport(centerLaneX, width),
+    y: clampToViewport(centerLaneY, height),
+    kind: "ambient",
+    url
+  };
+}
+
+function scheduleIdleHumanTick() {
+  if (!agentRunning || !page) return;
+  if (idleHumanTimer) {
+    clearTimeout(idleHumanTimer);
+    idleHumanTimer = null;
+  }
+  const delay = Math.max(IDLE_HUMAN_SCHEDULE_FLOOR_MS, Number(nextIdleNudgeAt || 0) - Date.now());
+  idleHumanTimer = setTimeout(async () => {
+    if (!agentRunning || !page || idleHumanInFlight) {
+      scheduleIdleHumanTick();
+      return;
+    }
+    if (Date.now() < nextIdleNudgeAt) {
+      scheduleIdleHumanTick();
+      return;
+    }
+    idleHumanInFlight = true;
+    try {
+      await humanIdleNudge(page);
+    } catch {}
+    idleHumanInFlight = false;
+    markExecutorWork();
+  }, delay);
+}
+
 function markExecutorWork() {
   lastExecutorWorkAt = Date.now();
   nextIdleNudgeAt = lastExecutorWorkAt + randomIdleDelayMs();
+  if (agentRunning && page) scheduleIdleHumanTick();
 }
 
 async function withExecutorWork(workFn) {
@@ -248,46 +458,69 @@ async function withExecutorWork(workFn) {
 function startIdleHumanBehavior() {
   stopIdleHumanBehavior();
   markExecutorWork();
-
-  idleHumanTimer = setInterval(async () => {
-    if (!agentRunning || !page || idleHumanInFlight) return;
-    if (Date.now() < nextIdleNudgeAt) return;
-
-    idleHumanInFlight = true;
-    try {
-      await humanIdleNudge(page);
-    } catch {}
-    idleHumanInFlight = false;
-    markExecutorWork();
-  }, 350);
+  scheduleIdleHumanTick();
 }
 
 function stopIdleHumanBehavior() {
   if (idleHumanTimer) {
-    clearInterval(idleHumanTimer);
+    clearTimeout(idleHumanTimer);
     idleHumanTimer = null;
   }
   idleHumanInFlight = false;
   nextIdleNudgeAt = 0;
+  idleHumanState = {
+    lastX: 0,
+    lastY: 0,
+    lastKind: "",
+    reuseCount: 0,
+    lastUrl: "",
+    sampleCursor: 0,
+    hotspotTrail: []
+  };
 }
 
 async function humanIdleNudge(page, state = {}) {
   if (!page) return;
-  const viewport = await page.evaluate(() => ({
-    width: Math.max(1, Math.round(window.innerWidth || 1920)),
-    height: Math.max(1, Math.round(window.innerHeight || 1080))
-  })).catch(() => ({ width: 1920, height: 1080 }));
+  const snapshot = await getIdleHotspotSnapshot(page);
+  const viewport = {
+    width: Math.max(1, Number(snapshot?.width || 1920)),
+    height: Math.max(1, Number(snapshot?.height || 1080))
+  };
+  const target = pickIdleTarget(snapshot || {}, state);
+  const targetX = clampToViewport(target.x, viewport.width);
+  const targetY = clampToViewport(target.y, viewport.height);
 
-  const baseX = Number.isFinite(state.x) ? state.x : Math.round(viewport.width * (0.35 + Math.random() * 0.3));
-  const baseY = Number.isFinite(state.y) ? state.y : Math.round(viewport.height * (0.28 + Math.random() * 0.38));
-  const jitterX = Math.round((Math.random() * 36) - 18);
-  const jitterY = Math.round((Math.random() * 28) - 14);
-  const targetX = Math.max(8, Math.min(viewport.width - 8, baseX + jitterX));
-  const targetY = Math.max(8, Math.min(viewport.height - 8, baseY + jitterY));
+  const shouldMicroOvershoot = Math.random() < 0.42;
+  const overshootX = shouldMicroOvershoot ? clampToViewport(targetX + (Math.random() * 20 - 10), viewport.width) : targetX;
+  const overshootY = shouldMicroOvershoot ? clampToViewport(targetY + (Math.random() * 16 - 8), viewport.height) : targetY;
 
   try {
     await page.bringToFront().catch(() => {});
+    if (shouldMicroOvershoot) {
+      await humanMove(page, overshootX, overshootY, { kind: "idle", emitEvery: 4 });
+      await page.waitForTimeout(18 + Math.random() * 70).catch(() => {});
+    }
     await humanMove(page, targetX, targetY, { kind: "idle", emitEvery: 4 });
+
+    const shortPause = 22 + Math.random() * 95;
+    await page.waitForTimeout(shortPause).catch(() => {});
+
+    const tinyDriftX = clampToViewport(targetX + (Math.random() * 8 - 4), viewport.width);
+    const tinyDriftY = clampToViewport(targetY + (Math.random() * 8 - 4), viewport.height);
+    if (Math.random() < 0.5) {
+      await humanMove(page, tinyDriftX, tinyDriftY, { kind: "idle", emitEvery: 5 });
+    }
+
+    const sameKind = idleHumanState.lastKind === target.kind && idleHumanState.lastUrl === target.url;
+    idleHumanState.lastX = targetX;
+    idleHumanState.lastY = targetY;
+    idleHumanState.lastKind = target.kind;
+    idleHumanState.lastUrl = target.url;
+    idleHumanState.reuseCount = sameKind ? idleHumanState.reuseCount + 1 : 0;
+    idleHumanState.hotspotTrail.push({ x: targetX, y: targetY, kind: target.kind, ts: Date.now() });
+    if (idleHumanState.hotspotTrail.length > 14) {
+      idleHumanState.hotspotTrail.splice(0, idleHumanState.hotspotTrail.length - 14);
+    }
   } catch {}
 }
 
@@ -301,6 +534,45 @@ async function sleepLikeHuman(ms, page, state = {}) {
     await sleep(chunk);
     elapsed += chunk;
     if (elapsed < total) await humanIdleNudge(page, state);
+  }
+}
+
+async function waitForDomQuiet(page, options = {}) {
+  if (!page) return;
+  const quietMs = Math.max(80, Number(options.quietMs || 240));
+  const timeoutMs = Math.max(300, Number(options.timeoutMs || 2200));
+  const pollMs = Math.max(40, Number(options.pollMs || 80));
+  const start = Date.now();
+  let lastMutationAt = Date.now();
+
+  try {
+    await page.evaluate(() => {
+      if (window.__puppeterrDomQuietObserverInstalled) return;
+      window.__puppeterrLastDomMutationAt = Date.now();
+      const observer = new MutationObserver(() => {
+        window.__puppeterrLastDomMutationAt = Date.now();
+      });
+      observer.observe(document.documentElement || document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: false
+      });
+      window.__puppeterrDomQuietObserverInstalled = true;
+    });
+  } catch {
+    return;
+  }
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const stamp = await page.evaluate(() => Number(window.__puppeterrLastDomMutationAt || Date.now()));
+      if (Number.isFinite(stamp)) lastMutationAt = stamp;
+      if (Date.now() - lastMutationAt >= quietMs) return;
+    } catch {
+      return;
+    }
+    await sleep(pollMs);
   }
 }
 
@@ -2002,6 +2274,77 @@ function dedupePoints(points, minDistance = 8) {
   return deduped;
 }
 
+function makePointCloud(points, viewport, count = 10) {
+  const width = Math.max(1, Number(viewport?.width || 1920));
+  const height = Math.max(1, Number(viewport?.height || 1080));
+  const normalized = (Array.isArray(points) ? points : [])
+    .map(point => ({
+      x: clampNumber(point?.x, 0, width - 1),
+      y: clampNumber(point?.y, 0, height - 1)
+    }))
+    .filter(point => point.x !== null && point.y !== null);
+
+  const deduped = dedupePoints(normalized, 6);
+  const seed = deduped[0] || {
+    x: Math.round(width * 0.5),
+    y: Math.round(height * 0.5)
+  };
+
+  while (deduped.length < count) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 4 + Math.random() * 28;
+    deduped.push({
+      x: clampNumber(seed.x + (Math.cos(angle) * radius), 0, width - 1),
+      y: clampNumber(seed.y + (Math.sin(angle) * radius), 0, height - 1)
+    });
+  }
+  return dedupePoints(deduped, 4).slice(0, count);
+}
+
+function buildSelectorVariants(selector, maxVariants = HYBRID_SELECTOR_VARIANTS) {
+  const base = String(selector || "").trim();
+  if (!base) return [];
+  const variants = [];
+  const seen = new Set();
+  const add = value => {
+    const next = String(value || "").trim();
+    if (!next || seen.has(next)) return;
+    seen.add(next);
+    variants.push(next);
+  };
+
+  add(base);
+  if (!/:visible\b/.test(base)) add(`${base}:visible`);
+
+  const hasTextMatch = base.match(/:has-text\((['"])(.*?)\1\)/i);
+  const text = String(hasTextMatch?.[2] || "").trim();
+  if (text) {
+    const quoted = JSON.stringify(text);
+    add(`button:has-text(${quoted})`);
+    add(`[role='button']:has-text(${quoted})`);
+    add(`a:has-text(${quoted})`);
+    add(`text=${quoted}`);
+  }
+
+  return variants.slice(0, Math.max(1, maxVariants));
+}
+
+function isDynamicUiHot(visionSnap) {
+  const changedFrames = Number(visionSnap?.changedFrames || 0);
+  const unchangedFrames = Number(visionSnap?.unchangedFrames || 0);
+  const signalState = String(visionSnap?.signal?.state || "").toLowerCase();
+  const blocker = String(visionSnap?.signal?.blocker || "").toLowerCase();
+  const focus = String(visionSnap?.signal?.next_focus || "").toLowerCase();
+  const evidence = String(visionSnap?.signal?.evidence || "").toLowerCase();
+
+  const mutationHeavy = changedFrames >= DYNAMIC_UI_CHANGED_FRAME_THRESHOLD &&
+    changedFrames >= Math.max(1, Math.round(unchangedFrames * DYNAMIC_UI_CHANGE_RATIO));
+  const signalHot = /blocked|uncertain/.test(signalState) && /(loading|spinner|popup|modal|updat|render|animat|transition)/.test(`${focus} ${evidence}`);
+  const blockerHot = /(popup|loading|unknown)/.test(blocker) && changedFrames >= Math.max(4, DYNAMIC_UI_CHANGED_FRAME_THRESHOLD - 2);
+
+  return mutationHeavy || signalHot || blockerHot;
+}
+
 async function getVisionClickPointsForSelector(goal, selector, models) {
   const screenshotB64 = await getScreenshotB64();
   const viewport = await page.evaluate(() => ({
@@ -2019,60 +2362,65 @@ Using the screenshot only, locate the most likely visual target for the selector
   "points": [
     { "x": 0, "y": 0 },
     { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
+    { "x": 0, "y": 0 },
     { "x": 0, "y": 0 }
   ]
 }
 
 Rules:
 - Coordinates use a top-left origin.
-- Prefer center-ish points inside the same button/control.
+- Return REAL candidate click points from visible UI only (no synthetic offsets).
+- Spread across plausible hotspots for this target so at least one click lands if the UI is shifting.
 - Keep points inside viewport bounds.
-- Return exactly 3 points.`;
+- Return exactly ${VISION_CLICK_CANDIDATE_COUNT} points.`;
 
   const raw = await callVisionAI(screenshotB64, promptText, 280, models.vision);
   const parsed = safeParseJSON(raw);
   const points = Array.isArray(parsed?.points) ? parsed.points : [];
-
-  const cleaned = dedupePoints(points.map(point => ({
-    x: clampNumber(point?.x, 0, viewport.width - 1),
-    y: clampNumber(point?.y, 0, viewport.height - 1)
-  })).filter(point => point.x !== null && point.y !== null));
-
-  if (!cleaned.length) return [];
-
-  const [base] = cleaned;
-  const offsets = [[0, 0], [10, 0], [-10, 0], [0, 10], [0, -10], [14, 8], [-14, -8]];
-  const finalPoints = [...cleaned];
-  for (const [dx, dy] of offsets) {
-    if (finalPoints.length >= 3) break;
-    const candidate = {
-      x: clampNumber(base.x + dx, 0, viewport.width - 1),
-      y: clampNumber(base.y + dy, 0, viewport.height - 1)
-    };
-    if (candidate.x === null || candidate.y === null) continue;
-    finalPoints.push(candidate);
-  }
-
-  return dedupePoints(finalPoints).slice(0, 3);
+  return makePointCloud(points, viewport, VISION_CLICK_CANDIDATE_COUNT);
 }
 
-async function expandVisionAssistedClicks(planActions, goal, models) {
+async function expandVisionAssistedClicks(planActions, goal, models, options = {}) {
   const expanded = [];
+  const visionOnlyClickMode = !!options.visionOnlyClickMode;
   for (const item of planActions || []) {
-    expanded.push(item);
     const action = item?.action;
     const selector = item?.params?.selector;
-    if (!selector || (action !== "click" && action !== "dblclick")) continue;
+    const isSelectorClick = !!selector && (action === "click" || action === "dblclick");
+    if (!isSelectorClick) {
+      expanded.push(item);
+      continue;
+    }
+
     try {
       const points = await getVisionClickPointsForSelector(goal, selector, models);
-      if (!points.length) continue;
-      stepLogMsg(`Vision click assist: ${selector} -> ${points.map(p => `(${p.x},${p.y})`).join(" ")}`);
-      const pointerAction = action === "dblclick" ? "mouseDblclick" : "mouseClick";
-      for (const point of points) {
-        expanded.push({ action: pointerAction, params: { x: point.x, y: point.y } });
-      }
+      const selectorVariants = buildSelectorVariants(selector, HYBRID_SELECTOR_VARIANTS);
+      const hybridAction = action === "dblclick" ? "hybridDblclick" : "hybridClick";
+      stepLogMsg(`Hybrid click strategy: ${selector} -> cqards=${points.length}, selectors=${selectorVariants.length}${visionOnlyClickMode ? " (dynamic-ui mode)" : ""}`);
+      expanded.push({
+        action: hybridAction,
+        params: {
+          selector,
+          cqards: points,
+          selectorVariants
+        }
+      });
     } catch (err) {
       think(`Vision click assist skipped for ${selector}: ${err.message}`);
+      expanded.push({
+        action: action === "dblclick" ? "hybridDblclick" : "hybridClick",
+        params: {
+          selector,
+          cqards: [],
+          selectorVariants: buildSelectorVariants(selector, HYBRID_SELECTOR_VARIANTS)
+        }
+      });
     }
   }
   return expanded;
@@ -2193,7 +2541,7 @@ CRITICAL RULES — MUST FOLLOW
 CRITICAL RULES — MUST FOLLOW
 
 ✦ NEVER use waitForLoadState("complete"). Valid states: "load", "domcontentloaded", "networkidle", "commit".
-
+✦ when you dont understand the UI of a search engine go to this https://bing.com/search?q=*your query here*
 ✦ NEVER click [type='submit'] or [name='search']. These are hidden.
 → Use submitForm() or press(inputSelector, "Enter").
 
@@ -2449,6 +2797,40 @@ async function runActionWithFallback(item, goal, models) {
     }
   }
 
+  if (action === "mouseClick" && Number.isFinite(Number(params?.x)) && Number.isFinite(Number(params?.y))) {
+    try {
+      await humanClick(page, Number(params.x), Number(params.y));
+      const resultText = `human-click(${Math.round(Number(params.x))},${Math.round(Number(params.y))})`;
+      recordOutcome("ok", { result: resultText, path: "primary-human-pointer" });
+      return { action, status: "ok", result: resultText };
+    } catch (err) {
+      errLog(`${action} human-click failed: ${err.message}`);
+    }
+  }
+
+  if (action === "mouseDblclick" && Number.isFinite(Number(params?.x)) && Number.isFinite(Number(params?.y))) {
+    try {
+      await humanMove(page, Number(params.x), Number(params.y), { kind: "predblclick" });
+      await page.mouse.dblclick(Number(params.x), Number(params.y), { delay: 60 + Math.random() * 110 });
+      const viewport = await page.evaluate(() => ({
+        width: Math.max(1, Math.round(window.__puppeterrViewportWidth || window.innerWidth || 1920)),
+        height: Math.max(1, Math.round(window.__puppeterrViewportHeight || window.innerHeight || 1080))
+      })).catch(() => ({ width: 1920, height: 1080 }));
+      broadcast("mouse_click", {
+        x: Math.round(Number(params.x)),
+        y: Math.round(Number(params.y)),
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+        kind: "dblclick"
+      });
+      const resultText = `human-dblclick(${Math.round(Number(params.x))},${Math.round(Number(params.y))})`;
+      recordOutcome("ok", { result: resultText, path: "primary-human-pointer" });
+      return { action, status: "ok", result: resultText };
+    } catch (err) {
+      errLog(`${action} human-dblclick failed: ${err.message}`);
+    }
+  }
+
   // Primary attempt
   try {
     const result = await actions[action]({ page, context, ...(params || {}) });
@@ -2517,10 +2899,21 @@ async function runActionWithFallback(item, goal, models) {
   }
 }
 
-async function executeActionPlan(plan, goal, models) {
+async function executeActionPlan(plan, goal, models, throttle = {}) {
   const results = [];
-  const actionPlan = await expandVisionAssistedClicks(plan.actions || [], goal, models);
-  const pseudoActions = new Set(["openNewTab", "switchToTab", "closeCurrentTab", "listTabs"]);
+  const actionPlan = await expandVisionAssistedClicks(plan.actions || [], goal, models, {
+    visionOnlyClickMode: !!throttle.visionOnlyClickMode
+  });
+  const pseudoActions = new Set(["openNewTab", "switchToTab", "closeCurrentTab", "listTabs", "hybridClick", "hybridDblclick"]);
+  const domQuietActions = new Set(["click", "dblclick", "hover", "type", "fill", "press", "check", "uncheck", "selectOption", "scrollIntoView", "submitForm"]);
+  const pacingMultiplier = Math.max(0.5, Number(throttle.pacingMultiplier || 1));
+  const preActionIdleMs = Math.max(0, Number(throttle.preActionIdleMs || 0));
+  const burstLimit = Math.max(1, Number(throttle.burstLimit || Number.POSITIVE_INFINITY));
+  const microBreakMs = Math.max(0, Number(throttle.microBreakMs || 0));
+  const navigationCooldownMs = Math.max(0, Number(throttle.navigationCooldownMs || 0));
+  const navigationCooldownByHost = throttle.navigationCooldownByHost instanceof Map ? throttle.navigationCooldownByHost : null;
+  let burstCount = 0;
+
   for (const rawItem of actionPlan) {
     const item = normalizeActionItem(rawItem);
     const { action, params } = item;
@@ -2529,10 +2922,105 @@ async function executeActionPlan(plan, goal, models) {
       results.push({ action, status: "error", error: `Unknown action: ${action}` });
       continue;
     }
+
+    if (action === "goto" && params?.url && navigationCooldownByHost && navigationCooldownMs > 0) {
+      const gotoHost = getHostFromUrl(String(params.url));
+      const lastAt = Number(navigationCooldownByHost.get(gotoHost) || 0);
+      const elapsed = Date.now() - lastAt;
+      if (lastAt && elapsed < navigationCooldownMs) {
+        const waitMs = navigationCooldownMs - elapsed;
+        think(`Navigation cooldown on ${gotoHost || "unknown-host"}: waiting ${waitMs}ms to avoid rapid reload patterns.`);
+        await sleepLikeHuman(waitMs, page);
+      }
+      navigationCooldownByHost.set(gotoHost, Date.now());
+    }
+
+    if (preActionIdleMs > 0) {
+      const preDelay = Math.round(preActionIdleMs * (0.8 + Math.random() * 0.5));
+      await sleepLikeHuman(preDelay, page);
+    }
+
+    if (domQuietActions.has(action)) {
+      await waitForDomQuiet(page, { quietMs: 260, timeoutMs: 2000 });
+    }
+
+    if (action === "hybridClick" || action === "hybridDblclick") {
+      const baseSelector = String(params?.selector || "").trim();
+      const cqards = Array.isArray(params?.cqards) ? params.cqards.slice(0, VISION_CLICK_CANDIDATE_COUNT) : [];
+      const selectorVariants = Array.isArray(params?.selectorVariants)
+        ? params.selectorVariants.slice(0, HYBRID_SELECTOR_VARIANTS)
+        : buildSelectorVariants(baseSelector, HYBRID_SELECTOR_VARIANTS);
+      const pointerAction = action === "hybridDblclick" ? "mouseDblclick" : "mouseClick";
+      const selectorAction = action === "hybridDblclick" ? "dblclick" : "click";
+      let cycle = 0;
+      let changed = false;
+      let urlBefore = (() => {
+        try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
+      })();
+      let urlAfter = urlBefore;
+      const cycleResults = [];
+
+      while (!changed && cycle < HYBRID_URL_CHANGE_MAX_CYCLES) {
+        cycle += 1;
+        stepLogMsg(`Hybrid ${selectorAction} cycle ${cycle}/${HYBRID_URL_CHANGE_MAX_CYCLES} for ${baseSelector}: cqards first, selectors second.`);
+
+        for (const point of cqards) {
+          const clickResult = await runActionWithFallback({ action: pointerAction, params: { x: point.x, y: point.y } }, goal, models);
+          cycleResults.push(clickResult);
+          const nowUrl = (() => {
+            try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
+          })();
+          if (nowUrl !== urlBefore) {
+            changed = true;
+            urlAfter = nowUrl;
+            break;
+          }
+          await sleepLikeHuman(90 + Math.random() * 120, page, { x: point.x, y: point.y });
+        }
+
+        if (changed) break;
+
+        for (const variant of selectorVariants) {
+          const clickResult = await runActionWithFallback({ action: selectorAction, params: { selector: variant } }, goal, models);
+          cycleResults.push(clickResult);
+          const nowUrl = (() => {
+            try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
+          })();
+          if (nowUrl !== urlBefore) {
+            changed = true;
+            urlAfter = nowUrl;
+            break;
+          }
+          await sleepLikeHuman(110 + Math.random() * 150, page);
+        }
+      }
+
+      if (changed) {
+        status(`Hybrid click detected URL change: ${urlBefore} -> ${urlAfter}`);
+        results.push({ action, status: "ok", result: `url-changed ${urlBefore} -> ${urlAfter}`, attempts: cycleResults.length });
+      } else {
+        errLog(`Hybrid click exhausted without URL change for ${baseSelector}`);
+        results.push({ action, status: "error", error: `hybrid click exhausted without URL change for ${baseSelector}` });
+        break;
+      }
+      burstCount++;
+      const actionPause = Math.max(60, Math.round(ACTION_PACING_DELAY_MS * pacingMultiplier));
+      await sleepLikeHuman(actionPause, page);
+      continue;
+    }
+
     status(`${action}(${JSON.stringify(params || {}).slice(0, 60)})`);
     const result = await runActionWithFallback(item, goal, models);
     results.push(result);
-    await sleep(ACTION_PACING_DELAY_MS);
+    burstCount++;
+
+    const actionPause = Math.max(60, Math.round(ACTION_PACING_DELAY_MS * pacingMultiplier));
+    await sleepLikeHuman(actionPause, page);
+
+    if (Number.isFinite(burstLimit) && burstCount >= burstLimit && microBreakMs > 0) {
+      await sleepLikeHuman(microBreakMs, page);
+      burstCount = 0;
+    }
   }
   return results;
 }
@@ -2720,6 +3208,293 @@ function extractSearchQuery(goalText) {
   return m ? m[1].trim() : null;
 }
 
+function extractDomainHints(text) {
+  const raw = String(text || "");
+  const urls = raw.match(/https?:\/\/[^\s)]+/gi) || [];
+  const domains = [];
+  const seen = new Set();
+  const add = value => {
+    const next = String(value || "").trim().replace(/^www\./i, "");
+    if (!next || seen.has(next)) return;
+    seen.add(next);
+    domains.push(next);
+  };
+
+  for (const url of urls) {
+    try { add(new URL(url).host); } catch {}
+  }
+
+  const knownHosts = ["apple.com", "fifa.com", "wikipedia.org", "britannica.com", "fao.org", "google.com", "bing.com"];
+  for (const host of knownHosts) {
+    if (raw.toLowerCase().includes(host)) add(host);
+  }
+
+  const brandedMatches = raw.match(/\b([a-z0-9-]+\.(?:com|org|net|io|co|gov|edu))\b/gi) || [];
+  for (const host of brandedMatches) add(host);
+
+  return domains;
+}
+
+function normalizeResearchTerms(goal, state, visionFeedback, taskLog = []) {
+  const chunks = [goal, state?.url, state?.title, visionFeedback, taskLog.slice(-4).join(" ")]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const stopwords = new Set([
+    "the","and","for","with","that","from","this","into","your","have","been","what","where","when","how","why","can","could","should","would","will","please","search","find","look","up","go","open","navigate","browse","page","site","website","task","current","visible","extract","summarize","compare","latest","official","officially","related","about","on","to","of","in","at","is","are","be","as","or","if","then","it","its","there","here","real","u","um","umm","uh","uhh","hmmm","hmm"
+  ]);
+
+  const words = (chunks.match(/[a-z0-9][a-z0-9-]{1,}/g) || [])
+    .filter(word => !stopwords.has(word))
+    .filter(word => !/^\d+$/.test(word))
+    .filter((word, index, arr) => arr.indexOf(word) === index);
+
+  return words.slice(0, 10);
+}
+
+function buildConfusionSearchPlan(goal, state, visionFeedback, taskLog = [], failures = 0) {
+  const terms = normalizeResearchTerms(goal, state, visionFeedback, taskLog);
+  const currentHost = getHostFromUrl(state?.url || "");
+  const domainHints = extractDomainHints(`${goal} ${state?.url || ""} ${state?.title || ""}`);
+  const targetDomain = domainHints[0] || currentHost || "";
+
+  let queryTerms = terms.length ? terms : [String(goal || "").slice(0, 80).trim()].filter(Boolean);
+  queryTerms = queryTerms.slice(0, 8);
+
+  const siteFilter = targetDomain ? ` site:${targetDomain}` : "";
+  const trustedHints = domainHints.slice(0, 4);
+  const query = `${queryTerms.join(" ")}${siteFilter}`.trim();
+
+  return {
+    query,
+    targetDomain,
+    trustedHints,
+    focusTerms: queryTerms,
+    shouldPreferOfficial: !!targetDomain,
+    failureBias: failures >= 2
+  };
+}
+
+function extractResearchHintsFromResults(text, links, researchPlan) {
+  const body = String(text || "");
+  const lowerBody = body.toLowerCase();
+  const hints = [];
+  const sources = [];
+  const seenHints = new Set();
+  const seenSources = new Set();
+  const focusTerms = Array.isArray(researchPlan?.focusTerms) ? researchPlan.focusTerms : [];
+  const targetDomain = String(researchPlan?.targetDomain || "").toLowerCase();
+
+  const addHint = value => {
+    const next = String(value || "").trim();
+    if (!next || seenHints.has(next)) return;
+    seenHints.add(next);
+    hints.push(next.slice(0, 180));
+  };
+
+  const addSource = value => {
+    const next = String(value || "").trim();
+    if (!next || seenSources.has(next)) return;
+    seenSources.add(next);
+    sources.push(next.slice(0, 220));
+  };
+
+  const cluePatterns = [
+    /technical specifications?/i,
+    /specifications?/i,
+    /battery capacity/i,
+    /official website/i,
+    /support page/i,
+    /product page/i,
+    /ticket/i,
+    /buy tickets?/i,
+    /global potato production/i,
+    /production statistics?/i,
+    /first paragraph/i,
+    /latest available year/i
+  ];
+
+  for (const pattern of cluePatterns) {
+    const match = body.match(pattern);
+    if (match) {
+      const idx = lowerBody.indexOf(match[0].toLowerCase());
+      const snippet = idx >= 0 ? body.slice(Math.max(0, idx - 90), Math.min(body.length, idx + 180)) : match[0];
+      addHint(snippet.replace(/\s+/g, " ").trim());
+    }
+  }
+
+  for (const term of focusTerms) {
+    const termLower = String(term || "").toLowerCase();
+    const idx = lowerBody.indexOf(termLower);
+    if (idx >= 0) {
+      const snippet = body.slice(Math.max(0, idx - 80), Math.min(body.length, idx + 160));
+      addHint(snippet.replace(/\s+/g, " ").trim());
+    }
+  }
+
+  for (const link of Array.isArray(links) ? links : []) {
+    const href = String(link?.href || "");
+    const label = String(link?.text || "").trim();
+    if (!href) continue;
+    if (targetDomain && href.toLowerCase().includes(targetDomain)) {
+      addSource(`${label || href} → ${href}`);
+    }
+    if (/official|support|help|tickets?|spec|product|about|statistics|data/i.test(`${label} ${href}`)) {
+      addSource(`${label || href} → ${href}`);
+    }
+  }
+
+  if (!hints.length && body) {
+    const lines = body.split(/\n+/).map(line => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (/result|official|support|specification|ticket|production|statistics|summary/i.test(line)) {
+        addHint(line.replace(/\s+/g, " "));
+      }
+      if (hints.length >= CONFUSION_RESEARCH_RESULT_LIMIT) break;
+    }
+  }
+
+  if (!sources.length) {
+    for (const link of Array.isArray(links) ? links : []) {
+      const href = String(link?.href || "");
+      if (!href) continue;
+      addSource(href);
+      if (sources.length >= CONFUSION_RESEARCH_RESULT_LIMIT) break;
+    }
+  }
+
+  return {
+    hints: hints.slice(0, CONFUSION_RESEARCH_RESULT_LIMIT),
+    sources: sources.slice(0, CONFUSION_RESEARCH_RESULT_LIMIT)
+  };
+}
+
+async function performConfusionResearch(goal, state, visionFeedback, taskLog, failures, models) {
+  if (!context || !goal) return null;
+  const researchPlan = buildConfusionSearchPlan(goal, state, visionFeedback, taskLog, failures);
+  if (!researchPlan.query) return null;
+
+  const researchKey = `${researchPlan.targetDomain || "any"}|${researchPlan.query}`;
+  const now = Date.now();
+  if (confusionResearchState.lastKey === researchKey && (now - confusionResearchState.lastAt) < CONFUSION_RESEARCH_COOLDOWN_MS) {
+    return {
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain,
+      hints: confusionResearchState.hints,
+      sources: confusionResearchState.sources,
+      cached: true
+    };
+  }
+
+  const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(researchPlan.query)}`;
+  broadcast("research_started", {
+    msg: `Confusion research: searching for ${researchPlan.query}`,
+    query: researchPlan.query,
+    targetDomain: researchPlan.targetDomain || ""
+  });
+  stepLogMsg(`Research assist: ${researchPlan.query}`);
+  think(`Confusion research query prepared: ${researchPlan.query}`);
+
+  const researchPage = await context.newPage();
+  try {
+    await researchPage.goto(searchUrl, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await researchPage.waitForTimeout(1200).catch(() => {});
+
+    const title = await researchPage.title().catch(() => "");
+    const text = await researchPage.evaluate(() => document.body ? document.body.innerText.slice(0, 5000) : "").catch(() => "");
+    const links = await researchPage.evaluate(() => Array.from(document.querySelectorAll("a[href]"))
+      .slice(0, 40)
+      .map(a => ({
+        text: (a.innerText || a.textContent || a.getAttribute("aria-label") || "").trim().slice(0, 80),
+        href: a.href
+      }))
+    ).catch(() => []);
+
+    const extracted = extractResearchHintsFromResults(`${title}\n${text}`, links, researchPlan);
+    const payload = {
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain,
+      hints: extracted.hints,
+      sources: extracted.sources,
+      trustedHints: researchPlan.trustedHints,
+      searchedAt: new Date().toISOString(),
+      cached: false
+    };
+
+    confusionResearchState = {
+      lastKey: researchKey,
+      lastAt: now,
+      lastQuery: researchPlan.query,
+      hints: extracted.hints,
+      sources: extracted.sources,
+      targetDomain: researchPlan.targetDomain,
+      currentGoal: String(goal || "").slice(0, 280)
+    };
+
+    broadcast("research_result", {
+      msg: extracted.hints.length
+        ? `Research found ${extracted.hints.length} hint(s) for the blocked task.`
+        : "Research ran, but no useful hints were found.",
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain || "",
+      hints: extracted.hints,
+      sources: extracted.sources
+    });
+
+    appendLearningEvent({
+      kind: "research",
+      goal: String(goal || "").slice(0, 240),
+      host: getHostFromUrl(state?.url || ""),
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain || "",
+      hints: extracted.hints.slice(0, 5).join(" | "),
+      sources: extracted.sources.slice(0, 5).join(" | ")
+    });
+
+    return payload;
+  } catch (err) {
+    broadcast("research_result", {
+      msg: `Research assist failed: ${err.message}`,
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain || ""
+    });
+    return {
+      query: researchPlan.query,
+      targetDomain: researchPlan.targetDomain,
+      hints: [],
+      sources: [],
+      error: err.message,
+      cached: false
+    };
+  } finally {
+    await researchPage.close().catch(() => {});
+  }
+}
+
+function shouldRunConfusionResearch(goal, state, taskLog, failures, step) {
+  if (!goal) return false;
+  if (failures < 2 && !detectStuck(taskLog)) return false;
+  if (step < 2) return false;
+  const key = `${String(goal || "").slice(0, 140)}|${getHostFromUrl(state?.url || "")}|${state?.title || ""}|${failures}|${taskLog.slice(-2).join(" ").slice(0, 180)}`;
+  const now = Date.now();
+  if (confusionResearchState.lastKey === key && (now - confusionResearchState.lastAt) < CONFUSION_RESEARCH_COOLDOWN_MS) {
+    return false;
+  }
+  return true;
+}
+
+function buildConfusionHintContext(researchResult) {
+  const hints = Array.isArray(researchResult?.hints) ? researchResult.hints : [];
+  const sources = Array.isArray(researchResult?.sources) ? researchResult.sources : [];
+  if (!hints.length && !sources.length) return "";
+  return [
+    "Confusion research hints:",
+    ...hints.map(hint => `- ${hint}`),
+    sources.length ? "Confusion research sources:" : "",
+    ...sources.map(source => `- ${source}`)
+  ].filter(Boolean).join("\n");
+}
+
 function inferHeuristicPlan(goal, state, taskLog, failures) {
   const lowerGoal = String(goal || "").toLowerCase();
   const currentUrl = String(state?.url || "about:blank");
@@ -2850,7 +3625,11 @@ async function runTask(goal, models, chatId) {
   let failures       = 0;
   let requiresHuman  = false;
   let lastVisionTrace = "";
+  let lastGentleTrace = "";
   const captchaChecksByPage = new Map();
+  const captchaHandoffsByPage = new Map();
+  const captchaGentleUntilByHost = new Map();
+  const navigationCooldownByHost = new Map();
   let psychosisCounter = 0; // Tracks confusion state
 
   try {
@@ -2877,10 +3656,23 @@ async function runTask(goal, models, chatId) {
       const state = await getPageState();
       finalState  = state;
       status(`URL: ${state.url}`);
+      const currentHost = getHostFromUrl(state.url);
+
+      const gentleUntil = Number(captchaGentleUntilByHost.get(currentHost) || 0);
+      const gentleModeActive = Date.now() < gentleUntil;
+      const gentleTrace = `${currentHost}|${gentleModeActive ? "gentle" : "normal"}`;
+      if (gentleTrace !== lastGentleTrace) {
+        if (gentleModeActive) {
+          const remaining = Math.max(0, gentleUntil - Date.now());
+          think(`Gentle mode active on ${currentHost || "unknown-host"} for ${Math.round(remaining / 1000)}s after challenge signals.`);
+        }
+        lastGentleTrace = gentleTrace;
+      }
 
       const visionSnap = getTaskVisionSnapshot();
       const visionAgeMs = visionSnap.lastFrameAt ? (Date.now() - visionSnap.lastFrameAt) : Number.POSITIVE_INFINITY;
       const visionFresh = visionAgeMs <= VISION_STREAM_FRESH_MS;
+      const dynamicUiHot = isDynamicUiHot(visionSnap);
       if (visionFresh && visionSnap.summary) {
         visionFeedback = visionSnap.summary;
       }
@@ -2893,10 +3685,15 @@ async function runTask(goal, models, chatId) {
           lastVisionTrace = liveTrace;
         }
       }
+      if (dynamicUiHot) {
+        think("Dynamic UI detected: switching click execution to vision coordinates only for this step.");
+      }
 
       const captcha = await detectCaptchaChallenge(state);
       if (captcha.detected) {
         const pageKey = getCaptchaPageKey(state.url);
+        const hostKey = getHostFromUrl(state.url);
+        captchaGentleUntilByHost.set(hostKey, Date.now() + CAPTCHA_GENTLE_MODE_MS);
         const checks = (captchaChecksByPage.get(pageKey) || 0) + 1;
         captchaChecksByPage.set(pageKey, checks);
         setHumanBridgeState({
@@ -2919,6 +3716,7 @@ async function runTask(goal, models, chatId) {
           if (attemptResult.solved) {
             solved = true;
             finalState = currentCaptchaState;
+            captchaHandoffsByPage.delete(pageKey);
             clearHumanBridgeState();
             broadcast("human_resolved", { msg: "CAPTCHA cleared. Resuming autonomous execution.", url: currentCaptchaState.url });
             status(`CAPTCHA cleared after ${attempt}/${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts.`);
@@ -2928,16 +3726,37 @@ async function runTask(goal, models, chatId) {
         }
 
         if (!solved) {
-          requiresHuman = true;
-          errLog(`CAPTCHA persisted after ${CAPTCHA_HUMAN_CHECK_LIMIT} checks. Human handoff required.`);
-          broadcast("human_needed", {
-            msg: `${captcha.reason}. Human handoff required after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts on ${state.url}`,
+          const unresolvedCycles = (captchaHandoffsByPage.get(pageKey) || 0) + 1;
+          captchaHandoffsByPage.set(pageKey, unresolvedCycles);
+          const shouldEscalate = unresolvedCycles >= CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES;
+
+          if (shouldEscalate) {
+            requiresHuman = true;
+            errLog(`CAPTCHA persisted after ${unresolvedCycles} unresolved cycle(s). Human handoff required.`);
+            broadcast("human_needed", {
+              msg: `${captcha.reason}. Human handoff required after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts x ${unresolvedCycles} cycle(s) on ${state.url}`,
+              checks: CAPTCHA_HUMAN_CHECK_LIMIT,
+              limit: CAPTCHA_HUMAN_CHECK_LIMIT,
+              unresolvedCycles,
+              escalateAt: CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES,
+              url: state.url,
+              bridgeUrl: "/human-bridge"
+            });
+            break;
+          }
+
+          status(`CAPTCHA still present. Continuing autonomous retries (${unresolvedCycles}/${CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES}) before human handoff.`);
+          stepLogMsg(`Step ${step}: captcha-auto-retry cycle ${unresolvedCycles}/${CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES}`);
+          broadcast("captcha_retrying", {
+            msg: `CAPTCHA still present on ${state.url}. Retrying autonomously (${unresolvedCycles}/${CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES}) before manual handoff.`,
             checks: CAPTCHA_HUMAN_CHECK_LIMIT,
             limit: CAPTCHA_HUMAN_CHECK_LIMIT,
-            url: state.url,
-            bridgeUrl: "/human-bridge"
+            unresolvedCycles,
+            escalateAt: CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES,
+            url: state.url
           });
-          break;
+          await sleepLikeHuman(CAPTCHA_RECHECK_DELAY_MS, page, { x: state.inputs?.[0]?.visible ? 120 : undefined, y: 160 });
+          continue;
         }
 
         await sleepLikeHuman(CAPTCHA_RECHECK_DELAY_MS, page, { x: state.inputs?.[0]?.visible ? 120 : undefined, y: 160 });
@@ -2953,6 +3772,11 @@ async function runTask(goal, models, chatId) {
       const instinct = await getReasonerInstinct(goal, state, visionFeedback, taskLog, models);
       if (instinct?.instinct) {
         think(`Instinct: ${instinct.instinct}${instinct?.next_focus ? ` | focus: ${instinct.next_focus}` : ""}`);
+      }
+
+      let confusionResearch = null;
+      if (shouldRunConfusionResearch(goal, state, taskLog, failures, step)) {
+        confusionResearch = await withExecutorWork(() => performConfusionResearch(goal, state, visionFeedback, taskLog, failures, models));
       }
       
       // EFFICIENCY CHECK: Does vision already have what we need?
@@ -2979,6 +3803,7 @@ async function runTask(goal, models, chatId) {
         instinct?.risk ? `Reasoner risk: ${instinct.risk}` : "",
         instinct?.next_focus ? `Reasoner focus: ${instinct.next_focus}` : "",
         instinct?.caution ? `Reasoner caution: ${instinct.caution}` : "",
+        buildConfusionHintContext(confusionResearch),
         efficiencyCheck?.alreadyHave ? `💡 EFFICIENCY: ${efficiencyCheck.suggestion}` : "",
         userGuidance ? `🧭 USER GUIDANCE: ${userGuidance}` : ""
       ].filter(Boolean).join("\n");
@@ -3013,6 +3838,14 @@ async function runTask(goal, models, chatId) {
         if (heuristicPlan && heuristicPlan.actions?.length) {
           plan = heuristicPlan;
           think(`Heuristic no-actions recovery: ${heuristicPlan.reasoning}`);
+        } else if (confusionResearch?.hints?.length) {
+          plan = {
+            reasoning: `Research-guided recovery using ${confusionResearch.hints.length} hint(s).`,
+            confidence: 52,
+            done: false,
+            actions: [{ action: "getAllText", params: {} }]
+          };
+          think(`Research recovery fallback: using hints from ${confusionResearch.targetDomain || "search results"}.`);
         } else {
           taskLog.push(`Step ${step}: no actions`);
           if (plan._parseFailed) failures++;
@@ -3023,7 +3856,27 @@ async function runTask(goal, models, chatId) {
 
       if (plan.reasoning) think(plan.reasoning);
 
-      const results = await withExecutorWork(() => executeActionPlan(plan, goal, models));
+      const adaptiveThrottle = gentleModeActive
+        ? {
+            pacingMultiplier: CAPTCHA_GENTLE_PACING_MULTIPLIER,
+            preActionIdleMs: CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS,
+            burstLimit: CAPTCHA_GENTLE_BURST_ACTIONS,
+            microBreakMs: CAPTCHA_GENTLE_MICRO_BREAK_MS,
+            navigationCooldownMs: CAPTCHA_GENTLE_NAVIGATION_COOLDOWN_MS,
+            navigationCooldownByHost,
+            visionOnlyClickMode: dynamicUiHot
+          }
+        : {
+            pacingMultiplier: 1,
+            preActionIdleMs: 0,
+            burstLimit: Number.POSITIVE_INFINITY,
+            microBreakMs: 0,
+            navigationCooldownMs: BASE_NAVIGATION_COOLDOWN_MS,
+            navigationCooldownByHost,
+            visionOnlyClickMode: dynamicUiHot
+          };
+
+      const results = await withExecutorWork(() => executeActionPlan(plan, goal, models, adaptiveThrottle));
       lastAction    = plan.actions[plan.actions.length - 1];
       const summary = results.map(r => `${r.action}:${r.status}`).join(", ");
       const logLine = `Step ${step} [${plan.confidence ?? "?"}%]: ${summary} — ${(plan.reasoning || "").slice(0, 60)}`;
@@ -3067,7 +3920,8 @@ async function runTask(goal, models, chatId) {
         });
       }
 
-      await sleepLikeHuman(600, page, { x: Math.round((finalState.inputs?.length ? 0.2 : 0.55) * 1000), y: Math.round((finalState.buttons?.length ? 0.35 : 0.45) * 1000) });
+      const postStepPause = gentleModeActive ? CAPTCHA_GENTLE_POST_STEP_PAUSE_MS : BASE_POST_STEP_PAUSE_MS;
+      await sleepLikeHuman(postStepPause, page, { x: Math.round((finalState.inputs?.length ? 0.2 : 0.55) * 1000), y: Math.round((finalState.buttons?.length ? 0.35 : 0.45) * 1000) });
       const newState      = await withExecutorWork(() => getPageState());
       const liveVisionNow = getTaskVisionSnapshot();
       const liveVisionAgeMs = liveVisionNow.lastFrameAt ? (Date.now() - liveVisionNow.lastFrameAt) : Number.POSITIVE_INFINITY;
@@ -3309,7 +4163,12 @@ async function handleRequest(req, res) {
   if (pathname === "/screenshot") {
     try {
       if (!page) { res.writeHead(503); res.end("browser not ready"); return; }
-      const buf = await page.screenshot({ type: "jpeg", quality: 75 });
+      const humanView = requestUrl.searchParams.get("human") === "1";
+      const buf = await page.screenshot({
+        type: "jpeg",
+        quality: humanView ? 58 : 75,
+        scale: "css"
+      });
       res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "no-store" });
       res.end(buf);
     } catch {
@@ -3531,19 +4390,49 @@ async function handleRequest(req, res) {
     }
 
     console.log("🚀 Launching browser...");
-    browser = await chromium.launch({
+    fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
+    context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
       headless: false,
       executablePath: require("playwright").chromium.executablePath(),
       args: [
         "--no-sandbox","--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-infobars","--start-maximized",
-        "--window-position=0,0","--window-size=1920,1080"
+        "--disable-infobars",
+        "--window-position=0,0",
+        "--window-size=1366,768"
       ]
     });
+    browser = context.browser();
+    page = context.pages()[0] || await context.newPage();
+    await page.bringToFront().catch(() => {});
+
+    await context.setDefaultNavigationTimeout(90000);
+    await context.setDefaultTimeout(45000);
+    await context.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9"
+    });
+
+    await page.setViewportSize({ width: 1366, height: 768 }).catch(() => {});
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9"
+    });
+
     const hasSession = fs.existsSync(SESSION_FILE);
+    if (hasSession) console.log("📋 Found legacy storage state file: " + SESSION_FILE);
+
+    await context.addCookies([]).catch(() => {});
+    if (hasSession) {
+      try {
+        const storage = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
+        if (Array.isArray(storage.cookies) && storage.cookies.length) {
+          await context.addCookies(storage.cookies);
+        }
+      } catch (err) {
+        console.warn("⚠️ Could not import legacy session storage:", err.message);
+      }
+    }
+
+    /* Legacy non-persistent context options kept for reference:
     context = await browser.newContext({
-      storageState:  hasSession ? SESSION_FILE : undefined,
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       locale: "en-US",
       viewport: { width: 1366, height: 768 },
@@ -3551,24 +4440,17 @@ async function handleRequest(req, res) {
       permissions:   ["geolocation"],
       colorScheme:   "light"
     });
+    */
 
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver",           { get: () => undefined });
-      Object.defineProperty(navigator, "plugins",             { get: () => [1, 2, 3] });
-      Object.defineProperty(navigator, "languages",           { get: () => ["en-US", "en"] });
-      Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
-      const gp = WebGLRenderingContext.prototype.getParameter;
-      WebGLRenderingContext.prototype.getParameter = function(p) {
-        if (p === 37445) return "Intel Inc.";
-        if (p === 37446) return "Intel Iris OpenGL Engine";
-        return gp.call(this, p);
-      };
-    });
-
-    page = await context.newPage();
-    if (hasSession) console.log("📋 Session: " + SESSION_FILE);
-
-    await page.goto("https://www.bing.com", { waitUntil: "domcontentloaded" });
+    const currentUrl = (() => {
+      try { return page.url(); } catch { return "about:blank"; }
+    })();
+    const startUrl = process.env.START_URL || "https://www.bing.com";
+    if (!currentUrl || currentUrl === "about:blank") {
+      await page.goto(startUrl, { waitUntil: "domcontentloaded" });
+    } else {
+      console.log("↩️ Reusing persistent page: " + currentUrl);
+    }
     ensureCurrentChat();
     loadLearningLog();
 

@@ -606,6 +606,61 @@
       .models-section { display: flex; flex-direction: column; gap: 8px; }
       .models-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
 
+      .bridge-card {
+        background: rgba(0,0,0,.25);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .bridge-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .bridge-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: .07em;
+        color: var(--muted);
+      }
+      .bridge-badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: rgba(255,255,255,.04);
+      }
+      .bridge-badge.active {
+        color: var(--warn);
+        border-color: rgba(210,153,34,.38);
+        background: rgba(210,153,34,.12);
+      }
+      .bridge-badge.idle {
+        color: var(--accent);
+        border-color: rgba(126,231,135,.34);
+        background: rgba(126,231,135,.08);
+      }
+      .bridge-summary {
+        font-size: 12px;
+        color: var(--text);
+        line-height: 1.45;
+      }
+      .bridge-reason {
+        font-size: 11px;
+        color: var(--muted);
+        min-height: 16px;
+      }
+      .bridge-actions {
+        display: flex;
+        gap: 6px;
+      }
+
       .model-card {
         background: rgba(0,0,0,.25); border: 1px solid var(--border);
         border-radius: var(--radius); padding: 10px 12px;
@@ -795,6 +850,18 @@
               <div class="demo-cursor" id="demoCursor" aria-hidden="true"></div>
               <div class="demo-click-pulse" id="demoClickPulse" aria-hidden="true"></div>
             </div>
+            <div class="bridge-card">
+              <div class="bridge-head">
+                <span class="bridge-title">Human Bridge</span>
+                <span id="humanBridgeBadge" class="bridge-badge">loading</span>
+              </div>
+              <div id="humanBridgeSummary" class="bridge-summary">Checking bridge status...</div>
+              <div id="humanBridgeReason" class="bridge-reason"></div>
+              <div class="bridge-actions">
+                <button class="ghost-btn" id="openHumanBridgeBtn" style="padding:4px 9px;font-size:11px;">Open bridge</button>
+                <button class="ghost-btn" id="refreshHumanBridgeBtn" style="padding:4px 9px;font-size:11px;">Refresh</button>
+              </div>
+            </div>
             <div class="models-section">
               <div class="models-title">Model Stack</div>
               <div id="modelGrid"></div>
@@ -819,8 +886,10 @@
         humanBridgeWindow: null,
         humanBridgeAutoOpened: false,
         browserUrl: "about:blank",
+        humanBridge: null,
         bootstrapTimer: null,
         browserTimer: null,
+        humanBridgeTimer: null,
         typingFx: {
           lengths: {},
           timers: {}
@@ -843,6 +912,7 @@
           narrate: true
         },
         runtimeSearch: "",
+        runtimeDropdownOpen: null,
         pendingImage: null,
         agentQuestion: null,   // Active question from agent
         narrateLog: []         // Live narration stream
@@ -871,6 +941,11 @@
       const browserUrl = document.getElementById("browserUrl");
       const screenshot = document.getElementById("screenshot");
       const browserFrame = document.querySelector(".browser-frame");
+      const humanBridgeBadge = document.getElementById("humanBridgeBadge");
+      const humanBridgeSummary = document.getElementById("humanBridgeSummary");
+      const humanBridgeReason = document.getElementById("humanBridgeReason");
+      const openHumanBridgeBtn = document.getElementById("openHumanBridgeBtn");
+      const refreshHumanBridgeBtn = document.getElementById("refreshHumanBridgeBtn");
       const demoCursor = document.getElementById("demoCursor");
       const demoClickPulse = document.getElementById("demoClickPulse");
       const modelGrid = document.getElementById("modelGrid");
@@ -902,6 +977,9 @@
           if (parsed && typeof parsed.runtimeSearch === "string") {
             state.runtimeSearch = parsed.runtimeSearch.slice(0, 80);
           }
+          if (parsed && typeof parsed.runtimeDropdownOpen === "boolean") {
+            state.runtimeDropdownOpen = parsed.runtimeDropdownOpen;
+          }
         } catch {}
       }
 
@@ -909,7 +987,8 @@
         try {
           localStorage.setItem(UI_PREFS_KEY, JSON.stringify({
             runtimeFilters: state.runtimeFilters,
-            runtimeSearch: state.runtimeSearch
+            runtimeSearch: state.runtimeSearch,
+            runtimeDropdownOpen: state.runtimeDropdownOpen
           }));
         } catch {}
       }
@@ -1354,8 +1433,9 @@
           }).join("") +
           '<input class="runtime-search" id="runtimeSearchInput" placeholder="Filter activity..." value="' + escapeHtml(state.runtimeSearch) + '" />' +
         '</div>';
+        const runtimeDropdownOpen = typeof state.runtimeDropdownOpen === "boolean" ? state.runtimeDropdownOpen : !!state.sending;
         const runtimeCard = runtimeEvents.length
-          ? '<details class="runtime-dropdown" ' + (state.sending ? "open" : "") + '><summary><strong>Agent activity</strong><span class="tag">' + escapeHtml(String(runtimeEvents.length)) + ' updates</span><span class="runtime-chevron">' + (state.sending ? "Hide" : "Show") + '</span></summary><div class="runtime-log">' +
+          ? '<details class="runtime-dropdown" ' + (runtimeDropdownOpen ? "open" : "") + '><summary><strong>Agent activity</strong><span class="tag">' + escapeHtml(String(runtimeEvents.length)) + ' updates</span><span class="runtime-chevron">' + (runtimeDropdownOpen ? "Hide" : "Show") + '</span></summary><div class="runtime-log">' +
               runtimeControls +
               filteredRuntimeEvents.map(function(event) {
                 return '<article class="runtime-entry ' + escapeHtml(event.type) + '"><div class="runtime-head"><span>' + escapeHtml(event.type || "status") + '</span><span>' + escapeHtml(prettyTime(event.ts)) + '</span></div><div class="runtime-body">' + renderRichText(event.message) + '</div></article>';
@@ -1380,6 +1460,19 @@
             saveUiPrefs();
             renderTimeline();
           });
+        }
+        const runtimeDropdown = timeline.querySelector(".runtime-dropdown");
+        if (runtimeDropdown) {
+          const updateChevron = function() {
+            const chevron = runtimeDropdown.querySelector(".runtime-chevron");
+            if (chevron) chevron.textContent = runtimeDropdown.open ? "Hide" : "Show";
+          };
+          runtimeDropdown.addEventListener("toggle", function() {
+            state.runtimeDropdownOpen = !!runtimeDropdown.open;
+            saveUiPrefs();
+            updateChevron();
+          });
+          updateChevron();
         }
 
         if (timelineScroll) timelineScroll.scrollTop = timelineScroll.scrollHeight;
@@ -1456,6 +1549,38 @@
         renderModels();
         renderTimeline();
         restoreDraftForCurrentChat();
+      }
+
+      function renderHumanBridgeCard() {
+        const bridge = state.humanBridge;
+        if (!humanBridgeBadge || !humanBridgeSummary || !humanBridgeReason) return;
+        if (!bridge) {
+          humanBridgeBadge.textContent = "loading";
+          humanBridgeBadge.className = "bridge-badge";
+          humanBridgeSummary.textContent = "Checking bridge status...";
+          humanBridgeReason.textContent = "";
+          return;
+        }
+        const active = !!bridge.active;
+        humanBridgeBadge.textContent = active ? "active" : "idle";
+        humanBridgeBadge.className = "bridge-badge " + (active ? "active" : "idle");
+        humanBridgeSummary.textContent = "checks " + Number(bridge.checks || 0) + "/" + Number(bridge.limit || 0) + " | clicks " + Number(bridge.clickCount || 0);
+        const reason = active
+          ? (bridge.reason || "Waiting for manual CAPTCHA help")
+          : (bridge.closureReason || "Bridge ready");
+        humanBridgeReason.textContent = reason;
+      }
+
+      async function refreshHumanBridgeState() {
+        if (appShell.classList.contains("hidden")) return;
+        try {
+          const payload = await request("/api/human/state");
+          state.humanBridge = payload;
+          renderHumanBridgeCard();
+        } catch (error) {
+          if (error && error.status === 401) return;
+          if (humanBridgeReason) humanBridgeReason.textContent = error.message || "Bridge state unavailable";
+        }
       }
 
       async function loadBootstrap(forceModels) {
@@ -1558,6 +1683,8 @@
         state.cursorFx.ready = false;
         window.clearInterval(state.browserTimer);
         state.browserTimer = null;
+        window.clearInterval(state.humanBridgeTimer);
+        state.humanBridgeTimer = null;
         setAuthenticated(false);
         syncConnectionUI(null);
         modelModeStatus.textContent = "default";
@@ -1600,9 +1727,14 @@
             }
             if (payload.type === "human_needed") {
               openHumanBridgeTab(payload.bridgeUrl);
+              refreshHumanBridgeState();
             }
             if (payload.type === "bridge_closed") {
               state.humanBridgeWindow = null;
+              refreshHumanBridgeState();
+            }
+            if (payload.type === "human_click" || payload.type === "captcha_detected" || payload.type === "captcha_solved") {
+              refreshHumanBridgeState();
             }
             // LIVE NARRATION: Agent describing what it's doing
             if (payload.type === "narrate") {
@@ -1732,8 +1864,11 @@
         connectEvents();
         await loadBootstrap(false);
         await refreshBrowser();
+        await refreshHumanBridgeState();
         window.clearInterval(state.browserTimer);
         state.browserTimer = window.setInterval(refreshBrowser, 2800);
+        window.clearInterval(state.humanBridgeTimer);
+        state.humanBridgeTimer = window.setInterval(refreshHumanBridgeState, 1400);
       }
 
       async function boot() {
@@ -1767,6 +1902,14 @@
       document.getElementById("refreshAllBtn").addEventListener("click", function() { loadBootstrap(false); refreshBrowser(); });
       document.getElementById("refreshModelsBtn").addEventListener("click", function() { loadBootstrap(true); });
       document.getElementById("refreshMemoryBtn").addEventListener("click", refreshMemory);
+      if (openHumanBridgeBtn) {
+        openHumanBridgeBtn.addEventListener("click", function() {
+          openHumanBridgeTab("/human-bridge");
+        });
+      }
+      if (refreshHumanBridgeBtn) {
+        refreshHumanBridgeBtn.addEventListener("click", refreshHumanBridgeState);
+      }
       sendBtn.addEventListener("click", sendMessage);
       composerInput.addEventListener("input", function() {
         const chatIdNow = state.selectedChatId;

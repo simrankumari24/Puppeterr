@@ -6,6 +6,28 @@
 // Valid Playwright load states — "complete" is NOT valid and causes hard errors.
 const VALID_LOAD_STATES = new Set(["load", "domcontentloaded", "networkidle", "commit"]);
 
+const TRANSIENT_DOM_ERROR_RE = /(Execution context was destroyed|Target closed|Navigation failed|Node is detached|Element is not attached|detached from document|most likely because of a navigation|frame was detached|Timeout \d+ms exceeded)/i;
+
+function isTransientDomError(err) {
+  return TRANSIENT_DOM_ERROR_RE.test(String(err?.message || err || ""));
+}
+
+async function withTransientRetry(run, options = {}) {
+  const retries = Math.max(0, Number(options.retries ?? 2));
+  const delayMs = Math.max(40, Number(options.delayMs ?? 180));
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await run(attempt);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries || !isTransientDomError(err)) throw err;
+      await new Promise(resolve => setTimeout(resolve, delayMs + (attempt * 90)));
+    }
+  }
+  throw lastErr;
+}
+
 function sanitizeLoadState(raw) {
   const s = String(raw || "load").toLowerCase().trim();
   if (s === "complete") return "load";
@@ -24,43 +46,78 @@ const actions = {
   // smartClick: scroll into view, verify visibility, then click. Falls back to
   // JS .click() if Playwright's click still fails (e.g. hidden submit buttons).
   click: async ({ page, selector }) => {
-    const el = await page.$(selector);
-    if (!el) throw new Error(`Element not found: ${selector}`);
-    await el.scrollIntoViewIfNeeded().catch(() => {});
-    const box = await el.boundingBox();
-    if (!box || box.width === 0 || box.height === 0) {
-      // Element exists but has no visible box — use JS click as escape hatch
-      await page.evaluate(sel => {
-        const node = document.querySelector(sel);
-        if (node) node.click();
-      }, selector);
-      return "js-click fallback";
-    }
-    await page.click(selector, { timeout: 8000 });
+    return withTransientRetry(async () => {
+      const locator = page.locator(selector).first();
+      await locator.waitFor({ state: "attached", timeout: 8000 });
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      const box = await locator.boundingBox().catch(() => null);
+      if (!box || box.width === 0 || box.height === 0) {
+        // Element exists but has no visible box — use JS click as escape hatch
+        await page.evaluate(sel => {
+          const node = document.querySelector(sel);
+          if (node) node.click();
+        }, selector);
+        return "js-click fallback";
+      }
+      await locator.click({ timeout: 8000 });
+      return "clicked";
+    }, { retries: 2, delayMs: 220 });
   },
 
   dblclick: async ({ page, selector }) => {
-    const el = await page.$(selector);
-    if (el) await el.scrollIntoViewIfNeeded().catch(() => {});
-    await page.dblclick(selector, { timeout: 8000 });
+    return withTransientRetry(async () => {
+      const locator = page.locator(selector).first();
+      await locator.waitFor({ state: "attached", timeout: 8000 });
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      await locator.dblclick({ timeout: 8000 });
+      return "dblclicked";
+    }, { retries: 2, delayMs: 200 });
   },
 
   hover: async ({ page, selector }) => {
-    const el = await page.$(selector);
-    if (el) await el.scrollIntoViewIfNeeded().catch(() => {});
-    await page.hover(selector, { timeout: 8000 });
+    return withTransientRetry(async () => {
+      const locator = page.locator(selector).first();
+      await locator.waitFor({ state: "attached", timeout: 8000 });
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      await locator.hover({ timeout: 8000 });
+      return "hovered";
+    }, { retries: 2, delayMs: 180 });
   },
 
-  type: async ({ page, selector, text }) => page.type(selector, String(text || ""), { delay: 35 }),
-  fill: async ({ page, selector, text }) => page.fill(selector, String(text || "")),
-  press: async ({ page, selector, key }) => selector ? page.press(selector, key) : page.keyboard.press(key),
+  type: async ({ page, selector, text }) => withTransientRetry(async () => {
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "visible", timeout: 8000 });
+    await locator.scrollIntoViewIfNeeded().catch(() => {});
+    await locator.click({ timeout: 4000 }).catch(() => {});
+    await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
+    return "typed";
+  }, { retries: 2, delayMs: 220 }),
+  fill: async ({ page, selector, text }) => withTransientRetry(async () => {
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "visible", timeout: 8000 });
+    await locator.scrollIntoViewIfNeeded().catch(() => {});
+    await locator.fill(String(text || ""), { timeout: 12000 });
+    return "filled";
+  }, { retries: 2, delayMs: 220 }),
+  press: async ({ page, selector, key }) => withTransientRetry(async () => {
+    if (!selector) return page.keyboard.press(key);
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "attached", timeout: 6000 });
+    await locator.press(key, { timeout: 6000 });
+    return "pressed";
+  }, { retries: 1, delayMs: 160 }),
   check: async ({ page, selector }) => page.check(selector),
   uncheck: async ({ page, selector }) => page.uncheck(selector),
   selectOption: async ({ page, selector, value }) => page.selectOption(selector, value),
 
   // scrollIntoView: make an element visible before interacting
   scrollIntoView: async ({ page, selector }) => {
-    await page.$eval(selector, el => el.scrollIntoView({ block: "center", behavior: "smooth" }));
+    return withTransientRetry(async () => {
+      const locator = page.locator(selector).first();
+      await locator.waitFor({ state: "attached", timeout: 6000 });
+      await locator.scrollIntoViewIfNeeded();
+      return "scrolled";
+    }, { retries: 2, delayMs: 180 });
   },
 
   // submitForm: click submit or press Enter on focused element — great for search boxes
@@ -101,8 +158,16 @@ const actions = {
   getAllText: async ({ page }) => await page.evaluate(() => document.body.innerText),
 
   // 🕒 WAITING — note: "complete" is NOT a valid Playwright load state (sanitized → "load")
-  waitForSelector: async ({ page, selector, timeout = 8000 }) => page.waitForSelector(selector, { timeout }),
-  waitForVisible: async ({ page, selector, timeout = 8000 }) => page.waitForSelector(selector, { state: "visible", timeout }),
+  waitForSelector: async ({ page, selector, timeout = 8000 }) => withTransientRetry(async () => {
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "attached", timeout });
+    return "selector-attached";
+  }, { retries: 2, delayMs: 150 }),
+  waitForVisible: async ({ page, selector, timeout = 8000 }) => withTransientRetry(async () => {
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "visible", timeout });
+    return "selector-visible";
+  }, { retries: 2, delayMs: 170 }),
   waitForTimeout: async ({ page, ms }) => page.waitForTimeout(Math.min(Number(ms) || 500, 8000)),
   waitForLoadState: async ({ page, state = "load" }) => page.waitForLoadState(sanitizeLoadState(state), { timeout: 12000 }),
   waitForURLChange: async ({ page, currentURL, timeout = 8000 }) => {

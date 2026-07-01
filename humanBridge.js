@@ -85,6 +85,29 @@ module.exports = {
       gap: 8px;
       flex-wrap: wrap;
     }
+    .latency {
+      color: var(--muted);
+      font-size: 12px;
+      margin-left: auto;
+    }
+    .click-dot {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      border: 2px solid var(--ok);
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.4);
+      z-index: 5;
+    }
+    .click-dot.show {
+      animation: clickPulse 420ms ease-out forwards;
+    }
+    @keyframes clickPulse {
+      0% { opacity: 0.95; transform: translate(-50%, -50%) scale(0.3); }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(2.6); }
+    }
     button {
       border: 1px solid var(--line);
       background: var(--panel-2);
@@ -109,10 +132,12 @@ module.exports = {
       <p class="note">Click directly on the screenshot to relay that click into the live Playwright page. Keep this tab open while solving CAPTCHA.</p>
       <div class="toolbar">
         <button id="refreshBtn" type="button">Refresh Now</button>
+        <span id="bridgeLatency" class="latency">refresh: --</span>
       </div>
     </section>
     <section class="card stage">
       <img id="bridgeShot" alt="Live browser screenshot" draggable="false" />
+      <div id="clickDot" class="click-dot" aria-hidden="true"></div>
     </section>
   </div>
 
@@ -124,15 +149,20 @@ module.exports = {
     const clicksTag = document.getElementById("bridgeClicks");
     const urlEl = document.getElementById("bridgeUrl");
     const refreshBtn = document.getElementById("refreshBtn");
+    const latencyEl = document.getElementById("bridgeLatency");
+    const clickDot = document.getElementById("clickDot");
 
     let latestState = { active: false, checks: 0, limit: 0, url: "about:blank", clickCount: 0 };
     let busy = false;
+    let tickTimer = null;
+    let eventSource = null;
 
     function setStatus(text) {
       statusTag.textContent = text;
     }
 
     async function pullState() {
+      const startedAt = Date.now();
       const response = await fetch("/api/human/state", { credentials: "same-origin" });
       if (response.status === 401) {
         window.location.href = "/";
@@ -140,6 +170,9 @@ module.exports = {
       }
       if (!response.ok) throw new Error("Failed to fetch state");
       latestState = await response.json();
+      if (latencyEl) {
+        latencyEl.textContent = "refresh: " + Math.max(0, Date.now() - startedAt) + "ms";
+      }
       activeTag.textContent = latestState.active ? "CAPTCHA active" : "Idle";
       activeTag.className = "tag " + (latestState.active ? "warn" : "ok");
       checksTag.textContent = "checks: " + (latestState.checks || 0) + "/" + (latestState.limit || 0);
@@ -155,10 +188,56 @@ module.exports = {
       shot.src = "/screenshot?human=1&ts=" + Date.now();
     }
 
+    function showClickFeedback(event) {
+      if (!clickDot) return;
+      const rect = shot.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      clickDot.style.left = x + "px";
+      clickDot.style.top = y + "px";
+      clickDot.classList.remove("show");
+      void clickDot.offsetWidth;
+      clickDot.classList.add("show");
+    }
+
+    function scheduleTick() {
+      if (tickTimer) window.clearTimeout(tickTimer);
+      const interval = latestState.active ? 900 : 2200;
+      tickTimer = window.setTimeout(tick, interval);
+    }
+
+    function connectEvents() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      eventSource = new EventSource("/events");
+      eventSource.onmessage = function(event) {
+        let payload = null;
+        try { payload = JSON.parse(event.data); } catch { return; }
+        if (!payload || !payload.type) return;
+        if (payload.type === "screenshot" && payload.img) {
+          shot.src = "data:image/jpeg;base64," + payload.img;
+          return;
+        }
+        if (payload.type === "url" && payload.url) {
+          urlEl.textContent = payload.url;
+          return;
+        }
+        if (payload.type === "human_needed" || payload.type === "bridge_closed" || payload.type === "captcha_solved" || payload.type === "human_click") {
+          pullState().catch(function(error) { setStatus(error.message); }).finally(scheduleTick);
+        }
+      };
+      eventSource.onerror = function() {
+        setStatus("Live stream reconnecting...");
+      };
+    }
+
     async function relayClick(event) {
       if (busy) return;
       const rect = shot.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
+      showClickFeedback(event);
       const xRatio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
       const yRatio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
       busy = true;
@@ -179,6 +258,7 @@ module.exports = {
         setStatus(error.message);
       } finally {
         busy = false;
+        scheduleTick();
       }
     }
 
@@ -188,13 +268,15 @@ module.exports = {
         refreshShot();
       } catch (error) {
         setStatus(error.message);
+      } finally {
+        scheduleTick();
       }
     }
 
     shot.addEventListener("click", relayClick);
     refreshBtn.addEventListener("click", tick);
+    connectEvents();
     tick();
-    window.setInterval(tick, 2200);
   </script>
 </body>
 </html>

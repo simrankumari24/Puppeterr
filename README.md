@@ -61,7 +61,32 @@ Implement a more robust Reality Bonk Gate for Planner.
 Enhance Vision’s DOM interpretation.
 Add better debugging tools and UI overlays.
 
+### every time you REBUILD THE CONTAINER do these steps:
+
 use "sudo find / -type f -iname "*chrome*" 2>/dev/null" fr a full nuke search and
 
 "npx playwright install chromium" if u dont find it anyway
 
+
+then install the required libaries 
+
+"
+sudo apt-get update
+sudo apt-get install -y \
+  libatk1.0-0 \
+  libatk-bridge2.0-0 \
+  libgtk-3-0 \
+  libgbm1 \
+  libnss3 \
+  libxss1 \
+  libasound2t64
+"
+
+to run the program itself you need to run this cmd
+"xvfb-run -a node agent.js"
+if its not INSTALLED do this
+
+"
+sudo apt-get update
+sudo apt-get install -y xvfb
+"
