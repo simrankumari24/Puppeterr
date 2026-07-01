@@ -1,0 +1,38 @@
+name: Puppeterr Cloud Runner
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-puppeterr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          npm install
+          npx playwright install --with-deps
+
+      - name: Start Xvfb
+        run: |
+          export DISPLAY=:99
+          xvfb :99 -screen 0 1920x1080x24 &
+          sleep 3
+
+      - name: Run Puppeterr agent
+        run: |
+          export DISPLAY=:99
+          xvfb-run -a node agent.js
