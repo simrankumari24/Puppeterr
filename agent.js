@@ -5,8 +5,12 @@ const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
 const { execSync, exec } = require("child_process");
+const bcrypt = require("bcryptjs");
+const { fetch: undiciFetch } = require("undici");
+const nodemailer = require("nodemailer");
 const actions = require("./actions");
 const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
+const pinchApi = require("pinch-api");
 async function humanMove(page, x, y, telemetry = {}) {
   const steps = 25 + Math.floor(Math.random() * 10);
   const start = await page.evaluate(() => ({
@@ -83,19 +87,50 @@ ensureBrowser();
 
 // ── .env loader ───────────────────────────────────────────────────────────────
 if (fs.existsSync(".env")) {
-  fs.readFileSync(".env", "utf8").split("\n").forEach(line => {
-    const [k, ...v] = line.split("=");
-    if (k && v.length && !process.env[k.trim()]) process.env[k.trim()] = v.join("=").trim();
+  fs.readFileSync(".env", "utf8").split(/\r?\n/).forEach(line => {
+    const raw = String(line || "").trim();
+    if (!raw || raw.startsWith("#")) return;
+    const [k, ...v] = raw.split("=");
+    if (!k || !v.length) return;
+    const key = k.trim();
+    if (process.env[key]) return;
+    let value = v.join("=").trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
   });
 }
 
 const CF_API_TOKEN  = process.env.CF_API_TOKEN;
 const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const PINCH_API_TOKEN = process.env.PINCH_API_TOKEN || process.env.PINCH_X_API_TOKEN || "";
+const PINCH_API_EMAIL = process.env.PINCH_API_EMAIL || process.env.PINCH_X_API_EMAIL || "";
+const PINCH_BASE_URI = process.env.PINCH_BASE_URI || "";
 const SESSION_FILE  = "session.json";
 const CHAT_STORE_FILE = "chat-history.json";
 const LOG_FILE = "log.json";
+const USER_STORE_FILE = "users.json";
+const PASSWORD_MIN_LENGTH = Math.max(8, Number(process.env.PASSWORD_MIN_LENGTH || 8));
+const REQUIRE_EMAIL_VERIFICATION = String(process.env.REQUIRE_EMAIL_VERIFICATION || "false").toLowerCase() === "true";
+const PINCH_API_VERSION = process.env.PINCH_API_VERSION || "2020.1";
+const SMTP_HOST    = process.env.SMTP_HOST || "";
+const SMTP_PORT    = Number(process.env.SMTP_PORT) || 587;
+const SMTP_SECURE  = String(process.env.SMTP_SECURE || "false").toLowerCase() === "true";
+const SMTP_USER    = process.env.SMTP_USER || "";
+const SMTP_PASS    = process.env.SMTP_PASS || "";
+const SMTP_FROM    = process.env.SMTP_FROM || `"Puppeterr" <${process.env.SMTP_USER || "noreply@puppeterr.app"}>`;  
+const APP_BASE_URL = String(process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const { loadSessionState } = require("./sessionStore");
 const BROWSER_PROFILE_DIR = process.env.BROWSER_PROFILE_DIR || path.join(process.cwd(), ".puppeterr-profile");
+const FINGERPRINT_USER_AGENT = process.env.FINGERPRINT_USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const FINGERPRINT_LOCALE = process.env.FINGERPRINT_LOCALE || "en-US";
+const FINGERPRINT_TIMEZONE = process.env.FINGERPRINT_TIMEZONE || "America/New_York";
+const FINGERPRINT_VIEWPORT_WIDTH = Math.max(960, Number(process.env.FINGERPRINT_VIEWPORT_WIDTH || 1366));
+const FINGERPRINT_VIEWPORT_HEIGHT = Math.max(600, Number(process.env.FINGERPRINT_VIEWPORT_HEIGHT || 768));
+const FINGERPRINT_PLATFORM = process.env.FINGERPRINT_PLATFORM || "Win32";
+const FINGERPRINT_CPU_CORES = Math.max(2, Number(process.env.FINGERPRINT_CPU_CORES || 8));
 const PORT          = process.env.PORT || 3000;
 const HOST          = "0.0.0.0";
 const MAX_STEPS     = 60;
@@ -125,12 +160,16 @@ const VISION_STREAM_FPS = Math.max(1, Number(process.env.VISION_STREAM_FPS || 8)
 const VISION_STREAM_INTERVAL_MS = Math.max(90, Math.round(1000 / VISION_STREAM_FPS));
 const VISION_REASONER_INTERVAL_MS = Math.max(400, Number(process.env.VISION_REASONER_INTERVAL_MS || 900));
 const VISION_REASONER_FORCE_INTERVAL_MS = Math.max(1200, Number(process.env.VISION_REASONER_FORCE_INTERVAL_MS || 2500));
-const VISION_STREAM_FRESH_MS = Math.max(600, Number(process.env.VISION_STREAM_FRESH_MS || 1800));
-const VISION_CLICK_CANDIDATE_COUNT = 10;
+const VISION_STREAM_FRESH_MS = Math.max(600, Number(process.env.VISION_STREAM_FRESH_MS || 5000));
+const VISION_CLICK_CANDIDATE_COUNT = 3;
 const HYBRID_SELECTOR_VARIANTS = Math.max(1, Math.min(5, Number(process.env.HYBRID_SELECTOR_VARIANTS || 5)));
 const HYBRID_URL_CHANGE_MAX_CYCLES = Math.max(1, Number(process.env.HYBRID_URL_CHANGE_MAX_CYCLES || 2));
 const CONFUSION_RESEARCH_COOLDOWN_MS = Math.max(30000, Number(process.env.CONFUSION_RESEARCH_COOLDOWN_MS || 180000));
 const CONFUSION_RESEARCH_RESULT_LIMIT = Math.max(3, Number(process.env.CONFUSION_RESEARCH_RESULT_LIMIT || 5));
+const SUPERVISOR_MODE = String(process.env.SUPERVISOR_MODE || "enforce").toLowerCase(); // off | passive | enforce
+const SUPERVISOR_BLOCK_SCORE = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_BLOCK_SCORE || 0.52)));
+const SUPERVISOR_WARN_SCORE = Math.max(SUPERVISOR_BLOCK_SCORE, Math.min(0.98, Number(process.env.SUPERVISOR_WARN_SCORE || 0.67)));
+const SUPERVISOR_ACTION_BLOCK_RISK = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_ACTION_BLOCK_RISK || 0.72)));
 const DYNAMIC_UI_CHANGED_FRAME_THRESHOLD = Math.max(4, Number(process.env.DYNAMIC_UI_CHANGED_FRAME_THRESHOLD || 8));
 const DYNAMIC_UI_CHANGE_RATIO = Math.max(1, Number(process.env.DYNAMIC_UI_CHANGE_RATIO || 1.5));
 const IDLE_HUMAN_IDLE_MIN_MS = Number(process.env.IDLE_HUMAN_IDLE_MIN_MS || 2500);
@@ -149,6 +188,7 @@ const WORKSPACE_ROOT = process.cwd();
 // past the model's context window — which can ALSO surface as a confusing
 // "Bad input" error from Cloudflare that looks unrelated to its real cause.
 const MAX_PLANNER_HISTORY_MESSAGES = 15; // system + last X turns
+const fetchImpl = globalThis.fetch || undiciFetch;
 
 const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
 const DEFAULT_MODELS = {
@@ -182,7 +222,7 @@ function pickModelId(catalog, preferredIds, wantVision) {
 
 function resolveDefaultModels(catalog) {
   const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], true) || DEFAULT_MODELS.router;
-  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/nvidia/nemotron-3-120b-a12b", router], true) || router;
+  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/nvidia/nemotron-3-120b-a12b", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
   return { router, planner, reasoner, vision };
@@ -202,8 +242,10 @@ function sanitizeModels(models, catalog) {
 let browser, context, page;
 let sessionHistory  = [];
 let agentRunning    = false;
+let currentTaskUserId = null; // tracks which user triggered the active task
 let modelCatalogCache = { expiresAt: 0, items: [] };
 let learningLogCache = null;
+let screenshotCaptureQueue = Promise.resolve();
 let bridgeVisionTimer = null;
 let bridgeVisionInFlight = false;
 let bridgeVisionClearStreak = 0;
@@ -264,6 +306,44 @@ let taskVisionState = {
 };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const VISION_FILTER_STYLE_ID = "__puppeterr_vision_filter_style";
+const VISION_FILTER_CSS = `
+html, body {
+  background: #111111 !important;
+}
+
+button, a, [role="button"], input[type="button"], input[type="submit"], [onclick], label[for] {
+  background: #ffffff !important;
+  color: #000000 !important;
+  border: 2px solid #8a8a8a !important;
+  box-shadow: none !important;
+}
+
+input, textarea, select {
+  background: #f2f2f2 !important;
+  color: #000000 !important;
+  border: 1px solid #9a9a9a !important;
+}
+
+img, video, canvas, svg {
+  filter: grayscale(100%) brightness(42%) contrast(82%) !important;
+}
+
+p, span, div, li, h1, h2, h3, h4, h5, h6 {
+  color: #d2d2d2 !important;
+}
+
+* {
+  animation: none !important;
+  transition: none !important;
+}`;
+
+function queueScreenshotCapture(task) {
+  const run = screenshotCaptureQueue.then(task, task);
+  screenshotCaptureQueue = run.catch(() => {});
+  return run;
+}
 
 function randomIdleDelayMs() {
   const min = Math.max(200, Number(IDLE_HUMAN_IDLE_MIN_MS) || 1400);
@@ -648,12 +728,82 @@ function parseCookies(req) {
   }, {});
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  const email = normalizeEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function loadUsers() {
+  if (!fs.existsSync(USER_STORE_FILE)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(USER_STORE_FILE, "utf8"));
+    return Array.isArray(parsed)
+      ? parsed.map(user => ({
+          ...user,
+          email: normalizeEmail(user?.email),
+          verified: !!user?.verified,
+          subscription_plan: user?.subscription_plan || null,
+          subscription_id: user?.subscription_id || null,
+          pinch_customer_id: user?.pinch_customer_id || null,
+          subscription_status: user?.subscription_status || (user?.subscription_plan ? "active" : "unsubscribed")
+        })).filter(user => user.email)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveUsers(users) {
+  fs.writeFileSync(USER_STORE_FILE, JSON.stringify(Array.isArray(users) ? users : [], null, 2));
+}
+
+function findUserByEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  return loadUsers().find(user => normalizeEmail(user.email) === normalized) || null;
+}
+
+function findUserById(userId) {
+  const target = String(userId || "").trim();
+  if (!target) return null;
+  return loadUsers().find(user => String(user.id || "") === target) || null;
+}
+
+function sanitizeUserForSession(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: normalizeEmail(user.email),
+    verified: !!user.verified,
+    subscription_plan: user.subscription_plan || null,
+    subscription_id: user.subscription_id || null,
+    pinch_customer_id: user.pinch_customer_id || null,
+    subscription_status: user.subscription_status || (user.subscription_plan ? "active" : "unsubscribed")
+  };
+}
+
 function signValue(value) {
   return crypto.createHmac("sha256", AUTH_SECRET).update(value).digest("hex");
 }
 
-function createAuthToken(username) {
-  const payload = Buffer.from(JSON.stringify({ u: username, exp: Date.now() + (7 * 24 * 60 * 60 * 1000) })).toString("base64url");
+function createAuthToken(userOrUsername) {
+  const fallbackUsername = typeof userOrUsername === "string" ? String(userOrUsername || "") : "";
+  const payloadData = typeof userOrUsername === "object" && userOrUsername
+    ? {
+        u: String(userOrUsername.email || userOrUsername.username || fallbackUsername || "").trim(),
+        uid: String(userOrUsername.id || "").trim() || undefined,
+        email: normalizeEmail(userOrUsername.email || "") || undefined,
+        exp: Date.now() + (7 * 24 * 60 * 60 * 1000)
+      }
+    : {
+        u: fallbackUsername,
+        exp: Date.now() + (7 * 24 * 60 * 60 * 1000)
+      };
+  const payload = Buffer.from(JSON.stringify(payloadData)).toString("base64url");
   return `${payload}.${signValue(payload)}`;
 }
 
@@ -663,8 +813,12 @@ function verifyAuthToken(token) {
   if (signValue(payload) !== sig) return null;
   try {
     const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (!parsed.u || !parsed.exp || parsed.exp < Date.now()) return null;
-    return { username: parsed.u };
+    if (!parsed.exp || parsed.exp < Date.now()) return null;
+    return {
+      username: parsed.u || parsed.email || "",
+      userId: parsed.uid || null,
+      email: normalizeEmail(parsed.email || "") || null
+    };
   } catch {
     return null;
   }
@@ -672,7 +826,37 @@ function verifyAuthToken(token) {
 
 function getAuth(req) {
   const cookies = parseCookies(req);
-  return verifyAuthToken(cookies[AUTH_COOKIE_NAME]);
+  const tokenData = verifyAuthToken(cookies[AUTH_COOKIE_NAME]);
+  if (!tokenData) return null;
+
+  if (tokenData.userId || tokenData.email) {
+    const user = tokenData.userId ? findUserById(tokenData.userId) : findUserByEmail(tokenData.email);
+    if (!user) return null;
+    const safeUser = sanitizeUserForSession(user);
+    return {
+      username: safeUser.email,
+      userId: safeUser.id,
+      email: safeUser.email,
+      verified: safeUser.verified,
+      subscriptionPlan: safeUser.subscription_plan,
+      subscriptionId: safeUser.subscription_id,
+      pinchCustomerId: safeUser.pinch_customer_id,
+      subscriptionStatus: safeUser.subscription_status,
+      isLegacy: false
+    };
+  }
+
+  return {
+    username: tokenData.username,
+    userId: null,
+    email: null,
+    verified: true,
+    subscriptionPlan: null,
+    subscriptionId: null,
+    pinchCustomerId: null,
+    subscriptionStatus: "unsubscribed",
+    isLegacy: true
+  };
 }
 
 function requireAuth(req, res) {
@@ -692,6 +876,159 @@ function clearAuthCookie(res) {
   res.setHeader("Set-Cookie", `${AUTH_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
 }
 
+function createMailTransport() {
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) return null;
+  return nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth: { user: SMTP_USER, pass: SMTP_PASS }
+  });
+}
+
+async function sendVerificationEmail(email, token) {
+  const transport = createMailTransport();
+  const link = `${APP_BASE_URL}/auth/verify?token=${encodeURIComponent(token)}`;
+  if (!transport) {
+    console.warn(`[email] SMTP not configured. Verification link for ${email}: ${link}`);
+    return;
+  }
+  await transport.sendMail({
+    from: SMTP_FROM,
+    to: email,
+    subject: "Please verify your Puppeterr account",
+    text: [
+      "Hi there,",
+      "",
+      "Thanks for signing up to Puppeterr! We just need one small thing from you: please verify your email address so we know you're a real human (not a bot army).",
+      "",
+      "Click the link below to verify your account:",
+      link,
+      "",
+      "This link expires in 24 hours. After you verify, you'll be automatically signed in and ready to go.",
+      "",
+      "If you didn't create a Puppeterr account, you can safely ignore this email — nothing will happen.",
+      "",
+      "— The Puppeterr team"
+    ].join("\n"),
+    html: `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0a1018;color:#e8eff7;padding:32px;">
+<div style="max-width:520px;margin:0 auto;background:#151f2d;border-radius:16px;padding:32px;border:1px solid rgba(255,255,255,0.08);">
+  <div style="font-size:22px;font-weight:700;margin-bottom:8px;">Verify your email</div>
+  <p style="color:#93a0af;margin-bottom:24px;">Thanks for signing up to Puppeterr! Click below to verify your email and activate your account.</p>
+  <a href="${link}" style="display:inline-block;background:#85e89d;color:#0d1117;padding:12px 28px;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;">Verify my email ↗</a>
+  <p style="margin-top:24px;color:#93a0af;font-size:12px;">Or paste this link in your browser:<br/><code style="color:#85e89d;word-break:break-all;">${link}</code></p>
+  <p style="margin-top:24px;color:#555;font-size:11px;">This link expires in 24 hours. If you didn't sign up, ignore this email.</p>
+</div></body></html>`
+  });
+}
+
+async function pinchCreateCustomer(email) {
+  if (!PINCH_API_TOKEN) throw new Error("Missing PINCH_API_TOKEN");
+  const base = String(PINCH_BASE_URI || "https://api.getpinch.com.au").replace(/\/+$/, "");
+  const url = new URL("/test/customers", `${base}/`).toString();
+
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      "accept": "application/json",
+      "authorization": `Bearer ${PINCH_API_TOKEN}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      firstName: "VOID",
+      lastName: "User",
+      email: normalizeEmail(email)
+    })
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = String(payload?.error || payload?.message || `Pinch customer creation failed (${response.status})`);
+    const err = new Error(message);
+    err.code = response.status;
+    err.details = payload;
+    err.url = url;
+    throw err;
+  }
+
+  const customerId = payload?.id || payload?.customer_id || payload?.data?.id || payload?.result?.id || null;
+  if (!customerId) {
+    const err = new Error("Pinch customer response missing id");
+    err.code = 502;
+    err.details = payload;
+    err.url = url;
+    throw err;
+  }
+  return { customerId: String(customerId), raw: payload };
+}
+
+async function signupUser({ email, password }) {
+  const normalizedEmail = normalizeEmail(email);
+  const rawPassword = String(password || "");
+
+  if (!isValidEmail(normalizedEmail)) {
+    const err = new Error("Invalid email format");
+    err.code = 400;
+    throw err;
+  }
+  if (rawPassword.length < PASSWORD_MIN_LENGTH) {
+    const err = new Error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+    err.code = 400;
+    throw err;
+  }
+
+  const users = loadUsers();
+  if (users.some(user => normalizeEmail(user.email) === normalizedEmail)) {
+    const err = new Error("Email already exists");
+    err.code = 409;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  const verificationToken = crypto.randomBytes(32).toString("hex");
+  const user = {
+    id: crypto.randomUUID(),
+    email: normalizedEmail,
+    password_hash: await bcrypt.hash(rawPassword, 12),
+    verified: !REQUIRE_EMAIL_VERIFICATION, // auto-verify if verification is disabled
+    verification_token: REQUIRE_EMAIL_VERIFICATION ? verificationToken : null,
+    verification_token_exp: REQUIRE_EMAIL_VERIFICATION ? (Date.now() + VERIFY_TOKEN_TTL_MS) : null,
+    subscription_plan: null,
+    subscription_id: null,
+    pinch_customer_id: null,
+    subscription_status: "unsubscribed",
+    createdAt: now,
+    updatedAt: now
+  };
+
+  users.push(user);
+  saveUsers(users);
+
+  // Send verification email (nonfatal — account is created regardless)
+  if (REQUIRE_EMAIL_VERIFICATION) {
+    try {
+      await sendVerificationEmail(normalizedEmail, verificationToken);
+    } catch (emailErr) {
+      console.warn("[email] Failed to send verification email:", emailErr.message);
+    }
+  }
+
+  let pinchWarning = null;
+  try {
+    const pinchCustomer = await pinchCreateCustomer(normalizedEmail);
+    user.pinch_customer_id = pinchCustomer.customerId;
+    user.updatedAt = new Date().toISOString();
+    saveUsers(users);
+  } catch (err) {
+    // Nonfatal: keep the user account active even if Pinch customer creation fails.
+    pinchWarning = err?.message || "Pinch customer setup failed";
+  }
+
+  const safeUser = sanitizeUserForSession(user);
+  if (pinchWarning) safeUser.pinch_warning = pinchWarning;
+  return safeUser;
+}
+
 function createChatRecord(title = "New Chat") {
   const now = new Date().toISOString();
   return {
@@ -704,13 +1041,40 @@ function createChatRecord(title = "New Chat") {
   };
 }
 
-function loadChatStore() {
-  if (!fs.existsSync(CHAT_STORE_FILE)) {
+function chatStoreFile(userId) {
+  if (!userId) return CHAT_STORE_FILE; // legacy admin fallback
+  const safe = String(userId).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(process.cwd(), `chats-${safe}.json`);
+}
+
+function loadChatStore(userId) {
+  const file = chatStoreFile(userId);
+  if (!fs.existsSync(file)) {
+    // First access for this user — migrate any existing chats from the legacy shared store
+    if (userId && fs.existsSync(CHAT_STORE_FILE)) {
+      try {
+        const legacy = JSON.parse(fs.readFileSync(CHAT_STORE_FILE, "utf8"));
+        if (Array.isArray(legacy.chats) && legacy.chats.length) {
+          const chats = legacy.chats.map(chat => ({
+            ...chat,
+            models: sanitizeModels(chat.models || {}, modelCatalogCache.items),
+            messages: Array.isArray(chat.messages) ? chat.messages : []
+          }));
+          const selectedChatId = chats.some(c => c.id === legacy.selectedChatId)
+            ? legacy.selectedChatId
+            : chats[0].id;
+          const migrated = { selectedChatId, chats };
+          fs.writeFileSync(file, JSON.stringify(migrated, null, 2));
+          console.log(`[chat] Migrated ${chats.length} chat(s) from legacy store → ${path.basename(file)}`);
+          return migrated;
+        }
+      } catch {}
+    }
     const chat = createChatRecord("Welcome Chat");
     return { selectedChatId: chat.id, chats: [chat] };
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(CHAT_STORE_FILE, "utf8"));
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     const chats = Array.isArray(parsed.chats) && parsed.chats.length
       ? parsed.chats.map(chat => ({
           ...chat,
@@ -728,8 +1092,8 @@ function loadChatStore() {
   }
 }
 
-function saveChatStore(store) {
-  fs.writeFileSync(CHAT_STORE_FILE, JSON.stringify(store, null, 2));
+function saveChatStore(store, userId) {
+  fs.writeFileSync(chatStoreFile(userId), JSON.stringify(store, null, 2));
 }
 
 function summarizeChat(chat) {
@@ -750,35 +1114,35 @@ function syncSessionHistory(chat) {
     .map(message => ({ role: message.role, content: message.content }));
 }
 
-function ensureCurrentChat() {
-  const store = loadChatStore();
+function ensureCurrentChat(userId) {
+  const store = loadChatStore(userId);
   let chat = store.chats.find(item => item.id === store.selectedChatId);
   if (!chat) {
     chat = store.chats[0] || createChatRecord("Welcome Chat");
     if (!store.chats.length) store.chats.push(chat);
     store.selectedChatId = chat.id;
-    saveChatStore(store);
+    saveChatStore(store, userId);
   }
   syncSessionHistory(chat);
   return { store, chat };
 }
 
-function setCurrentChat(chatId) {
-  const store = loadChatStore();
+function setCurrentChat(chatId, userId) {
+  const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
   store.selectedChatId = chatId;
-  saveChatStore(store);
+  saveChatStore(store, userId);
   syncSessionHistory(chat);
   return chat;
 }
 
-function createChat(title = "New Chat") {
-  const store = loadChatStore();
+function createChat(title = "New Chat", userId) {
+  const store = loadChatStore(userId);
   const chat = createChatRecord(title);
   store.chats.unshift(chat);
   store.selectedChatId = chat.id;
-  saveChatStore(store);
+  saveChatStore(store, userId);
   syncSessionHistory(chat);
   return chat;
 }
@@ -813,19 +1177,19 @@ function getRuntimeModelOverride(chat) {
   return override || null;
 }
 
-function setRuntimeModelOverride(chatId, modelId) {
-  const store = loadChatStore();
+function setRuntimeModelOverride(chatId, modelId, userId) {
+  const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
   chat.runtimeModelOverride = modelId || null;
   chat.updatedAt = new Date().toISOString();
-  saveChatStore(store);
+  saveChatStore(store, userId);
   syncSessionHistory(chat);
   return chat;
 }
 
-function clearRuntimeModelOverride(chatId) {
-  return setRuntimeModelOverride(chatId, null);
+function clearRuntimeModelOverride(chatId, userId) {
+  return setRuntimeModelOverride(chatId, null, userId);
 }
 
 function applyRuntimeModelOverride(models, chat) {
@@ -878,26 +1242,27 @@ function resolveSlashModelCommand(command) {
   return modelLike ? { kind: "model", modelId: null, query: modelQuery } : null;
 }
 
-function appendChatMessage(chatId, role, content, meta = {}) {
-  const store = loadChatStore();
+// userId defaults to currentTaskUserId so agent task callbacks don't need to pass it explicitly
+function appendChatMessage(chatId, role, content, meta = {}, userId = currentTaskUserId) {
+  const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
   renameChatFromPrompt(chat, role === "user" ? content : "");
   chat.messages.push({ role, content, ts: new Date().toISOString(), ...meta });
   chat.updatedAt = new Date().toISOString();
   store.selectedChatId = chatId;
-  saveChatStore(store);
+  saveChatStore(store, userId);
   syncSessionHistory(chat);
   return chat;
 }
 
-function updateChatModels(chatId, models) {
-  const store = loadChatStore();
+function updateChatModels(chatId, models, userId) {
+  const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
   chat.models = sanitizeModels({ ...(chat.models || {}), ...(models || {}) }, modelCatalogCache.items);
   chat.updatedAt = new Date().toISOString();
-  saveChatStore(store);
+  saveChatStore(store, userId);
   syncSessionHistory(chat);
   return chat;
 }
@@ -906,15 +1271,25 @@ function getActiveModels(chat) {
   return applyRuntimeModelOverride(chat?.models || {}, chat);
 }
 
-function buildBootstrapPayload(catalog = modelCatalogCache.items) {
-  const { store, chat } = ensureCurrentChat();
+function buildBootstrapPayload(catalog = modelCatalogCache.items, auth = null) {
+  const { store, chat } = ensureCurrentChat(auth?.userId || null);
   const defaults = resolveDefaultModels(catalog);
+  const memory = loadMemory();
+  const resolvedUsername = auth?.email || auth?.username || APP_USERNAME;
+  const subscriptionPlan = auth?.subscriptionPlan || null;
+  const subscriptionStatus = auth?.subscriptionStatus || (subscriptionPlan ? "active" : "unsubscribed");
   return {
-    username: APP_USERNAME,
+    username: resolvedUsername,
+    account: {
+      verified: auth?.verified ?? null,
+      subscriptionPlan,
+      subscriptionStatus,
+      pinchCustomerId: auth?.pinchCustomerId || null
+    },
     selectedChatId: store.selectedChatId,
     chats: store.chats.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(summarizeChat),
     currentChat: chat,
-    memory: loadMemory(),
+    memory: memory.slice(-250),
     models: {
       catalog,
       defaults,
@@ -974,12 +1349,7 @@ async function fetchModelCatalog(force = false) {
       const models = normalizeModelCatalog(data);
       if (models.length) {
         modelCatalogCache = { items: models, expiresAt: Date.now() + MODEL_CACHE_MS };
-        const store = loadChatStore();
-        store.chats = store.chats.map(chat => ({
-          ...chat,
-          models: sanitizeModels(chat.models || {}, models)
-        }));
-        saveChatStore(store);
+        // Per-user stores get models sanitized on next load — no global rewrite needed
         return models;
       }
     }
@@ -1204,6 +1574,65 @@ Describe what is visible. Identify which detected objects appear interactive (bu
   }
 }
 
+function configurePinchClient() {
+  if (!PINCH_API_TOKEN || !PINCH_API_EMAIL) {
+    throw new Error("Missing PINCH_API_TOKEN or PINCH_API_EMAIL");
+  }
+  pinchApi.configuration.xAPITOKEN = PINCH_API_TOKEN;
+  pinchApi.configuration.xAPIEMAIL = PINCH_API_EMAIL;
+  if (PINCH_BASE_URI) {
+    pinchApi.configuration.BASEURI = PINCH_BASE_URI;
+  }
+}
+
+function callPinch(controller, method, args = []) {
+  return new Promise((resolve, reject) => {
+    if (!controller || typeof controller[method] !== "function") {
+      reject(new Error(`Pinch method not found: ${String(method || "unknown")}`));
+      return;
+    }
+    controller[method](...args, (error, response) => {
+      if (error) {
+        const message = String(error.errorMessage || error.message || "Pinch API error");
+        const err = new Error(message);
+        err.code = Number.isFinite(Number(error.errorCode)) ? Number(error.errorCode) : null;
+        err.details = error.errorResponse || null;
+        reject(err);
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+async function pinchListTickets() {
+  configurePinchClient();
+  const tickets = await callPinch(pinchApi.TicketController, "list");
+  return Array.isArray(tickets) ? tickets : [];
+}
+
+async function pinchSendTicketMessage(ticketId, body) {
+  configurePinchClient();
+  const cleanTicketId = String(ticketId || "").trim();
+  const cleanBody = String(body || "").trim();
+  if (!cleanTicketId) throw new Error("ticketId is required");
+  if (!cleanBody) throw new Error("body is required");
+  const response = await callPinch(pinchApi.TicketController, "sendMessage", [cleanBody, cleanTicketId]);
+  return response || {};
+}
+
+async function pinchListWebhooks() {
+  configurePinchClient();
+  const webhooks = await callPinch(pinchApi.WebhookController, "list");
+  return Array.isArray(webhooks) ? webhooks : [];
+}
+
+async function pinchListWebhookTypes() {
+  configurePinchClient();
+  const types = await callPinch(pinchApi.WebhookTypeController, "list");
+  return Array.isArray(types) ? types : [];
+}
+
   function stripThinking(text) { return String(text || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); }
 
   function safeParseJSON(raw) {
@@ -1242,35 +1671,70 @@ Describe what is visible. Identify which detected objects appear interactive (bu
       Array.from(document.querySelectorAll("a[href]")).slice(0, 15)
         .map(a => ({ text: a.innerText.trim().slice(0, 60), href: a.href }))
     ).catch(() => []);
-    const inputs = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("input,textarea,select")).slice(0, 12)
+
+    // Enhanced: compute best CSS selector + centre coordinates for every input
+    const inputs = await page.evaluate(() => {
+      const vw = window.innerWidth || 1920;
+      const vh = window.innerHeight || 1080;
+      return Array.from(document.querySelectorAll("input,textarea,select")).slice(0, 20)
         .map(el => {
           const rect = el.getBoundingClientRect();
+          const inViewport = rect.width > 0 && rect.height > 0 &&
+            rect.top < vh && rect.bottom > 0 && rect.left < vw && rect.right > 0;
+          const tag  = el.tagName.toLowerCase();
+          const aria = el.getAttribute("aria-label") || "";
+          const ph   = el.placeholder || "";
+          const tid  = el.getAttribute("data-testid") || el.getAttribute("data-qa") || "";
+          // Build best selector: id > data-testid > name > aria-label > placeholder > type
+          let sel = "";
+          if (el.id)       sel = `#${el.id}`;
+          else if (tid)    sel = `[data-testid='${tid}']`;
+          else if (el.name)sel = `${tag}[name='${el.name}']`;
+          else if (aria)   sel = `${tag}[aria-label='${aria.slice(0,60)}']`;
+          else if (ph)     sel = `${tag}[placeholder='${ph.slice(0,40)}']`;
+          else if (el.type && el.type !== "text") sel = `${tag}[type='${el.type}']`;
+          else             sel = tag;
           return {
-            tag: el.tagName,
-            type: el.type,
-            name: el.name,
-            placeholder: el.placeholder,
-            id: el.id,
-            visible: rect.width > 0 && rect.height > 0,
+            tag, type: el.type || "", name: el.name || "",
+            placeholder: ph.slice(0, 50), id: el.id || "",
+            ariaLabel: aria.slice(0, 60),
+            selector: sel,
+            visible: inViewport,
+            cx: Math.round(rect.left + rect.width / 2),
+            cy: Math.round(rect.top + rect.height / 2),
             value: (el.value || "").slice(0, 40)
           };
-        })
-    ).catch(() => []);
-    const buttons = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("button,input[type='button'],input[type='submit'],[role='button']"))
-        .slice(0, 10)
+        });
+    }).catch(() => []);
+
+    // Enhanced: buttons now include computed selector and coordinates
+    const buttons = await page.evaluate(() => {
+      const vw = window.innerWidth || 1920;
+      const vh = window.innerHeight || 1080;
+      return Array.from(document.querySelectorAll("button,input[type='button'],input[type='submit'],[role='button']"))
+        .slice(0, 15)
         .map(el => {
           const rect = el.getBoundingClientRect();
+          const inViewport = rect.width > 0 && rect.height > 0 &&
+            rect.top < vh && rect.bottom > 0 && rect.left < vw && rect.right > 0;
+          const aria = el.getAttribute("aria-label") || "";
+          const tid  = el.getAttribute("data-testid") || "";
+          let sel = "";
+          if (el.id)     sel = `#${el.id}`;
+          else if (tid)  sel = `[data-testid='${tid}']`;
+          else if (aria) sel = `[aria-label='${aria.slice(0,60)}']`;
+          const labelText = (el.innerText || el.value || aria || "").trim().slice(0, 50);
           return {
-            text: (el.innerText || el.value || el.getAttribute("aria-label") || "").trim().slice(0, 50),
-            visible: rect.width > 0 && rect.height > 0,
-            id: el.id,
-            name: el.name || ""
+            text: labelText, visible: inViewport,
+            id: el.id || "", name: el.name || "",
+            selector: sel,
+            cx: Math.round(rect.left + rect.width / 2),
+            cy: Math.round(rect.top + rect.height / 2)
           };
         })
-        .filter(b => b.text)
-    ).catch(() => []);
+        .filter(b => b.text);
+    }).catch(() => []);
+
     const tabInfo = (() => {
       const pages = context?.pages?.() || [];
       const activeIndex = pages.findIndex(p => p === page);
@@ -1586,7 +2050,7 @@ Describe what is visible. Identify which detected objects appear interactive (bu
     });
     stepLogMsg(`Step captcha: attempt ${attemptSummary} on ${state.url}`);
 
-    const screenshotB64 = await getScreenshotB64({ broadcastImage: false, writeFile: false });
+    const screenshotB64 = await getVisionScreenshotB64({ broadcastImage: false, writeFile: false });
     const promptText = `You are clearing a CAPTCHA or human verification gate.
 Goal: keep the browser moving with one safe, concrete next action.
 Current URL: ${state.url}
@@ -1694,13 +2158,18 @@ Rules:
       taskVisionState.inFlight = true;
       const now = Date.now();
       try {
-        const buf = await page.screenshot({
-          type: "jpeg",
-          quality: 38,
-          animations: "disabled",
-          caret: "hide",
-          scale: "css"
+        const imageB64 = await getVisionScreenshotB64({
+          broadcastImage: false,
+          writeFile: false,
+          screenshotOptions: {
+            type: "jpeg",
+            quality: 38,
+            animations: "disabled",
+            caret: "hide",
+            scale: "css"
+          }
         });
+        const buf = Buffer.from(imageB64, "base64");
         const frameHash = crypto.createHash("sha1").update(buf).digest("hex");
         const changed = frameHash !== taskVisionState.lastHash;
         taskVisionState.lastHash = frameHash;
@@ -1733,7 +2202,6 @@ Rules:
 
         if (!shouldReason) return;
 
-        const imageB64 = buf.toString("base64");
         const reasonerPrompt = `You are the live visual reasoner for a browser agent.
   Goal: "${taskVisionState.goal}"
   URL: ${taskVisionState.latestUrl}
@@ -1871,29 +2339,202 @@ Rules:
     return { x, y, button, url: page.url(), viewport };
   }
 
-  async function getScreenshotB64(options = {}) {
+  async function captureScreenshotB64(options = {}) {
     const broadcastImage = options.broadcastImage !== false;
     const writeFile = options.writeFile !== false;
-    const buf = await page.screenshot({ type: "jpeg", quality: 75 });
-    const b64 = buf.toString("base64");
-    if (writeFile) fs.writeFileSync("view.png", buf);
-    if (broadcastImage) broadcast("screenshot", { img: b64 });
-    return b64;
+    const visionFiltered = !!options.visionFiltered;
+    const screenshotOptions = options.screenshotOptions && typeof options.screenshotOptions === "object"
+      ? options.screenshotOptions
+      : { type: "jpeg", quality: 75 };
+
+    return queueScreenshotCapture(async () => {
+      let filterApplied = false;
+      if (visionFiltered) {
+        await page.evaluate(({ styleId, cssText }) => {
+          let style = document.getElementById(styleId);
+          if (!style) {
+            style = document.createElement("style");
+            style.id = styleId;
+            (document.head || document.documentElement).appendChild(style);
+          }
+          style.textContent = cssText;
+        }, { styleId: VISION_FILTER_STYLE_ID, cssText: VISION_FILTER_CSS }).catch(() => {});
+        filterApplied = true;
+      }
+
+      try {
+        const buf = await page.screenshot(screenshotOptions);
+        const b64 = buf.toString("base64");
+        if (writeFile) fs.writeFileSync("view.png", buf);
+        if (broadcastImage) broadcast("screenshot", { img: b64 });
+        return b64;
+      } finally {
+        if (filterApplied) {
+          await page.evaluate((styleId) => {
+            const style = document.getElementById(styleId);
+            if (style) style.remove();
+          }, VISION_FILTER_STYLE_ID).catch(() => {});
+        }
+      }
+    });
+  }
+
+  async function getScreenshotB64(options = {}) {
+    return captureScreenshotB64({
+      broadcastImage: options.broadcastImage,
+      writeFile: options.writeFile,
+      visionFiltered: false,
+      screenshotOptions: options.screenshotOptions || { type: "jpeg", quality: 75 }
+    });
+  }
+
+  async function getVisionScreenshotB64(options = {}) {
+    return captureScreenshotB64({
+      broadcastImage: options.broadcastImage === true,
+      writeFile: options.writeFile === true,
+      visionFiltered: true,
+      screenshotOptions: options.screenshotOptions || { type: "jpeg", quality: 93 }
+    });
   }
 
   // ── MEMORY: summarise past tasks for long-term context ───────────────────────
   const MEMORY_FILE = "memory.json";
-  function loadMemory() {
-    if (fs.existsSync(MEMORY_FILE)) {
-      try { return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8")); } catch {}
+  const MEMORY_OVERFLOW_FILE = "memory.extra.json";
+  const MEMORY_PRIMARY_TARGET_ENTRIES = 20000;
+  const MEMORY_MAX_TOTAL_ENTRIES = 50000;
+  const MEMORY_SEARCH_TIMEOUT_MS = 25000;
+
+  function readMemoryEntries(filePath) {
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
     }
-    return [];
   }
+
+  function writeMemoryEntries(filePath, entries) {
+    fs.writeFileSync(filePath, JSON.stringify(Array.isArray(entries) ? entries : [], null, 2));
+  }
+
+  function normalizeKeywordList(parts = [], max = 16) {
+    const stop = new Set(["the", "a", "an", "to", "for", "of", "and", "or", "on", "in", "at", "with", "is", "are", "be", "by", "from", "this", "that", "it", "as", "if", "then"]);
+    const seen = new Set();
+    const out = [];
+    const tokens = String(parts.filter(Boolean).join(" "))
+      .toLowerCase()
+      .replace(/[^a-z0-9_\- ]+/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    for (const token of tokens) {
+      if (token.length < 2 || stop.has(token) || seen.has(token)) continue;
+      seen.add(token);
+      out.push(token);
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+
+  function getMemoryEntryText(entry) {
+    const keywords = Array.isArray(entry?.keywords) ? entry.keywords.join(" ") : "";
+    return [
+      entry?.task,
+      entry?.prompt,
+      entry?.goal,
+      entry?.result,
+      entry?.action_done,
+      entry?.url,
+      keywords,
+      entry?.other_data && typeof entry.other_data === "object" ? JSON.stringify(entry.other_data).slice(0, 800) : ""
+    ].filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function ensureMemoryPerformance(reason = "") {
+    const primary = readMemoryEntries(MEMORY_FILE);
+    if (primary.length <= MEMORY_PRIMARY_TARGET_ENTRIES) return;
+
+    const overflow = readMemoryEntries(MEMORY_OVERFLOW_FILE);
+    const spillCount = primary.length - MEMORY_PRIMARY_TARGET_ENTRIES;
+    const moved = primary.splice(0, spillCount);
+    const mergedOverflow = [...overflow, ...moved];
+
+    if (mergedOverflow.length > MEMORY_MAX_TOTAL_ENTRIES) {
+      mergedOverflow.splice(0, mergedOverflow.length - MEMORY_MAX_TOTAL_ENTRIES);
+    }
+
+    writeMemoryEntries(MEMORY_FILE, primary);
+    writeMemoryEntries(MEMORY_OVERFLOW_FILE, mergedOverflow);
+    think(`Memory rollover: moved ${moved.length} entries to ${MEMORY_OVERFLOW_FILE}${reason ? ` (${reason})` : ""}.`);
+  }
+
+  function loadMemory() {
+    const startedAt = Date.now();
+    const primary = readMemoryEntries(MEMORY_FILE);
+    const overflow = readMemoryEntries(MEMORY_OVERFLOW_FILE);
+    const combined = [...overflow, ...primary];
+    if (combined.length > MEMORY_MAX_TOTAL_ENTRIES) {
+      combined.splice(0, combined.length - MEMORY_MAX_TOTAL_ENTRIES);
+    }
+    if (Date.now() - startedAt > MEMORY_SEARCH_TIMEOUT_MS) {
+      ensureMemoryPerformance("slow-read");
+    }
+    return combined;
+  }
+
+  function searchRelevantMemory(query, limit = 6) {
+    const startedAt = Date.now();
+    const all = loadMemory();
+    const terms = normalizeKeywordList([query], 14);
+    if (!terms.length) return all.slice(-limit);
+
+    const scored = all
+      .map(item => {
+        const haystack = getMemoryEntryText(item);
+        const score = terms.reduce((sum, term) => {
+          if (!haystack.includes(term)) return sum;
+          if (haystack.includes(` ${term} `)) return sum + 2;
+          return sum + 1;
+        }, 0);
+        return { item, score };
+      })
+      .filter(row => row.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(row => row.item);
+
+    if (Date.now() - startedAt > MEMORY_SEARCH_TIMEOUT_MS) {
+      ensureMemoryPerformance("slow-search");
+    }
+
+    return scored.length ? scored : all.slice(-limit);
+  }
+
   function saveMemory(entry) {
-    const mem = loadMemory();
-    mem.push({ ts: new Date().toISOString(), ...entry });
-    if (mem.length > 50) mem.splice(0, mem.length - 50);
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(mem, null, 2));
+    const primary = readMemoryEntries(MEMORY_FILE);
+    primary.push({ ts: new Date().toISOString(), ...entry });
+    writeMemoryEntries(MEMORY_FILE, primary);
+    ensureMemoryPerformance("save");
+  }
+
+  function saveActionMemory(entry) {
+    const normalized = {
+      ts: new Date().toISOString(),
+      task: String(entry?.task || "").slice(0, 320),
+      prompt: String(entry?.prompt || "").slice(0, 1000),
+      keywords: Array.isArray(entry?.keywords) ? entry.keywords.slice(0, 30) : [],
+      action_done: String(entry?.action_done || "").slice(0, 380),
+      successful: !!entry?.successful,
+      prompt_successful: !!entry?.prompt_successful,
+      url: String(entry?.url || ""),
+      other_data: entry?.other_data && typeof entry.other_data === "object" ? entry.other_data : {}
+    };
+
+    // Keep existing memory UI cards functional.
+    normalized.goal = normalized.task || "Past task";
+    normalized.result = normalized.action_done || (normalized.successful ? "action ok" : "action failed");
+
+    saveMemory(normalized);
   }
 
   // ── LEARNING LOG: persistent action/task outcomes for fast adaptation ───────
@@ -2019,9 +2660,7 @@ Rules:
   function appendLearningEvent(event) {
     const log = loadLearningLog();
     log.push({ ts: new Date().toISOString(), ...event });
-    if (log.length > MAX_LOG_ENTRIES) {
-      log.splice(0, log.length - MAX_LOG_ENTRIES);
-    }
+    // No cutoff — retain full history
     saveLearningLog();
   }
 
@@ -2090,8 +2729,12 @@ async function routeGoal(rawGoal, conversationHistory, models) {
     think("Router heuristic: classified as task from action-oriented intent.");
     return { mode: "task", taskGoal: sanitizedGoal };
   }
-  const mem     = loadMemory().slice(-5);
-  const memCtx  = mem.map(m => `Past task: "${m.goal}" → ${m.result}`).join("\n");
+  const mem     = searchRelevantMemory(sanitizedGoal, 5);
+  const memCtx  = mem.map(m => {
+    const task = String(m.task || m.goal || "Past task");
+    const result = String(m.result || m.action_done || "");
+    return `Past task: "${task}" → ${result}`;
+  }).join("\n");
   const convCtx = (conversationHistory || []).slice(-6)
     .map(m => `${m.role === "user" ? "User" : "Agent"}: ${m.content}`).join("\n");
 
@@ -2125,7 +2768,14 @@ Output ONLY valid JSON:
     if (parsed.mode === "task") return { mode: "task", taskGoal: parsed.taskGoal || rawGoal };
     return { mode: "chat", chatReply: parsed.chatReply || "What can I help you with?" };
   } catch (err) {
-    errLog("Router fallback: " + err.message);
+    const msg = String(err && err.message ? err.message : "");
+    errLog("Router fallback: " + msg);
+    if (msg.includes("Authentication error") || msg.includes("Unable to authenticate request") || msg.includes("10000") || msg.includes("10001")) {
+      return {
+        mode: "chat",
+        chatReply: "Cloudflare AI auth failed. Your token is valid, but it is not authorized for this CF_ACCOUNT_ID/endpoint. Check that CF_ACCOUNT_ID is the account where Workers AI is enabled and that the token includes Workers AI permissions for that account."
+      };
+    }
     return { mode: "chat", chatReply: "I had trouble understanding that — could you rephrase?" };
   }
 }
@@ -2317,6 +2967,51 @@ function buildSelectorVariants(selector, maxVariants = HYBRID_SELECTOR_VARIANTS)
   add(base);
   if (!/:visible\b/.test(base)) add(`${base}:visible`);
 
+  // Input-specific selector families
+  const nameMatch     = base.match(/\[name=['"]([^'"]+)['"]\]/);
+  const idMatch       = base.match(/^#(.+)/);
+  const ariaMatch     = base.match(/\[aria-label=['"]([^'"]+)['"]\]/);
+  const placeholderM  = base.match(/\[placeholder=['"]([^'"]+)['"]\]/);
+  const typeSearchM   = base.match(/\[type=['"]search['"]\]/);
+  const testidM       = base.match(/\[data-testid=['"]([^'"]+)['"]\]/);
+
+  if (nameMatch) {
+    const n = nameMatch[1];
+    add(`input[name='${n}']`);
+    add(`textarea[name='${n}']`);
+    add(`[name='${n}']`);
+  }
+  if (idMatch) {
+    add(`[id='${idMatch[1]}']`);
+    add(`input#${idMatch[1]}`);
+    add(`textarea#${idMatch[1]}`);
+  }
+  if (ariaMatch) {
+    const a = ariaMatch[1];
+    add(`[aria-label='${a}']`);
+    add(`input[aria-label='${a}']`);
+    add(`textarea[aria-label='${a}']`);
+  }
+  if (placeholderM) {
+    const p = placeholderM[1];
+    add(`[placeholder='${p}']`);
+    add(`input[placeholder='${p}']`);
+  }
+  if (typeSearchM || /search/i.test(base)) {
+    add("input[type='search']");
+    add("input[name='q']");
+    add("textarea[name='q']");
+    add("[role='searchbox']");
+    add("[aria-label='Search']");
+    add("[aria-label='search']");
+    add("input[title='Search']");
+  }
+  if (testidM) {
+    add(`[data-testid='${testidM[1]}']`);
+    add(`[data-qa='${testidM[1]}']`);
+  }
+
+  // Text-based button variants
   const hasTextMatch = base.match(/:has-text\((['"])(.*?)\1\)/i);
   const text = String(hasTextMatch?.[2] || "").trim();
   if (text) {
@@ -2327,7 +3022,7 @@ function buildSelectorVariants(selector, maxVariants = HYBRID_SELECTOR_VARIANTS)
     add(`text=${quoted}`);
   }
 
-  return variants.slice(0, Math.max(1, maxVariants));
+  return variants.slice(0, Math.max(1, Math.min(10, maxVariants * 2)));
 }
 
 function isDynamicUiHot(visionSnap) {
@@ -2347,7 +3042,7 @@ function isDynamicUiHot(visionSnap) {
 }
 
 async function getVisionClickPointsForSelector(goal, selector, models) {
-  const screenshotB64 = await getScreenshotB64();
+  const screenshotB64 = await getVisionScreenshotB64({ broadcastImage: false, writeFile: false });
   const viewport = await page.evaluate(() => ({
     width: Math.max(1, Math.round(window.innerWidth || 1920)),
     height: Math.max(1, Math.round(window.innerHeight || 1080))
@@ -2434,7 +3129,7 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
   status("Planner reasoning...");
   const learningContext = buildLearningContext(goal, state);
 
-  const userMsg = `Goal: "${goal}"
+const userMsg = `Goal: "${goal}"
 
 Current URL: ${state.url}
 Page Title:  ${state.title}
@@ -2443,11 +3138,19 @@ Active tab: ${state.tabs?.activeIndex ?? 0} / ${state.tabs?.count ?? 1}
 Open tabs:
 ${(state.tabs?.urls || []).map((tabUrl, idx) => `  [${idx}] ${tabUrl}`).join("\n") || "  (single tab)"}
 
-Visible inputs (only interact with visible:true ones):
-${state.inputs?.map(i => `  [${i.visible ? "VISIBLE" : "hidden"}] ${i.tag}[type=${i.type}][name=${i.name}][id=${i.id}][placeholder=${i.placeholder}]${i.value ? ` value="${i.value}"` : ""}`).join("\n") || "  (none found)"}
+─── VISIBLE INPUTS ─ USE SELECTOR COLUMN DIRECTLY (pre-computed, reliable) ───
+${state.inputs?.filter(i => i.visible).map(i =>
+  `  ✔ SELECTOR: "${i.selector}" | ${i.tag}[type=${i.type || "text"}] | name="${i.name}" | aria="${i.ariaLabel}" | placeholder="${i.placeholder}" | center=(${i.cx},${i.cy})`
+).join("\n") || "  (no visible inputs — try scrollIntoView, reload, or check state)"}
 
-Visible buttons on page:
-${state.buttons?.filter(b => b.visible).map(b => `  [VISIBLE] "${b.text}"${b.id ? ` id=${b.id}` : ""}`).join("\n") || "  (none visible)"}
+Hidden inputs (scrollIntoView first):
+${state.inputs?.filter(i => !i.visible).slice(0, 5).map(i =>
+  `  □ SELECTOR: "${i.selector}" | ${i.tag}[type=${i.type || "text"}]`
+).join("\n") || "  (none)"}
+──────────────────────────────────────────────────────────────
+
+Visible buttons:
+${state.buttons?.filter(b => b.visible).map(b => `  [VISIBLE] "${b.text}"${b.selector ? ` selector="${b.selector}"` : ""}${b.cx ? ` center=(${b.cx},${b.cy})` : ""}`).join("\n") || "  (none visible)"}
 
 Visible links (sample):
 ${state.links?.slice(0,8).map(l => `  "${l.text}" → ${l.href}`).join("\n") || "  (none)"}
@@ -2469,6 +3172,7 @@ Learning log context:
 ${learningContext}
 
 REMINDER: Never click [type='submit'] — use submitForm() or press(inputSelector,'Enter') instead.
+REMINDER: For search bars, use fill(SELECTOR, text) then submitForm(SELECTOR). Use SELECTOR from the inputs table above.
 
 Output JSON only.`;
 
@@ -2525,6 +3229,7 @@ Extract:      getText(selector), getAttribute(selector, name), getAllText()
 Check:        isVisible(selector), elementExists(selector)
 Other:        evaluate(script), screenshot(path)
 Tabs:         openNewTab(url?), switchToTab(index|urlIncludes), listTabs(), closeCurrentTab()
+Pinch API:    pinchListTickets(), pinchSendTicketMessage(ticketId, body), pinchListWebhooks(), pinchListWebhookTypes()
 
 ═══════════════════════════════════════════════════════
 SELECTOR PRIORITY (try in order)
@@ -2558,6 +3263,8 @@ CRITICAL RULES — MUST FOLLOW
 ✦ Set done:true ONLY when vision confirms goal completion with visible evidence.
 
 ✦ Multi‑stage prompts (STAGE 1, STAGE 2…): complete in order. Never skip stages.
+
+✦ When user asks for ticketing/webhook operations, prefer Pinch actions over browser clicks.
 
 ✦ Validate each stage: confirm URL/title + at least one expected element/text.
 
@@ -2595,41 +3302,15 @@ EFFICIENCY & INTUITIVE REASONING (Smart Agent Behavior)
    Use proven approaches: getText(firstParagraphSelector), getAllText() for full content,
    or extract from visible text in vision feedback.
 
-HUMAN‑MODE CURSOR BEHAVIOR (Human‑2.0)
+CLICK & FILL EXECUTION
 
-✦ For ANY click, dblclick, hover, press, fill, type, or selectOption: use human‑mode cursor motion.
-
-✦ Extract bounding box:
-evaluate("(() => { const el = document.querySelector('SELECTOR'); if (!el) return null; const r = el.getBoundingClientRect(); return { x: r.x + r.width/2, y: r.y + r.height/2 }; })()")
-
-✦ If bounding box exists:
-• Compute realistic target point (±3–12px jitter, avoid exact center).
-• Generate 2–5 mouseMove steps (curved/diagonal path, micro‑jitter).
-• Include overshoot (4–18px) then correction.
-• Include micro‑pauses (40–180ms).
-• Brief hover before click (±2px drift, 60–120ms pause).
-• After click, optional natural drift (±3–10px).
-
-✦ If bounding box is null:
-• scrollIntoView(selector)
-• waitForVisible(selector)
-• try alternate selector families
-• fallback: click(selector) or JS evaluate click
-
-✦ Cursor MUST NOT teleport unless fallback is required.
-
-✦ Longer distances → longer movement paths with diagonal transitions + mid‑point corrections.
-
-✦ Human‑mode cursor behavior may span multiple turns (max 3 actions per turn).
-
-✦ These Human‑2.0 cursor rules override all previous cursor‑related behavior.
+✦ click(selector) and fill(selector, text) already execute with smooth human-like cursor motion internally.
+  Just emit click(selector) or fill(selector, text) — do NOT add separate mouseMove steps before them.
+  Only use mouseMove/mouseClick when you have real pixel coordinates from a vision report.
 
 ✦ click(selector) vs mouseClick(x, y): these are different actions, never mix their params.
   click takes { "selector": "..." } only. mouseClick takes { "x": <number>, "y": <number> }
-  only — never put a selector in mouseClick's params, it will fail every time with a Chrome
-  protocol error, not a normal retry-able failure. If you have a selector, use click(). Only
-  use mouseClick() when you have real numeric coordinates (e.g. from a Vision report), never
-  a selector string.
+  only — never put a selector in mouseClick's params.
 CLICK FAILURE RECOVERY LADDER
 
 Step 1: scrollIntoView(selector) → click(selector)
@@ -2723,6 +3404,39 @@ async function runActionWithFallback(item, goal, models) {
       status: statusValue,
       ...details
     });
+
+    const actionDone = [
+      String(action || "unknown"),
+      params?.selector ? `selector=${String(params.selector).slice(0, 180)}` : "",
+      details?.result ? `result=${String(details.result).slice(0, 180)}` : "",
+      details?.error ? `error=${String(details.error).slice(0, 180)}` : ""
+    ].filter(Boolean).join(" | ");
+
+    saveActionMemory({
+      task: String(goal || ""),
+      prompt: String(goal || ""),
+      keywords: normalizeKeywordList([
+        goal,
+        action,
+        params?.selector,
+        signature,
+        details?.path,
+        details?.error,
+        currentUrl
+      ]),
+      action_done: actionDone,
+      successful: statusValue === "ok",
+      prompt_successful: false,
+      url: currentUrl,
+      other_data: {
+        status: statusValue,
+        host,
+        action,
+        selector: params?.selector || "",
+        signature,
+        details
+      }
+    });
   }
 
   // Pseudo-actions for multi-tab missions
@@ -2783,6 +3497,41 @@ async function runActionWithFallback(item, goal, models) {
     const resultText = items.join(" | ");
     recordOutcome("ok", { result: resultText, path: "pseudo" });
     return { action, status: "ok", result: resultText };
+  }
+
+  if (action === "pinchListTickets") {
+    const tickets = await pinchListTickets();
+    const resultText = `pinch tickets: ${tickets.length}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    return { action, status: "ok", result: resultText, data: tickets };
+  }
+
+  if (action === "pinchSendTicketMessage") {
+    const ticketId = String(params?.ticketId || params?.id || "").trim();
+    const body = String(params?.body || params?.message || "").trim();
+    if (!ticketId || !body) {
+      const missing = !ticketId ? "ticketId" : "body";
+      recordOutcome("error", { error: `${missing} required`, path: "pseudo-pinch" });
+      return { action, status: "error", error: `${missing} required` };
+    }
+    const sent = await pinchSendTicketMessage(ticketId, body);
+    const resultText = `pinch message sent to ticket ${ticketId}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    return { action, status: "ok", result: resultText, data: sent };
+  }
+
+  if (action === "pinchListWebhooks") {
+    const webhooks = await pinchListWebhooks();
+    const resultText = `pinch webhooks: ${webhooks.length}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    return { action, status: "ok", result: resultText, data: webhooks };
+  }
+
+  if (action === "pinchListWebhookTypes") {
+    const types = await pinchListWebhookTypes();
+    const resultText = `pinch webhook types: ${types.length}`;
+    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    return { action, status: "ok", result: resultText, data: types };
   }
 
   // If the action has repeatedly failed on this host+selector, bias to safer fallback first.
@@ -2900,12 +3649,16 @@ async function runActionWithFallback(item, goal, models) {
   }
 }
 
-async function executeActionPlan(plan, goal, models, throttle = {}) {
+async function executeActionPlan(plan, goal, models, throttle = {}, supervisorContext = null) {
   const results = [];
   const actionPlan = await expandVisionAssistedClicks(plan.actions || [], goal, models, {
     visionOnlyClickMode: !!throttle.visionOnlyClickMode
   });
-  const pseudoActions = new Set(["openNewTab", "switchToTab", "closeCurrentTab", "listTabs", "hybridClick", "hybridDblclick"]);
+  const pseudoActions = new Set([
+    "openNewTab", "switchToTab", "closeCurrentTab", "listTabs",
+    "pinchListTickets", "pinchSendTicketMessage", "pinchListWebhooks", "pinchListWebhookTypes",
+    "hybridClick", "hybridDblclick"
+  ]);
   const domQuietActions = new Set(["click", "dblclick", "hover", "type", "fill", "press", "check", "uncheck", "selectOption", "scrollIntoView", "submitForm"]);
   const pacingMultiplier = Math.max(0.5, Number(throttle.pacingMultiplier || 1));
   const preActionIdleMs = Math.max(0, Number(throttle.preActionIdleMs || 0));
@@ -2915,12 +3668,39 @@ async function executeActionPlan(plan, goal, models, throttle = {}) {
   const navigationCooldownByHost = throttle.navigationCooldownByHost instanceof Map ? throttle.navigationCooldownByHost : null;
   let burstCount = 0;
 
-  for (const rawItem of actionPlan) {
+  for (let actionIndex = 0; actionIndex < actionPlan.length; actionIndex++) {
+    const rawItem = actionPlan[actionIndex];
     const item = normalizeActionItem(rawItem);
     const { action, params } = item;
     if (!action || (!actions[action] && !pseudoActions.has(action))) {
       errLog(`Unknown action: "${action}"`);
       results.push({ action, status: "error", error: `Unknown action: ${action}` });
+      continue;
+    }
+
+    const actionGate = evaluateSupervisorActionGate(action, params, supervisorContext || {}, actionIndex);
+    if (actionGate.severity === "warn") {
+      broadcast("supervisor", {
+        msg: `Supervisor caution: ${action} (${actionGate.reason}).`,
+        decision: "warn",
+        action,
+        reason: actionGate.reason,
+        step: Number(supervisorContext?.step || 0),
+        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null
+      });
+    }
+    if (!actionGate.allow) {
+      const blockedMsg = `Supervisor blocked ${action}: ${actionGate.reason}`;
+      broadcast("supervisor", {
+        msg: blockedMsg,
+        decision: "blocked",
+        action,
+        reason: actionGate.reason,
+        step: Number(supervisorContext?.step || 0),
+        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null
+      });
+      think(blockedMsg);
+      results.push({ action, status: "blocked", error: actionGate.reason });
       continue;
     }
 
@@ -3615,6 +4395,265 @@ function detectPsychosisState(taskLog, failures, step) {
   return "ok";
 }
 
+function clamp01(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
+function instinctRiskValue(riskLabel) {
+  const risk = String(riskLabel || "medium").toLowerCase();
+  if (risk === "high") return 0.82;
+  if (risk === "low") return 0.22;
+  return 0.52;
+}
+
+function visionRiskValue(visionSignal, visionFresh) {
+  const state = String(visionSignal?.state || "").toLowerCase();
+  if (!visionFresh) return 0.34;
+  if (state === "uncertain") return 0.36;
+  if (state === "blocked" || state === "challenge") return 0.44;
+  if (state === "clear" || state === "ready") return 0.08;
+  return 0.18;
+}
+
+function planRiskValue(actionsList = []) {
+  if (!Array.isArray(actionsList) || !actionsList.length) return 0.25;
+
+  const actionRiskWeights = {
+    evaluate: 0.92,
+    mouseClick: 0.75,
+    mouseDblclick: 0.8,
+    goto: 0.44,
+    reload: 0.42,
+    openNewTab: 0.38,
+    closeCurrentTab: 0.36,
+    click: 0.28,
+    dblclick: 0.32,
+    submitForm: 0.22,
+    press: 0.2,
+    fill: 0.18,
+    type: 0.18,
+    getAllText: 0.12,
+    getText: 0.14,
+    waitForVisible: 0.1,
+    waitForTimeout: 0.08,
+    waitForURLChange: 0.09
+  };
+
+  let weighted = 0;
+  let maxRisk = 0;
+  const signatures = new Set();
+  let duplicateCount = 0;
+
+  for (const item of actionsList) {
+    const action = String(item?.action || "");
+    const selector = String(item?.params?.selector || "").slice(0, 180);
+    const key = `${action}:${selector}`;
+    if (signatures.has(key)) duplicateCount++;
+    signatures.add(key);
+
+    const risk = Object.prototype.hasOwnProperty.call(actionRiskWeights, action)
+      ? actionRiskWeights[action]
+      : 0.26;
+    weighted += risk;
+    if (risk > maxRisk) maxRisk = risk;
+  }
+
+  const avgRisk = weighted / Math.max(1, actionsList.length);
+  let combined = 0.62 * avgRisk + 0.38 * maxRisk;
+  if (actionsList.length >= 3) combined += 0.07;
+  if (duplicateCount >= 1) combined += 0.12;
+  return clamp01(combined);
+}
+
+function evaluateSupervisorPlanGate(input = {}) {
+  if (SUPERVISOR_MODE === "off") {
+    return {
+      score: 1,
+      decision: "ok",
+      allow: true,
+      reasons: ["supervisor off"],
+      mode: "off",
+      planRisk: 0,
+      instinctRisk: 0,
+      visionRisk: 0
+    };
+  }
+
+  const plan = input.plan || {};
+  const failures = Number(input.failures || 0);
+  const stuck = !!input.stuck;
+  const confidence = clamp01(Number(plan.confidence || 0) / 100);
+  const instinctRisk = instinctRiskValue(input.instinct?.risk);
+  const visionRisk = visionRiskValue(input.visionSignal, !!input.visionFresh);
+  const planRisk = planRiskValue(plan.actions || []);
+
+  let score = 0.76;
+  score += (confidence - 0.5) * 0.34;
+  score -= planRisk * 0.42;
+  score -= instinctRisk * 0.26;
+  score -= visionRisk * 0.21;
+  score -= Math.min(0.3, failures * 0.08);
+  if (stuck) score -= 0.12;
+  score = clamp01(score);
+
+  const reasons = [];
+  if (planRisk >= 0.58) reasons.push(`high plan risk ${planRisk.toFixed(2)}`);
+  if (instinctRisk >= 0.7) reasons.push(`reasoner marked high risk (${String(input.instinct?.risk || "high")})`);
+  if (visionRisk >= 0.3) reasons.push(input.visionFresh ? "vision uncertain" : "vision stale");
+  if (failures >= 2) reasons.push(`recent failures: ${failures}`);
+  if (stuck) reasons.push("looping pattern detected");
+  if (!reasons.length) reasons.push("signals stable");
+
+  let decision = "ok";
+  if (score < SUPERVISOR_BLOCK_SCORE) decision = "blocked";
+  else if (score < SUPERVISOR_WARN_SCORE) decision = "warn";
+
+  return {
+    score,
+    decision,
+    allow: SUPERVISOR_MODE === "passive" ? true : decision !== "blocked",
+    reasons,
+    mode: SUPERVISOR_MODE,
+    planRisk,
+    instinctRisk,
+    visionRisk
+  };
+}
+
+function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
+  if (SUPERVISOR_MODE === "off") return { allow: true, reason: "supervisor off", severity: "ok" };
+
+  const a = String(action || "");
+  const visionFresh = !!context.visionFresh;
+  const planRisk = Number(context.planRisk || 0);
+  const instinctRisk = Number(context.instinctRisk || 0);
+  const failures = Number(context.failures || 0);
+
+  if ((a === "evaluate") && (planRisk >= SUPERVISOR_ACTION_BLOCK_RISK || instinctRisk >= 0.72)) {
+    return {
+      allow: SUPERVISOR_MODE === "passive",
+      reason: "blocked high-risk evaluate() under unstable conditions",
+      severity: "blocked"
+    };
+  }
+
+  if ((a === "mouseClick" || a === "mouseDblclick") && !visionFresh) {
+    return {
+      allow: SUPERVISOR_MODE === "passive",
+      reason: "blocked coordinate click because vision feed is stale",
+      severity: "blocked"
+    };
+  }
+
+  if (a === "reload" && failures >= 2 && index > 0) {
+    return {
+      allow: SUPERVISOR_MODE === "passive",
+      reason: "blocked repeated reload late in action sequence",
+      severity: "blocked"
+    };
+  }
+
+  if (a === "goto" && !String(params?.url || "").trim()) {
+    return {
+      allow: SUPERVISOR_MODE === "passive",
+      reason: "blocked goto without target url",
+      severity: "blocked"
+    };
+  }
+
+  return {
+    allow: true,
+    reason: "action approved",
+    severity: (planRisk >= 0.58 || instinctRisk >= 0.7) ? "warn" : "ok"
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPERVISOR (AI-POWERED) — Uses Sonnet 4.6 for intelligent risk assessment
+// ─────────────────────────────────────────────────────────────────────────────
+async function evaluateSupervisorPlanGateWithAI(input = {}, models = {}) {
+  if (SUPERVISOR_MODE === "off") {
+    return {
+      score: 1,
+      decision: "ok",
+      allow: true,
+      reasons: ["supervisor off"],
+      mode: "off",
+      source: "heuristic"
+    };
+  }
+
+  const plan = input.plan || {};
+  const failures = Number(input.failures || 0);
+  const stuck = !!input.stuck;
+  const confidence = clamp01(Number(plan.confidence || 0) / 100);
+  const visionSignal = input.visionSignal || "stable";
+  const visionFresh = !!input.visionFresh;
+
+  // Build reasoning prompt for Sonnet
+  const supervisorPrompt = `You are a risk supervisor for an autonomous browser agent. Evaluate this plan's safety and likelihood of success.
+
+CURRENT CONTEXT:
+- Planner confidence: ${(confidence * 100).toFixed(0)}%
+- Plan actions: ${JSON.stringify((plan.actions || []).slice(0, 3))}
+- Recent failures: ${failures}
+- Agent stuck/looping: ${stuck ? "yes" : "no"}
+- Vision quality: ${visionSignal} (${visionFresh ? "fresh" : "stale"})
+- Step number: ${input.step || 0}/60
+
+EVALUATE:
+1. Is the plan reasonable for the current page state?
+2. Will it likely succeed or get stuck?
+3. Are there obvious pitfalls?
+
+RESPOND WITH VALID JSON ONLY (no markdown):
+{
+  "score": <0.0-1.0>,
+  "decision": "ok" | "warn" | "blocked",
+  "reasons": ["reason1", "reason2"]
+}
+
+- score < 0.52: blocked (too risky)
+- score 0.52-0.67: warn (proceed with caution)
+- score > 0.67: ok (safe to proceed)`;
+
+  try {
+    const reasonerModel = models.reasoner || DEFAULT_MODELS.reasoner;
+    const aiResponse = await callCFAI(
+      reasonerModel,
+      [
+        { role: "user", content: supervisorPrompt }
+      ],
+      300,
+      1 // no retries on supervisor, fail fast
+    );
+
+    let aiResult = safeParseJSON(aiResponse);
+    if (!aiResult || typeof aiResult !== "object") {
+      throw new Error("Invalid JSON from supervisor");
+    }
+
+    const score = clamp01(Number(aiResult.score || 0.5));
+    const decision = String(aiResult.decision || "ok").toLowerCase();
+    const reasons = Array.isArray(aiResult.reasons) ? aiResult.reasons : ["ai reasoning"];
+
+    return {
+      score,
+      decision,
+      allow: SUPERVISOR_MODE === "passive" ? true : decision !== "blocked",
+      reasons,
+      mode: SUPERVISOR_MODE,
+      source: "ai"
+    };
+  } catch (err) {
+    // AI call failed, fall back to heuristic
+    agentMsg(`⚠️ Supervisor AI unavailable, using heuristic: ${err.message}`);
+    return evaluateSupervisorPlanGate(input); // fallback to heuristic
+  }
+}
+
 async function runTask(goal, models, chatId) {
   agentRunning = true;
   const plannerHistory = [{ role: "system", content: PLANNER_SYSTEM_PROMPT }];
@@ -3625,6 +4664,7 @@ async function runTask(goal, models, chatId) {
   let finalState     = { url: "about:blank", title: "", text: "", links: [], inputs: [] };
   let failures       = 0;
   let requiresHuman  = false;
+  let supervisorBlocks = 0;
   let lastVisionTrace = "";
   let lastGentleTrace = "";
   const captchaChecksByPage = new Map();
@@ -3855,6 +4895,54 @@ async function runTask(goal, models, chatId) {
         }
       }
 
+      const supervisorGate = await evaluateSupervisorPlanGateWithAI({
+        plan,
+        instinct,
+        visionSignal: visionSnap.signal,
+        visionFresh,
+        failures,
+        stuck,
+        step
+      }, models);
+      const gateSummary = `Supervisor ${supervisorGate.decision.toUpperCase()} score=${supervisorGate.score.toFixed(2)} (${supervisorGate.reasons.join("; ")})`;
+
+      // Emit supervisor telemetry every step so UI shows active supervision,
+      // not only warn/blocked states.
+      broadcast("supervisor", {
+        msg: gateSummary,
+        decision: supervisorGate.decision,
+        score: Number(supervisorGate.score.toFixed(2)),
+        reasons: supervisorGate.reasons,
+        mode: supervisorGate.mode,
+        step
+      });
+
+      if (!supervisorGate.allow) {
+        supervisorBlocks++;
+        think(gateSummary);
+        const supervisorRecovery = inferHeuristicPlan(goal, state, taskLog, failures);
+        if (supervisorRecovery && Array.isArray(supervisorRecovery.actions) && supervisorRecovery.actions.length) {
+          plan = supervisorRecovery;
+          broadcast("supervisor", {
+            msg: "Supervisor reroute: switching to conservative recovery plan.",
+            decision: "reroute",
+            score: Number(supervisorGate.score.toFixed(2)),
+            step
+          });
+        } else {
+          taskLog.push(`Step ${step}: supervisor blocked plan`);
+          failures++;
+          if (supervisorBlocks >= 3) {
+            askUser(
+              `I keep blocking risky plans while trying to \"${goal}\". Want me to continue with a simpler strategy?`,
+              `Supervisor blocks: ${supervisorBlocks}, current URL: ${state.url}`
+            );
+          }
+          if (failures >= MAX_RETRIES) break;
+          continue;
+        }
+      }
+
       if (plan.reasoning) think(plan.reasoning);
 
       const adaptiveThrottle = gentleModeActive
@@ -3877,14 +4965,22 @@ async function runTask(goal, models, chatId) {
             visionOnlyClickMode: dynamicUiHot
           };
 
-      const results = await withExecutorWork(() => executeActionPlan(plan, goal, models, adaptiveThrottle));
+      const results = await withExecutorWork(() => executeActionPlan(plan, goal, models, adaptiveThrottle, {
+        step,
+        score: supervisorGate.score,
+        planRisk: supervisorGate.planRisk,
+        instinctRisk: supervisorGate.instinctRisk,
+        visionRisk: supervisorGate.visionRisk,
+        visionFresh,
+        failures
+      }));
       lastAction    = plan.actions[plan.actions.length - 1];
       const summary = results.map(r => `${r.action}:${r.status}`).join(", ");
       const logLine = `Step ${step} [${plan.confidence ?? "?"}%]: ${summary} — ${(plan.reasoning || "").slice(0, 60)}`;
       taskLog.push(logLine);
       stepLogMsg(logLine);
 
-      const allFailed = results.every(r => r.status === "error");
+      const allFailed = results.every(r => r.status === "error" || r.status === "blocked");
       failures = allFailed ? failures + 1 : 0;
       if (failures >= MAX_RETRIES) { errLog("Circuit breaker: stopping."); break; }
 
@@ -3931,7 +5027,7 @@ async function runTask(goal, models, chatId) {
       if (liveVisionUsable) {
         visionFeedback = liveVisionNow.summary;
       } else {
-        const screenshotB64 = await withExecutorWork(() => getScreenshotB64());
+        const screenshotB64 = await withExecutorWork(() => getVisionScreenshotB64({ broadcastImage: false, writeFile: false }));
         visionFeedback = await withExecutorWork(() => analyzeScreen(screenshotB64, newState, lastAction, goal, models));
       }
       finalState          = newState;
@@ -3999,6 +5095,7 @@ async function runTask(goal, models, chatId) {
     clearHumanBridgeState();
     broadcast("bridge_closed", { msg: "Human bridge closed for this run.", url: page ? page.url() : "about:blank" });
     agentRunning = false;
+    currentTaskUserId = null; // release user scope after task completes
   }
 }
 
@@ -4020,8 +5117,28 @@ async function handleRequest(req, res) {
   const chatMatch = pathname.match(/^\/api\/chats\/([^/]+)$/);
   const selectMatch = pathname.match(/^\/api\/chats\/([^/]+)\/select$/);
   const modelsMatch = pathname.match(/^\/api\/chats\/([^/]+)\/models$/);
+  const pinchTicketMessageMatch = pathname.match(/^\/api\/pinch\/tickets\/([^/]+)\/message$/);
 
-  if (pathname === "/" || pathname === "/index.html") {
+  const requestOrigin = req.headers.origin;
+  if (requestOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": requestOrigin || "*",
+      "Access-Control-Allow-Credentials": "true",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Vary": "Origin"
+    });
+    res.end();
+    return;
+  }
+
+  if (pathname === "/" || pathname === "/index.html" || pathname === "/upgrade") {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(FRONTEND_HTML);
     return;
@@ -4031,17 +5148,108 @@ async function handleRequest(req, res) {
     const auth = getAuth(req);
     sendJson(res, 200, {
       authenticated: !!auth,
-      username: auth?.username || null,
+      username: auth?.email || auth?.username || null,
+      userId: auth?.userId || null,
+      verified: auth?.verified ?? null,
+      pinchCustomerId: auth?.pinchCustomerId || null,
+      subscription: auth?.subscriptionPlan || "none",
+      subscriptionStatus: auth?.subscriptionStatus || "unsubscribed",
       usingDefaultCredentials: APP_USERNAME === "admin" && APP_PASSWORD === "puppeterr"
     });
+    return;
+  }
+
+  if (pathname === "/auth/verify" && req.method === "GET") {
+    const verifyToken = new URL(req.url, "http://localhost").searchParams.get("token");
+    if (!verifyToken) {
+      res.writeHead(400, { "Content-Type": "text/html" });
+      res.end("<html><body style='font-family:sans-serif;background:#0a1018;color:#e8eff7;padding:40px;text-align:center'><h2>&#x274C; Invalid verification link.</h2><p>This link is missing its token. Please check your email and try again.</p></body></html>");
+      return;
+    }
+    const allUsers = loadUsers();
+    const targetUser = allUsers.find(u => u.verification_token === verifyToken);
+    if (!targetUser) {
+      res.writeHead(400, { "Content-Type": "text/html" });
+      res.end("<html><body style='font-family:sans-serif;background:#0a1018;color:#e8eff7;padding:40px;text-align:center'><h2>&#x274C; Link invalid or already used.</h2><p>This verification link has already been used or doesn't exist. Try signing in, or contact support.</p></body></html>");
+      return;
+    }
+    if (Date.now() > Number(targetUser.verification_token_exp || 0)) {
+      res.writeHead(400, { "Content-Type": "text/html" });
+      res.end("<html><body style='font-family:sans-serif;background:#0a1018;color:#e8eff7;padding:40px;text-align:center'><h2>&#x23F0; Verification link expired.</h2><p>This link expired after 24 hours. Please sign up again with the same email to get a new link.</p></body></html>");
+      return;
+    }
+    targetUser.verified = true;
+    targetUser.verification_token = null;
+    targetUser.verification_token_exp = null;
+    targetUser.updatedAt = new Date().toISOString();
+    saveUsers(allUsers);
+    setAuthCookie(res, createAuthToken({ id: targetUser.id, email: targetUser.email }));
+    // Redirect back to app — they'll be signed in automatically
+    res.writeHead(302, { "Location": "/" });
+    res.end();
+    return;
+  }
+
+  if (pathname === "/auth/signup" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const signedUpUser = await signupUser({
+        email: body.email,
+        password: body.password
+      });
+      // Only set cookie immediately if verification is not required (user is auto-verified)
+      if (!REQUIRE_EMAIL_VERIFICATION) {
+        setAuthCookie(res, createAuthToken({
+          id: signedUpUser.id,
+          email: signedUpUser.email
+        }));
+      }
+      sendJson(res, 200, {
+        status: "success",
+        user_id: signedUpUser.id,
+        pinch_customer_id: signedUpUser.pinch_customer_id,
+        subscription: "none",
+        pinch_warning: signedUpUser.pinch_warning || null,
+        requires_verification: REQUIRE_EMAIL_VERIFICATION
+      });
+    } catch (err) {
+      const statusCode = Number.isFinite(Number(err?.code)) ? Number(err.code) : 400;
+      sendJson(res, statusCode >= 400 ? statusCode : 400, { error: err.message || "Signup failed" });
+    }
     return;
   }
 
   if (pathname === "/auth/login" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      if (body.username !== APP_USERNAME || body.password !== APP_PASSWORD) {
-        sendJson(res, 401, { error: "Invalid username or password" });
+      const emailOrUsername = String(body.email || body.username || "").trim();
+      const password = String(body.password || "");
+      const normalizedEmail = normalizeEmail(emailOrUsername);
+
+      const user = normalizedEmail ? findUserByEmail(normalizedEmail) : null;
+      if (user) {
+        const passwordOk = await bcrypt.compare(password, String(user.password_hash || ""));
+        if (!passwordOk) {
+          sendJson(res, 401, { error: "Invalid email or password" });
+          return;
+        }
+        if (REQUIRE_EMAIL_VERIFICATION && !user.verified) {
+          sendJson(res, 403, { error: "Email verification required before login" });
+          return;
+        }
+        setAuthCookie(res, createAuthToken({ id: user.id, email: user.email }));
+        sendJson(res, 200, {
+          ok: true,
+          username: user.email,
+          userId: user.id,
+          subscription: user.subscription_plan || "none"
+        });
+        return;
+      }
+
+      // Legacy single-user fallback remains for local admin/dev mode.
+      if (emailOrUsername !== APP_USERNAME || password !== APP_PASSWORD) {
+        sendJson(res, 401, { error: "Invalid email or password" });
         return;
       }
       setAuthCookie(res, createAuthToken(APP_USERNAME));
@@ -4149,6 +5357,69 @@ async function handleRequest(req, res) {
   const auth = requireAuth(req, res);
   if (!auth) return;
 
+  if (pathname === "/api/pinch/tickets" && req.method === "GET") {
+    try {
+      const tickets = await pinchListTickets();
+      sendJson(res, 200, { tickets, count: tickets.length });
+    } catch (err) {
+      const statusCode = Number.isFinite(Number(err?.code)) ? Number(err.code) : 500;
+      sendJson(res, statusCode >= 400 ? statusCode : 500, {
+        error: err.message || "Pinch tickets request failed",
+        details: err.details || null
+      });
+    }
+    return;
+  }
+
+  if (pinchTicketMessageMatch && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const ticketId = String(pinchTicketMessageMatch[1] || "").trim();
+      const message = String(body.body || body.message || "").trim();
+      if (!ticketId || !message) {
+        sendJson(res, 400, { error: "ticketId and body are required" });
+        return;
+      }
+      const response = await pinchSendTicketMessage(ticketId, message);
+      sendJson(res, 200, { ok: true, ticketId, response });
+    } catch (err) {
+      const statusCode = Number.isFinite(Number(err?.code)) ? Number(err.code) : 500;
+      sendJson(res, statusCode >= 400 ? statusCode : 500, {
+        error: err.message || "Pinch send message failed",
+        details: err.details || null
+      });
+    }
+    return;
+  }
+
+  if (pathname === "/api/pinch/webhooks" && req.method === "GET") {
+    try {
+      const webhooks = await pinchListWebhooks();
+      sendJson(res, 200, { webhooks, count: webhooks.length });
+    } catch (err) {
+      const statusCode = Number.isFinite(Number(err?.code)) ? Number(err.code) : 500;
+      sendJson(res, statusCode >= 400 ? statusCode : 500, {
+        error: err.message || "Pinch webhooks request failed",
+        details: err.details || null
+      });
+    }
+    return;
+  }
+
+  if (pathname === "/api/pinch/webhook-types" && req.method === "GET") {
+    try {
+      const types = await pinchListWebhookTypes();
+      sendJson(res, 200, { types, count: types.length });
+    } catch (err) {
+      const statusCode = Number.isFinite(Number(err?.code)) ? Number(err.code) : 500;
+      sendJson(res, statusCode >= 400 ? statusCode : 500, {
+        error: err.message || "Pinch webhook types request failed",
+        details: err.details || null
+      });
+    }
+    return;
+  }
+
   if (pathname === "/events") {
     res.writeHead(200, {
       "Content-Type":  "text/event-stream",
@@ -4192,13 +5463,13 @@ async function handleRequest(req, res) {
 
   if (pathname === "/api/bootstrap") {
     const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
-    sendJson(res, 200, buildBootstrapPayload(catalog));
+    sendJson(res, 200, buildBootstrapPayload(catalog, auth));
     return;
   }
 
   if (pathname === "/api/models") {
     const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
-    const { chat } = ensureCurrentChat();
+    const { chat } = ensureCurrentChat(auth?.userId || null);
     sendJson(res, 200, { catalog, current: getActiveModels(chat), defaults: DEFAULT_MODELS });
     return;
   }
@@ -4206,7 +5477,7 @@ async function handleRequest(req, res) {
   if (pathname === "/api/chats" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const chat = createChat(body.title || "New Chat");
+      const chat = createChat(body.title || "New Chat", auth?.userId || null);
       sendJson(res, 201, { chat, selectedChatId: chat.id });
     } catch {
       sendJson(res, 400, { error: "Invalid request body" });
@@ -4215,7 +5486,7 @@ async function handleRequest(req, res) {
   }
 
   if (chatMatch && req.method === "GET") {
-    const { store } = ensureCurrentChat();
+    const { store } = ensureCurrentChat(auth?.userId || null);
     const chat = store.chats.find(item => item.id === chatMatch[1]);
     if (!chat) {
       sendJson(res, 404, { error: "Chat not found" });
@@ -4226,20 +5497,23 @@ async function handleRequest(req, res) {
   }
 
   if (selectMatch && req.method === "POST") {
-    const chat = setCurrentChat(selectMatch[1]);
+    const userId = auth?.userId || null;
+    let chat = setCurrentChat(selectMatch[1], userId);
     if (!chat) {
-      sendJson(res, 404, { error: "Chat not found" });
-      return;
+      // Chat not found in user's store (stale ID from before per-user isolation).
+      // Fall back gracefully: use or create the user's current chat.
+      const fallback = ensureCurrentChat(userId);
+      chat = fallback.chat;
     }
     const catalog = await fetchModelCatalog(false);
-    sendJson(res, 200, buildBootstrapPayload(catalog));
+    sendJson(res, 200, buildBootstrapPayload(catalog, auth));
     return;
   }
 
   if (modelsMatch && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const chat = updateChatModels(modelsMatch[1], body.models || {});
+      const chat = updateChatModels(modelsMatch[1], body.models || {}, auth?.userId || null);
       if (!chat) {
         sendJson(res, 404, { error: "Chat not found" });
         return;
@@ -4252,11 +5526,15 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (pathname === "/chat" && req.method === "POST") {
+  if (pathname === "/chat" && req.method === "POST" ||
+      pathname === "/chat/" && req.method === "POST" ||
+      pathname === "/api/chat" && req.method === "POST" ||
+      pathname === "/api/chat/" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
       const rawMessage = String(body.message || "").trim();
-      const chatId = body.chatId || ensureCurrentChat().chat.id;
+      const userId = auth?.userId || null;
+      const chatId = body.chatId || ensureCurrentChat(userId).chat.id;
       const imageB64Upload = String(body.imageB64 || "").trim();
       const annotatedImageB64 = String(body.annotatedImageB64 || "").trim();
       const detrDetections = Array.isArray(body.detrDetections) ? body.detrDetections : [];
@@ -4266,14 +5544,13 @@ async function handleRequest(req, res) {
       let message = rawMessage;
       if (imageB64Upload && (detrDetections.length > 0 || detectedShapes.length > 0 || Object.keys(semanticAnalysis).length > 0)) {
         const detrCtx = detrDetections.length > 0 ? buildDETRContext(detrDetections) : "No DETR detections.";
-        const shapeCtx = detectedShapes.length > 0 
+        const shapeCtx = detectedShapes.length > 0
           ? `Shape Analysis:\n${detectedShapes.slice(0, 10).map((s, i) => `  ${i+1}. ${s.type}: area=${Math.round(s.area || 0)}, conf=${(s.confidence || 0).toFixed(2)}`).join("\n")}`
           : "No geometric shapes detected.";
-        const semanticCtx = semanticAnalysis.description 
+        const semanticCtx = semanticAnalysis.description
           ? `Semantic Tag: ${semanticAnalysis.description}${semanticAnalysis.confidence ? ` (${(semanticAnalysis.confidence * 100).toFixed(1)}% conf)` : ""}`
           : "No semantic classification.";
-        
-        const { chat: imgChat } = ensureCurrentChat();
+        const { chat: imgChat } = ensureCurrentChat(userId);
         const imgModels = getActiveModels(imgChat);
         const visionSummary = await analyzeUploadedImageWithVision(
           annotatedImageB64 || imageB64Upload, detrCtx, rawMessage, imgModels.vision
@@ -4281,9 +5558,9 @@ async function handleRequest(req, res) {
         message = rawMessage
           ? `${rawMessage}\n\n[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`
           : `[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`;
-        status(`Image enriched: ${detrDetections.length} DETR objects, ${detectedShapes.length} shapes, ${semanticAnalysis.description ? "semantic: " + semanticAnalysis.description : "no semantic tag"}.`);
+        status(`Image enriched: ${detrDetections.length} DETR objects, ${detectedShapes.length} shapes.`);
       } else if (imageB64Upload) {
-        const { chat: imgChat2 } = ensureCurrentChat();
+        const { chat: imgChat2 } = ensureCurrentChat(userId);
         const imgModels2 = getActiveModels(imgChat2);
         const visionOnly = await analyzeUploadedImageWithVision(imageB64Upload, "No DETR data.", rawMessage, imgModels2.vision);
         message = rawMessage ? `${rawMessage}\n\n[Image vision summary]\n${visionOnly}` : `[Image vision summary]\n${visionOnly}`;
@@ -4294,70 +5571,60 @@ async function handleRequest(req, res) {
         return;
       }
 
-
       if (agentRunning) {
         sendJson(res, 409, { error: "Agent is already running a task" });
         return;
       }
 
-      const activeChat = setCurrentChat(chatId);
+      // Set the active user for the duration of this task so appendChatMessage in the executor writes to the right store
+      currentTaskUserId = userId;
+
+      let activeChat = setCurrentChat(chatId, userId);
       if (!activeChat) {
-        sendJson(res, 404, { error: "Chat not found" });
-        return;
+        // chatId is stale (e.g. after server restart) — fall back to current chat
+        const fallback = ensureCurrentChat(userId);
+        activeChat = fallback.chat;
       }
 
       const command = parseSlashCommand(message);
       const slashModel = command ? resolveSlashModelCommand(command) : null;
       if (slashModel && command) {
         if (slashModel.kind === "reset") {
-          clearRuntimeModelOverride(chatId);
-          appendChatMessage(chatId, "user", message, { command: command.command });
-          appendChatMessage(chatId, "assistant", "Model override cleared. I’ll go back to the chat’s saved models until you set another command.", {
-            completed: true,
-            command: command.command,
-            model: null
-          });
+          clearRuntimeModelOverride(chatId, userId);
+          appendChatMessage(chatId, "user", message, { command: command.command }, userId);
+          appendChatMessage(chatId, "assistant", "Model override cleared. I'll go back to the chat's saved models until you set another command.", { completed: true, command: command.command, model: null }, userId);
           sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, reset: true });
           broadcast("chat_sync", { chatId });
+          currentTaskUserId = null;
           return;
         }
-
         if (slashModel.kind === "model") {
           if (!slashModel.modelId) {
-            appendChatMessage(chatId, "user", message, { command: command.command });
-            appendChatMessage(chatId, "assistant", `I couldn’t find a model matching "${slashModel.query}" in the catalog, so I left the current model active.`, {
-              completed: true,
-              command: command.command,
-              model: null,
-              matched: false
-            });
+            appendChatMessage(chatId, "user", message, { command: command.command }, userId);
+            appendChatMessage(chatId, "assistant", `I couldn't find a model matching "${slashModel.query}" in the catalog, so I left the current model active.`, { completed: true, command: command.command, model: null, matched: false }, userId);
             sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, matched: false });
             broadcast("chat_sync", { chatId });
+            currentTaskUserId = null;
             return;
           }
-
-          setRuntimeModelOverride(chatId, slashModel.modelId);
-          appendChatMessage(chatId, "user", message, { command: command.command });
-          appendChatMessage(chatId, "assistant", `Model override set to ${slashModel.modelId}. I’ll keep using it until you start a new task or reset it.`, {
-            completed: true,
-            command: command.command,
-            model: slashModel.modelId,
-            matched: true
-          });
+          setRuntimeModelOverride(chatId, slashModel.modelId, userId);
+          appendChatMessage(chatId, "user", message, { command: command.command }, userId);
+          appendChatMessage(chatId, "assistant", `Model override set to ${slashModel.modelId}. I'll keep using it until you start a new task or reset it.`, { completed: true, command: command.command, model: slashModel.modelId, matched: true }, userId);
           sendJson(res, 200, { ok: true, chatId, command: command.command, model: slashModel.modelId, matched: true });
           broadcast("chat_sync", { chatId });
+          currentTaskUserId = null;
           return;
         }
       }
 
       if (getRuntimeModelOverride(activeChat) && looksLikeTaskGoal(message)) {
-        clearRuntimeModelOverride(chatId);
+        clearRuntimeModelOverride(chatId, userId);
       }
 
-      appendChatMessage(chatId, "user", message);
+      appendChatMessage(chatId, "user", message, {}, userId);
       sendJson(res, 202, { ok: true, chatId });
 
-      const { chat } = ensureCurrentChat();
+      const { chat } = ensureCurrentChat(userId);
       const models = getActiveModels(chat);
       const routed = await routeGoal(message, sessionHistory, models);
 
@@ -4395,13 +5662,32 @@ async function handleRequest(req, res) {
     context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
       headless: false,
       executablePath: require("playwright").chromium.executablePath(),
+      userAgent: FINGERPRINT_USER_AGENT,
+      locale: FINGERPRINT_LOCALE,
+      timezoneId: FINGERPRINT_TIMEZONE,
+      viewport: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
+      screen: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
       args: [
         "--no-sandbox","--disable-setuid-sandbox",
         "--disable-infobars",
         "--window-position=0,0",
-        "--window-size=1366,768"
+        `--window-size=${FINGERPRINT_VIEWPORT_WIDTH},${FINGERPRINT_VIEWPORT_HEIGHT}`
       ]
     });
+    await context.addInitScript(({ platform, cpuCores }) => {
+      const applyOverride = (target, key, value) => {
+        try {
+          Object.defineProperty(target, key, {
+            get: () => value,
+            configurable: true
+          });
+        } catch {}
+      };
+
+      applyOverride(window.Navigator.prototype, "platform", platform);
+      applyOverride(window.Navigator.prototype, "hardwareConcurrency", cpuCores);
+    }, { platform: FINGERPRINT_PLATFORM, cpuCores: FINGERPRINT_CPU_CORES });
+
     browser = context.browser();
     page = context.pages()[0] || await context.newPage();
     await page.bringToFront().catch(() => {});
@@ -4412,7 +5698,7 @@ async function handleRequest(req, res) {
       "Accept-Language": "en-US,en;q=0.9"
     });
 
-    await page.setViewportSize({ width: 1366, height: 768 }).catch(() => {});
+    await page.setViewportSize({ width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT }).catch(() => {});
     await page.setExtraHTTPHeaders({
       "Accept-Language": "en-US,en;q=0.9"
     });
@@ -4451,7 +5737,7 @@ async function handleRequest(req, res) {
     } else {
       console.log("↩️ Reusing persistent page: " + currentUrl);
     }
-    ensureCurrentChat();
+    ensureCurrentChat(null); // startup: use legacy admin store
     loadLearningLog();
 
     server.listen(PORT, HOST, () => {

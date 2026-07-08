@@ -12,6 +12,20 @@ const HOST = "0.0.0.0";
 
 const app = express();
 app.use(express.json());
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+    return res.status(204).end();
+  }
+  next();
+});
 
 let page = null;
 let context = null;
@@ -242,6 +256,26 @@ app.post("/action", async (req, res) => {
     res.status(500).send("Error: " + e.message);
   }
 });
+
+async function handleChatRequest(req, res) {
+  try {
+    const message = String((req.body && req.body.message) || "").trim();
+    if (!message) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    return res.status(202).json({
+      ok: true,
+      message: "Chat request accepted",
+      echo: message
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || "Chat handler failed" });
+  }
+}
+
+app.post("/chat", handleChatRequest);
+app.post("/api/chat", handleChatRequest);
 
 // --+-- BOOT --+--
 (async () => {

@@ -12,16 +12,16 @@ const FRONTEND_HTML = `
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
       :root {
-        --bg:          #0d1117;
-        --sidebar-bg:  #13181f;
-        --panel-bg:    #161b24;
-        --border:      rgba(255,255,255,0.07);
-        --border-hover:rgba(255,255,255,0.14);
-        --text:        #e6edf3;
-        --muted:       #7d8590;
-        --accent:      #7ee787;
-        --accent-dim:  rgba(126,231,135,0.12);
-        --accent-2:    #58a6ff;
+        --bg:          #0a1018;
+        --sidebar-bg:  #101823;
+        --panel-bg:    #151f2d;
+        --border:      rgba(255,255,255,0.08);
+        --border-hover:rgba(255,255,255,0.16);
+        --text:        #e8eff7;
+        --muted:       #93a0af;
+        --accent:      #85e89d;
+        --accent-dim:  rgba(133,232,157,0.14);
+        --accent-2:    #6db4ff;
         --danger:      #f85149;
         --warn:        #d29922;
         --radius:      10px;
@@ -34,7 +34,10 @@ const FRONTEND_HTML = `
       html, body {
         height: 100%;
         overflow: hidden;
-        background: var(--bg);
+        background:
+          radial-gradient(circle at 18% 0%, rgba(109,180,255,0.14), transparent 38%),
+          radial-gradient(circle at 85% 14%, rgba(133,232,157,0.12), transparent 42%),
+          linear-gradient(180deg, #0b121b 0%, #0a1018 52%, #090f16 100%);
         color: var(--text);
         font-family: var(--font);
         font-size: 14px;
@@ -122,7 +125,19 @@ const FRONTEND_HTML = `
       /* ── APP SHELL ─────────────────────────────────────── */
       .shell { height: 100dvh; overflow: hidden; }
 
+      .shell::before {
+        content: "";
+        position: fixed;
+        inset: -20% -10% auto;
+        height: 380px;
+        background: radial-gradient(circle at 30% 45%, rgba(109,180,255,0.08), transparent 45%);
+        pointer-events: none;
+        z-index: 0;
+      }
+
       .app-layout {
+        position: relative;
+        z-index: 1;
         display: flex;
         height: 100dvh;
         overflow: hidden;
@@ -223,6 +238,7 @@ const FRONTEND_HTML = `
       }
       .chat-item:hover { background: rgba(255,255,255,0.05); }
       .chat-item.active { background: rgba(88,166,255,0.12); }
+      .chat-item.active .chat-title { color: #d7e8ff; }
 
       .chat-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .chat-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -308,6 +324,35 @@ const FRONTEND_HTML = `
       .chat-header-sub { font-size: 12px; color: var(--muted); }
       .chat-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
+      .supervisor-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.04);
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .supervisor-pill.ok {
+        color: var(--accent);
+        border-color: rgba(133,232,157,0.35);
+        background: rgba(133,232,157,0.09);
+      }
+      .supervisor-pill.warn {
+        color: var(--warn);
+        border-color: rgba(210,153,34,0.35);
+        background: rgba(210,153,34,0.12);
+      }
+      .supervisor-pill.blocked {
+        color: #ffb4ae;
+        border-color: rgba(248,81,73,0.4);
+        background: rgba(248,81,73,0.14);
+      }
+
       .tag {
         display: inline-flex; align-items: center; gap: 5px;
         padding: 3px 9px;
@@ -377,8 +422,337 @@ const FRONTEND_HTML = `
       }
       .empty-state-icon { font-size: 32px; margin-bottom: 12px; opacity: .5; }
 
+      .sidebar-nav-link {
+        margin: 4px 10px 0;
+        width: calc(100% - 20px);
+        border-radius: var(--radius);
+        padding: 9px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: linear-gradient(135deg, rgba(88,166,255,0.08), rgba(126,231,135,0.05));
+        border: 1px solid rgba(88,166,255,0.18);
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 500;
+        transition: transform .12s, border-color .12s, background .12s;
+      }
+      .sidebar-nav-link:hover {
+        transform: translateY(-1px);
+        border-color: rgba(88,166,255,0.34);
+        background: linear-gradient(135deg, rgba(88,166,255,0.12), rgba(126,231,135,0.08));
+      }
+      .sidebar-nav-link.active {
+        border-color: rgba(126,231,135,0.38);
+        box-shadow: 0 0 0 1px rgba(126,231,135,0.18) inset;
+      }
+      .sidebar-nav-icon {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .sidebar-nav-badge {
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid rgba(126,231,135,0.22);
+        background: rgba(126,231,135,0.08);
+        color: var(--accent);
+        font-size: 10px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .upgrade-shell {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 10px 0 34px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .upgrade-hero {
+        position: relative;
+        overflow: hidden;
+        border-radius: 24px;
+        padding: 28px;
+        background:
+          radial-gradient(circle at top right, rgba(88,166,255,0.24), transparent 38%),
+          radial-gradient(circle at left bottom, rgba(126,231,135,0.16), transparent 34%),
+          linear-gradient(135deg, #182131 0%, #101620 54%, #0f151c 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        animation: heroFloat 8s ease-in-out infinite;
+      }
+      .upgrade-hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -8% -36% auto;
+        width: 260px;
+        height: 260px;
+        border-radius: 999px;
+        background: rgba(126,231,135,0.09);
+        filter: blur(40px);
+        pointer-events: none;
+      }
+      .upgrade-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #b9c4d0;
+      }
+      .upgrade-title {
+        max-width: 680px;
+        font-size: clamp(30px, 5vw, 48px);
+        line-height: 1;
+        letter-spacing: -0.05em;
+        font-weight: 700;
+      }
+      .upgrade-copy {
+        max-width: 620px;
+        margin-top: 12px;
+        color: #b8c2cf;
+        font-size: 15px;
+        line-height: 1.7;
+      }
+      .upgrade-meta-row {
+        margin-top: 18px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+      }
+      .upgrade-stat {
+        padding: 7px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+        color: #d1d9e0;
+        font-size: 12px;
+      }
+      .billing-toggle {
+        display: inline-flex;
+        gap: 4px;
+        padding: 4px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .billing-toggle-btn {
+        padding: 8px 14px;
+        border-radius: 999px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 600;
+        transition: background .12s, color .12s, transform .12s;
+      }
+      .billing-toggle-btn.active {
+        background: linear-gradient(135deg, rgba(88,166,255,0.18), rgba(126,231,135,0.16));
+        color: var(--text);
+      }
+      .billing-toggle-btn:hover { color: var(--text); }
+      .save-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 9px;
+        border-radius: 999px;
+        background: rgba(126,231,135,0.12);
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .plan-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+      }
+      .plan-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 100%;
+        padding: 24px;
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(19,24,31,0.98), rgba(12,16,22,0.96));
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 24px 60px rgba(0,0,0,0.18);
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+      }
+      .plan-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 30px 72px rgba(0,0,0,0.24);
+      }
+      .plan-card.popular {
+        border-color: rgba(126,231,135,0.34);
+        box-shadow: 0 0 0 1px rgba(126,231,135,0.14) inset, 0 30px 70px rgba(15,24,15,0.28);
+      }
+      .plan-card.popular::before {
+        content: "";
+        position: absolute;
+        inset: -10% 12% auto;
+        height: 120px;
+        border-radius: 999px;
+        background: rgba(126,231,135,0.14);
+        filter: blur(44px);
+        pointer-events: none;
+      }
+      .plan-topline {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .plan-name {
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+      .plan-label {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .plan-badge {
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: rgba(88,166,255,0.12);
+        border: 1px solid rgba(88,166,255,0.24);
+        color: #9bc7ff;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .plan-price-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .plan-price {
+        font-size: clamp(36px, 6vw, 54px);
+        font-weight: 700;
+        line-height: 0.95;
+        letter-spacing: -0.05em;
+      }
+      .plan-price-unit {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .plan-trial {
+        font-size: 12px;
+        color: #d2d9e0;
+      }
+      .plan-desc {
+        color: #bdc7d4;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      .plan-features {
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .plan-feature {
+        display: flex;
+        gap: 10px;
+        color: #d7dfe7;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .plan-feature::before {
+        content: "✓";
+        color: var(--accent);
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .plan-cta {
+        margin-top: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 46px;
+        border-radius: 14px;
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 700;
+        transition: transform .12s, opacity .12s, box-shadow .12s;
+      }
+      .plan-cta:hover {
+        transform: translateY(-1px);
+        opacity: 0.95;
+      }
+      .plan-cta.core {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.08);
+        color: var(--text);
+      }
+      .plan-cta.ultimate {
+        background: linear-gradient(135deg, #7ee787, #3fb950);
+        color: #08120a;
+        box-shadow: 0 14px 34px rgba(63,185,80,0.24);
+      }
+      .upgrade-footnote {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 18px;
+      }
+      .upgrade-panel {
+        border-radius: 20px;
+        background: linear-gradient(180deg, rgba(19,24,31,0.92), rgba(13,17,23,0.96));
+        border: 1px solid rgba(255,255,255,0.07);
+        padding: 20px 22px;
+      }
+      .upgrade-panel h3 {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 10px;
+        letter-spacing: -0.02em;
+      }
+      .upgrade-panel p {
+        color: #b8c2cf;
+        font-size: 13px;
+        line-height: 1.7;
+      }
+      .mini-checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .mini-check {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+        color: #d0d8e1;
+        font-size: 12px;
+      }
+
+      @keyframes heroFloat {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-4px); }
+      }
+
       .message-card {
-        display: flex; gap: 12px; padding: 8px 4px;
+        display: flex; gap: 12px; padding: 10px 10px;
+        border-radius: 14px;
+        border: 1px solid transparent;
+        transition: border-color .16s, background .16s;
+      }
+      .message-card:hover {
+        border-color: rgba(255,255,255,0.06);
+        background: rgba(255,255,255,0.02);
       }
 
       .msg-avatar {
@@ -462,6 +836,7 @@ const FRONTEND_HTML = `
       .runtime-entry.error  { border-left-color: var(--danger); }
       .runtime-entry.step   { border-left-color: var(--accent-2); }
       .runtime-entry.narrate { border-left-color: #f0a050; background: rgba(240,160,80,.05); }
+      .runtime-entry.supervisor { border-left-color: #8b949e; background: rgba(139,148,158,.08); }
 
       /* guidance panel */
       .guidance-inner { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
@@ -566,6 +941,7 @@ const FRONTEND_HTML = `
         position: relative; border-radius: var(--radius);
         overflow: hidden; background: #010409;
         border: 1px solid var(--border);
+        box-shadow: 0 20px 48px rgba(0,0,0,0.25);
       }
 
       .browser-toolbar {
@@ -682,11 +1058,34 @@ const FRONTEND_HTML = `
       @media (max-width: 700px)  {
         .sidebar { width: 220px; min-width: 220px; }
         .chat-header-right { display: none; }
+        .plan-grid, .upgrade-footnote { grid-template-columns: 1fr; }
+        .upgrade-hero, .plan-card, .upgrade-panel { padding: 20px; }
       }
       @media (max-width: 540px)  { .sidebar { display: none; } }
 
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+      }
+
+      body.upgrade-route .sidebar,
+      body.upgrade-route .browser-aside,
+      body.upgrade-route .chat-header,
+      body.upgrade-route .composer,
+      body.upgrade-route #narrationBanner,
+      body.upgrade-route #guidancePanel {
+        display: none !important;
+      }
+
+      body.upgrade-route .chat-main {
+        width: 100%;
+      }
+
+      body.upgrade-route .timeline-scroll {
+        padding: 30px 0 42px;
+      }
+
+      body.upgrade-route .timeline {
+        max-width: 1120px;
       }
     </style>
   </head>
@@ -702,16 +1101,17 @@ const FRONTEND_HTML = `
         <p class="login-copy" id="loginModeHint">Sign in to your operator workspace.</p>
         <form id="loginForm">
           <div class="field">
-            <label for="loginUsername">Username</label>
-            <input id="loginUsername" name="username" autocomplete="username" required />
+            <label for="loginUsername">Email</label>
+            <input id="loginUsername" name="email" type="email" autocomplete="email" required />
           </div>
           <div class="field">
             <label for="loginPassword">Password</label>
             <input id="loginPassword" type="password" name="password" autocomplete="current-password" required />
           </div>
           <button class="primary-btn" type="submit" id="loginBtn" style="width:100%;justify-content:center">Sign in</button>
+          <button class="ghost-btn" type="button" id="signupBtn" style="width:100%;justify-content:center;margin-top:8px">Create account</button>
           <div class="hint" id="loginHint"></div>
-          <div id="loginError" style="display:none;color:var(--danger);font-size:13px;margin-top:8px;"></div>
+          <div id="loginError" class="hidden" style="color:var(--danger);font-size:13px;margin-top:8px;"></div>
         </form>
       </div>
     </div>
@@ -735,6 +1135,11 @@ const FRONTEND_HTML = `
           <button class="sidebar-new-chat" id="newChatBtn" type="button">
             <span class="sidebar-new-chat-icon">✎</span>
             New chat
+          </button>
+
+          <button class="sidebar-nav-link" id="upgradeViewBtn" type="button">
+            <span class="sidebar-nav-icon"><span>⚡</span><span>Upgrade</span></span>
+            <span class="sidebar-nav-badge">Plans</span>
           </button>
 
           <div class="sidebar-section-label">Recents</div>
@@ -776,6 +1181,7 @@ const FRONTEND_HTML = `
               <span class="tag" id="messageCountTag" style="display:none"></span>
             </div>
             <div class="chat-header-right">
+              <div class="supervisor-pill" id="supervisorPill">Supervisor: idle</div>
               <div class="conn-badge">
                 <span class="conn-dot" id="connDot"></span>
                 <span id="connLabel">Connecting</span>
@@ -797,7 +1203,7 @@ const FRONTEND_HTML = `
 
           <!-- GUIDANCE PANEL: Agent asks / user guides while task runs -->
           <div id="guidancePanel" style="display:none;flex-direction:column;margin:0 12px 8px;border:1px solid #58a6ff60;border-radius:8px;background:#0d1117;overflow:hidden;"></div>
-            <div class="composer-wrap">
+            <div class="composer-wrap" id="composerArea">
               <div class="composer-box">
                 <textarea id="composerInput" class="composer-textarea" rows="1"
                   placeholder="Ask a question or assign a browsing task…"></textarea>
@@ -874,6 +1280,7 @@ const FRONTEND_HTML = `
     <script>
       const state = {
         session: null,
+        account: null,
         chats: [],
         currentChat: null,
         selectedChatId: null,
@@ -908,13 +1315,83 @@ const FRONTEND_HTML = `
           step: true,
           error: true,
           agent: true,
-          narrate: true
+          narrate: true,
+          supervisor: true
         },
         runtimeSearch: "",
         runtimeDropdownOpen: null,
+        initialView: "chat",
+        supervisor: {
+          decision: "idle",
+          score: null,
+          reason: "No active task supervision yet",
+          ts: null
+        },
         pendingImage: null,
+        currentView: "chat",
+        billingCycle: "yearly",
         agentQuestion: null,   // Active question from agent
-        narrateLog: []         // Live narration stream
+        narrateLog: [],        // Live narration stream
+        signupWarning: null
+      };
+
+      const PLAN_CONFIG = {
+        monthly: [
+          {
+            key: "core",
+            name: "Core",
+            price: "$10",
+            unit: "/month",
+            trial: "30-day free trial, then $10 monthly.",
+            label: "For solo builders and light automation",
+            description: "Keep simple automation moving with essential runs, memory, and browser tasks.",
+            cta: "Start Core",
+            href: "https://app.getpinch.com.au/Plans/Plan/IdFIXeXErt",
+            features: ["Autonomous browsing workflows", "Persistent task memory", "Image upload + DETR analysis", "Pinch-connected ticket actions"]
+          },
+          {
+            key: "ultimate",
+            name: "Ultimate",
+            price: "$25",
+            unit: "/month",
+            trial: "1 month free, then $25 monthly.",
+            label: "For higher-volume operators and teams",
+            description: "Unlock the best value for always-on workflows, deeper memory, and heavier agent usage.",
+            cta: "Upgrade to Ultimate",
+            href: "https://app.getpinch.com.au/Plans/Plan/zmTKB1p32Q",
+            badge: "Most Popular",
+            popular: true,
+            features: ["Priority access to complex runs", "Longer memory context windows", "Faster ticket and webhook workflows", "Best fit for multi-session usage"]
+          }
+        ],
+        yearly: [
+          {
+            key: "core",
+            name: "Core",
+            price: "$30",
+            unit: "/year",
+            trial: "1 month free, then $30 yearly.",
+            label: "Lower annual cost for steady usage",
+            description: "A lean annual plan for creators who want dependable automation without monthly churn.",
+            cta: "Start Core Yearly",
+            href: "https://app.getpinch.com.au/Plans/Plan/z7iuQl5pKA",
+            features: ["Autonomous browsing workflows", "Persistent task memory", "Image upload + DETR analysis", "Pinch-connected ticket actions"]
+          },
+          {
+            key: "ultimate",
+            name: "Ultimate",
+            price: "$60",
+            unit: "/year",
+            trial: "1 month free, then $60 yearly.",
+            label: "Maximum savings for committed teams",
+            description: "Your strongest annual offer for customers ready to stay in the workflow and scale output.",
+            cta: "Claim Ultimate Yearly",
+            href: "https://app.getpinch.com.au/Plans/Plan/igI0bOqPL0",
+            badge: "Max Savings",
+            popular: true,
+            features: ["Priority access to complex runs", "Longer memory context windows", "Faster ticket and webhook workflows", "Best fit for multi-session usage"]
+          }
+        ]
       };
 
       const UI_PREFS_KEY = "puppeterr_ui_prefs_v1";
@@ -951,15 +1428,35 @@ const FRONTEND_HTML = `
       const memoryList = document.getElementById("memoryList");
       const loginModeHint = document.getElementById("loginModeHint");
       const quickActions = document.getElementById("quickActions");
+      const composerArea = document.getElementById("composerArea");
       const connDot = document.getElementById("connDot");
       const connLabel = document.getElementById("connLabel");
+      const supervisorPill = document.getElementById("supervisorPill");
       const statusDot = document.getElementById("statusDot");
       const userAvatar = document.getElementById("userAvatar");
+      const upgradeViewBtn = document.getElementById("upgradeViewBtn");
       const uploadImageBtn = document.getElementById("uploadImageBtn");
       const imageFileInput = document.getElementById("imageFileInput");
       const imagePreviewWrap = document.getElementById("imagePreviewWrap");
       const detrCanvas = document.getElementById("detrCanvas");
       const detrStatus = document.getElementById("detrStatus");
+
+      function resolveInitialViewFromUrl() {
+        try {
+          const path = String(window.location.pathname || "").toLowerCase();
+          if (path === "/upgrade") return "upgrade";
+          const params = new URLSearchParams(window.location.search || "");
+          const view = String(params.get("view") || "").toLowerCase();
+          return view === "upgrade" ? "upgrade" : "chat";
+        } catch {
+          return "chat";
+        }
+      }
+
+      function applyRouteLayout() {
+        const isUpgradeRoute = state.initialView === "upgrade";
+        document.body.classList.toggle("upgrade-route", isUpgradeRoute);
+      }
 
       function loadUiPrefs() {
         try {
@@ -967,7 +1464,7 @@ const FRONTEND_HTML = `
           if (!raw) return;
           const parsed = JSON.parse(raw);
           if (parsed && parsed.runtimeFilters && typeof parsed.runtimeFilters === "object") {
-            ["status", "think", "step", "error", "agent"].forEach(function(key) {
+            ["status", "think", "step", "error", "agent", "narrate", "supervisor"].forEach(function(key) {
               if (Object.prototype.hasOwnProperty.call(parsed.runtimeFilters, key)) {
                 state.runtimeFilters[key] = !!parsed.runtimeFilters[key];
               }
@@ -1295,13 +1792,21 @@ const FRONTEND_HTML = `
         return html;
       }
 
+      function withApiBase(path) {
+        if (!path || typeof path !== "string") return path;
+        if (!path.startsWith("/")) return path;
+        return path;
+      }
+
       async function request(path, options) {
-        const response = await fetch(path, {
+        const requestOptions = {
           method: options && options.method ? options.method : "GET",
           headers: Object.assign({ "Content-Type": "application/json" }, options && options.headers ? options.headers : {}),
           body: options && options.body ? JSON.stringify(options.body) : undefined,
-          credentials: "same-origin"
-        });
+          credentials: "include"
+        };
+
+        const response = await fetch(withApiBase(path), requestOptions);
         const contentType = response.headers.get("content-type") || "";
         const payload = contentType.includes("application/json") ? await response.json() : await response.text();
         if (!response.ok) {
@@ -1334,9 +1839,11 @@ const FRONTEND_HTML = `
       function addRuntimeEvent(type, message) {
         const bucket = currentRuntime();
         bucket.push({ type: type, message: message, ts: new Date().toISOString() });
-        if (bucket.length > 40) bucket.splice(0, bucket.length - 40);
+        // No cap — show full history
         nudgeCursorByEvent(type);
-        renderTimeline();
+        if (state.currentView !== "upgrade") {
+          renderTimeline();
+        }
       }
 
       function scheduleBootstrapRefresh(delay) {
@@ -1370,7 +1877,80 @@ const FRONTEND_HTML = `
         }).join("");
       }
 
+      function renderSidebarViewState() {
+        if (upgradeViewBtn) upgradeViewBtn.classList.toggle("active", state.currentView === "upgrade");
+      }
+
+      function renderUpgradeView() {
+        const cycle = state.billingCycle === "monthly" ? "monthly" : "yearly";
+        const plans = PLAN_CONFIG[cycle] || PLAN_CONFIG.yearly;
+        const hasSubscription = !!(state.account && state.account.subscriptionPlan);
+        const freeTierLabel = hasSubscription ? ("Active plan: " + String(state.account.subscriptionPlan)) : "Free tier active";
+        const attachmentLabel = hasSubscription ? "Subscription attached" : "No subscription attached";
+        const upgradeLabel = hasSubscription ? "Manage your current plan" : "Upgrade to Core or Ultimate";
+        const cardsHtml = plans.map(function(plan) {
+          const badge = plan.badge ? '<span class="plan-badge">' + escapeHtml(plan.badge) + '</span>' : "";
+          const features = (plan.features || []).map(function(feature) {
+            return '<li class="plan-feature">' + escapeHtml(feature) + '</li>';
+          }).join("");
+          const ctaClass = plan.key === "ultimate" ? "ultimate" : "core";
+          return '<article class="plan-card ' + (plan.popular ? "popular" : "") + '">' +
+            '<div class="plan-topline"><div><div class="plan-name">' + escapeHtml(plan.name) + '</div><div class="plan-label">' + escapeHtml(plan.label) + '</div></div>' + badge + '</div>' +
+            '<div class="plan-price-row"><div class="plan-price">' + escapeHtml(plan.price) + '</div><div class="plan-price-unit">' + escapeHtml(plan.unit) + '</div></div>' +
+            '<div class="plan-trial">' + escapeHtml(plan.trial) + '</div>' +
+            '<div class="plan-desc">' + escapeHtml(plan.description) + '</div>' +
+            '<ul class="plan-features">' + features + '</ul>' +
+            '<a class="plan-cta ' + ctaClass + '" href="' + escapeHtml(plan.href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(plan.cta) + ' <span>↗</span></a>' +
+          '</article>';
+        }).join("");
+
+        return '<section class="upgrade-shell">' +
+          '<section class="upgrade-hero">' +
+            '<div class="upgrade-eyebrow">Puppeterr plans <span class="save-badge">Pinch checkout</span></div>' +
+            '<h1 class="upgrade-title">Choose a plan that keeps your operator workflows moving.</h1>' +
+            '<p class="upgrade-copy">Upgrade inside Puppeterr with direct checkout links for Core and Ultimate. Use monthly for flexibility or shift to yearly for the strongest savings angle.</p>' +
+            '<div class="upgrade-meta-row">' +
+              '<div class="billing-toggle">' +
+                '<button class="billing-toggle-btn ' + (cycle === "monthly" ? 'active' : '') + '" type="button" data-billing-cycle="monthly">Monthly</button>' +
+                '<button class="billing-toggle-btn ' + (cycle === "yearly" ? 'active' : '') + '" type="button" data-billing-cycle="yearly">Yearly</button>' +
+              '</div>' +
+              '<span class="upgrade-stat">' + escapeHtml(freeTierLabel) + '</span>' +
+              '<span class="upgrade-stat">' + escapeHtml(attachmentLabel) + '</span>' +
+              '<span class="upgrade-stat">' + escapeHtml(upgradeLabel) + '</span>' +
+            '</div>' +
+          '</section>' +
+          '<section class="plan-grid">' + cardsHtml + '</section>' +
+          '<section class="upgrade-footnote">' +
+            '<div class="upgrade-panel"><h3>What changes after upgrade</h3><p>Use this screen as the main conversion point for users who have already seen the product work. The links open Pinch-hosted checkout pages directly, so there is no custom billing flow to maintain in Puppeterr right now.</p><div class="mini-checks"><span class="mini-check">Direct hosted checkout</span><span class="mini-check">No extra backend route required</span><span class="mini-check">Works with current Pinch plans</span></div></div>' +
+            '<div class="upgrade-panel"><h3>Current offers wired in</h3><p>Visible plans are Core and Ultimate in both monthly and yearly variants. Legacy $5/month and $25/year links are intentionally excluded from the UI so this screen stays focused.</p><div class="mini-checks"><span class="mini-check">Core monthly</span><span class="mini-check">Core yearly</span><span class="mini-check">Ultimate monthly</span><span class="mini-check">Ultimate yearly</span></div></div>' +
+          '</section>' +
+        '</section>';
+      }
+
+      function setCurrentView(viewName) {
+        state.currentView = viewName === "upgrade" ? "upgrade" : "chat";
+        renderSidebarViewState();
+        renderTimeline();
+      }
+
       function renderTimeline() {
+        renderSidebarViewState();
+        if (composerArea) composerArea.style.display = state.currentView === "upgrade" ? "none" : "";
+        if (state.currentView === "upgrade") {
+          const previousScrollTop = timelineScroll ? timelineScroll.scrollTop : 0;
+          timelineTitle.textContent = "Upgrade Puppeterr";
+          timelineSubtitle.textContent = "Direct Pinch-hosted checkout";
+          messageCountTag.style.display = "none";
+          timeline.innerHTML = renderUpgradeView();
+          Array.from(timeline.querySelectorAll("[data-billing-cycle]")).forEach(function(btn) {
+            btn.addEventListener("click", function() {
+              state.billingCycle = btn.getAttribute("data-billing-cycle") === "monthly" ? "monthly" : "yearly";
+              renderTimeline();
+            });
+          });
+          if (timelineScroll) timelineScroll.scrollTop = previousScrollTop;
+          return;
+        }
         const chat = state.currentChat;
         if (!chat) {
           timeline.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🤖</div>Select a chat or start a new one.</div>';
@@ -1416,7 +1996,11 @@ const FRONTEND_HTML = `
           '</article>';
         });
         const runtimeEvents = currentRuntime();
-        const filteredRuntimeEvents = runtimeEvents.filter(function(event) {
+        // Sort newest-first so latest activity appears at top
+        const sortedRuntimeEvents = runtimeEvents.slice().sort(function(a, b) {
+          return (b.ts || "") < (a.ts || "") ? -1 : (b.ts || "") > (a.ts || "") ? 1 : 0;
+        });
+        const filteredRuntimeEvents = sortedRuntimeEvents.filter(function(event) {
           const typeAllowed = Object.prototype.hasOwnProperty.call(state.runtimeFilters, event.type)
             ? state.runtimeFilters[event.type]
             : true;
@@ -1426,7 +2010,7 @@ const FRONTEND_HTML = `
             || String(event.type || "").toLowerCase().includes(state.runtimeSearch.toLowerCase());
         });
         const runtimeControls = '<div class="runtime-controls">' +
-          ["status", "think", "step", "error", "agent", "narrate"].map(function(type) {
+          ["status", "think", "step", "error", "agent", "narrate", "supervisor"].map(function(type) {
             const off = state.runtimeFilters[type] ? "" : " off";
             return '<button type="button" class="runtime-filter-btn' + off + '" data-runtime-filter="' + type + '">' + type + '</button>';
           }).join("") +
@@ -1434,7 +2018,7 @@ const FRONTEND_HTML = `
         '</div>';
         const runtimeDropdownOpen = typeof state.runtimeDropdownOpen === "boolean" ? state.runtimeDropdownOpen : !!state.sending;
         const runtimeCard = runtimeEvents.length
-          ? '<details class="runtime-dropdown" ' + (runtimeDropdownOpen ? "open" : "") + '><summary><strong>Agent activity</strong><span class="tag">' + escapeHtml(String(runtimeEvents.length)) + ' updates</span><span class="runtime-chevron">' + (runtimeDropdownOpen ? "Hide" : "Show") + '</span></summary><div class="runtime-log">' +
+          ? '<details class="runtime-dropdown" ' + (runtimeDropdownOpen ? "open" : "") + '><summary><strong>Agent activity</strong><span class="tag">' + escapeHtml(String(runtimeEvents.length)) + ' events</span><span class="runtime-chevron">' + (runtimeDropdownOpen ? "Hide" : "Show") + '</span></summary><div class="runtime-log">' +
               runtimeControls +
               filteredRuntimeEvents.map(function(event) {
                 return '<article class="runtime-entry ' + escapeHtml(event.type) + '"><div class="runtime-head"><span>' + escapeHtml(event.type || "status") + '</span><span>' + escapeHtml(prettyTime(event.ts)) + '</span></div><div class="runtime-body">' + renderRichText(event.message) + '</div></article>';
@@ -1530,7 +2114,22 @@ const FRONTEND_HTML = `
         if (statusDot) statusDot.classList.toggle("offline", !live);
       }
 
+      function renderSupervisorPill() {
+        if (!supervisorPill) return;
+        const decision = String(state.supervisor && state.supervisor.decision || "idle").toLowerCase();
+        const score = Number(state.supervisor && state.supervisor.score);
+        const normalized = (decision === "blocked" || decision === "warn" || decision === "ok") ? decision : "idle";
+        supervisorPill.className = "supervisor-pill" + (normalized === "idle" ? "" : " " + normalized);
+        if (normalized === "idle") {
+          supervisorPill.textContent = "Supervisor: idle";
+          return;
+        }
+        const scoreText = Number.isFinite(score) ? " " + score.toFixed(2) : "";
+        supervisorPill.textContent = "Supervisor: " + normalized + scoreText;
+      }
+
       function applyBootstrap(data) {
+        state.account = data.account || state.account;
         state.chats = data.chats || [];
         state.currentChat = data.currentChat || null;
         state.selectedChatId = data.selectedChatId || (data.currentChat && data.currentChat.id) || null;
@@ -1546,6 +2145,7 @@ const FRONTEND_HTML = `
         renderChats();
         renderMemory();
         renderModels();
+        renderSupervisorPill();
         renderTimeline();
         restoreDraftForCurrentChat();
       }
@@ -1609,6 +2209,7 @@ const FRONTEND_HTML = `
       async function selectChat(chatId) {
         try {
           const data = await request("/api/chats/" + encodeURIComponent(chatId) + "/select", { method: "POST" });
+          state.currentView = "chat";
           applyBootstrap(data);
         } catch (error) {
           addRuntimeEvent("error", error.message);
@@ -1617,6 +2218,7 @@ const FRONTEND_HTML = `
 
       async function createNewChat() {
         try {
+          state.currentView = "chat";
           await request("/api/chats", { method: "POST", body: { title: "New Chat" } });
           await loadBootstrap(false);
         } catch (error) {
@@ -1644,12 +2246,41 @@ const FRONTEND_HTML = `
             body.detectedShapes = state.pendingImage.shapes || [];
             body.semanticAnalysis = state.pendingImage.semantic || {};
           }
-          await request("/chat", { method: "POST", body });
+          try {
+            await request("/chat", { method: "POST", body });
+          } catch (chatError) {
+            if (chatError && chatError.status === 404) {
+              await request("/api/chat", { method: "POST", body });
+            } else {
+              throw chatError;
+            }
+          }
           addRuntimeEvent("status", "Message sent. Waiting for router decision.");
           if (state.pendingImage) {
             state.pendingImage = null;
             if (imagePreviewWrap) imagePreviewWrap.style.display = "none";
           }
+          // Poll for the reply in case SSE is not connected
+          (function pollForReply(attempts) {
+            window.setTimeout(function() {
+              var prevCount = state.currentChat ? state.currentChat.messages.length : 0;
+              loadBootstrap(false).then(function() {
+                var newCount = state.currentChat ? state.currentChat.messages.length : 0;
+                if (newCount > prevCount || !state.sending) {
+                  state.sending = false;
+                  sendBtn.disabled = false;
+                } else if (attempts > 1) {
+                  pollForReply(attempts - 1);
+                } else {
+                  state.sending = false;
+                  sendBtn.disabled = false;
+                }
+              }).catch(function() {
+                state.sending = false;
+                sendBtn.disabled = false;
+              });
+            }, 2000);
+          })(15);
         } catch (error) {
           state.sending = false;
           sendBtn.disabled = false;
@@ -1661,17 +2292,96 @@ const FRONTEND_HTML = `
       async function performLogin(event) {
         event.preventDefault();
         loginBtn.disabled = true;
+        const signupBtn = document.getElementById("signupBtn");
+        if (signupBtn) signupBtn.disabled = true;
         loginError.classList.add("hidden");
-        const username = document.getElementById("loginUsername").value.trim();
+        loginHint.textContent = "Signing in...";
+        const email = document.getElementById("loginUsername").value.trim();
         const password = document.getElementById("loginPassword").value;
         try {
-          await request("/auth/login", { method: "POST", body: { username: username, password: password } });
+          await request("/auth/login", { method: "POST", body: { email: email, password: password } });
           await initializeApp();
         } catch (error) {
-          loginError.textContent = error.message;
+          if (error && error.status === 401) {
+            loginError.textContent = "Invalid email or password.";
+          } else {
+            loginError.textContent = error.message;
+          }
+          loginError.classList.remove("hidden");
+          loginHint.textContent = "Sign in failed. Check your credentials and try again.";
+        } finally {
+          loginBtn.disabled = false;
+          if (signupBtn) signupBtn.disabled = false;
+        }
+      }
+
+      function isValidSignupEmail(value) {
+        const email = String(value || "").trim().toLowerCase();
+        return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email);
+      }
+
+      async function performSignup() {
+        loginBtn.disabled = true;
+        const signupBtn = document.getElementById("signupBtn");
+        if (signupBtn) signupBtn.disabled = true;
+        loginError.classList.add("hidden");
+        loginHint.textContent = "Creating account...";
+        const email = document.getElementById("loginUsername").value.trim();
+        const password = document.getElementById("loginPassword").value;
+
+        if (!isValidSignupEmail(email)) {
+          loginError.textContent = "Enter a valid email address to create an account.";
+          loginError.classList.remove("hidden");
+          loginHint.textContent = "Use a real email like you@example.com.";
+          loginBtn.disabled = false;
+          if (signupBtn) signupBtn.disabled = false;
+          return;
+        }
+
+        if (state.session && state.session.usingDefaultCredentials && email === "admin" && password === "puppeterr") {
+          loginError.textContent = "Those are local admin login defaults. Use your real email and a new password to sign up.";
+          loginError.classList.remove("hidden");
+          loginHint.textContent = "Admin defaults are for login only, not signup.";
+          loginBtn.disabled = false;
+          if (signupBtn) signupBtn.disabled = false;
+          return;
+        }
+
+        if (String(password || "").length < 8) {
+          loginError.textContent = "Password must be at least 8 characters.";
+          loginError.classList.remove("hidden");
+          loginHint.textContent = "Choose a password with 8+ characters.";
+          loginBtn.disabled = false;
+          if (signupBtn) signupBtn.disabled = false;
+          return;
+        }
+
+        try {
+          const signupPayload = await request("/auth/signup", { method: "POST", body: { email: email, password: password } });
+          state.signupWarning = signupPayload && signupPayload.pinch_warning ? String(signupPayload.pinch_warning) : null;
+          if (signupPayload && signupPayload.requires_verification) {
+            // Email verification required — show inbox prompt, don't auto-login
+            loginError.classList.add("hidden");
+            loginHint.textContent = "📬 Check your inbox! We sent a verification link to " + email + ". Click it to activate your account.";
+          } else {
+            loginHint.textContent = "Account created. Signing you in...";
+            await initializeApp();
+          }
+        } catch (error) {
+          if (error && error.status === 409) {
+            loginError.textContent = "That email is already registered. Sign in instead.";
+            loginHint.textContent = "Account already exists for this email.";
+          } else if (error && error.status === 400) {
+            loginError.textContent = error.message || "Invalid signup details.";
+            loginHint.textContent = "Check your email format and password length.";
+          } else {
+            loginError.textContent = error.message;
+            loginHint.textContent = "Could not create account. See error above.";
+          }
           loginError.classList.remove("hidden");
         } finally {
           loginBtn.disabled = false;
+          if (signupBtn) signupBtn.disabled = false;
         }
       }
 
@@ -1691,7 +2401,7 @@ const FRONTEND_HTML = `
 
       function connectEvents() {
         disconnectEvents();
-        state.eventSource = new EventSource("/events");
+        state.eventSource = new EventSource(withApiBase("/events"), { withCredentials: true });
         state.eventSource.onopen = function() { syncConnectionUI(true); };
         state.eventSource.onmessage = function(event) {
           try {
@@ -1719,9 +2429,34 @@ const FRONTEND_HTML = `
               scheduleBootstrapRefresh(200);
               return;
             }
+            if (payload.type === "task_start") {
+              state.supervisor = {
+                decision: "ok",
+                score: null,
+                reason: "Monitoring active task",
+                ts: new Date().toISOString()
+              };
+              renderSupervisorPill();
+            }
+            if (payload.type === "supervisor") {
+              state.supervisor = {
+                decision: payload.decision || "ok",
+                score: Number.isFinite(Number(payload.score)) ? Number(payload.score) : null,
+                reason: payload.reason || payload.msg || "",
+                ts: new Date().toISOString()
+              };
+              renderSupervisorPill();
+            }
             if (payload.type === "task_done") {
               state.sending = false;
               sendBtn.disabled = false;
+              state.supervisor = {
+                decision: "idle",
+                score: null,
+                reason: "No active task supervision yet",
+                ts: new Date().toISOString()
+              };
+              renderSupervisorPill();
               scheduleBootstrapRefresh(200);
             }
             if (payload.type === "human_needed") {
@@ -1777,7 +2512,9 @@ const FRONTEND_HTML = `
       }
 
       function openHumanBridgeTab(bridgeUrl) {
-        const url = (bridgeUrl || "/human-bridge") + ((bridgeUrl || "/human-bridge").includes("?") ? "&" : "?") + "ts=" + Date.now();
+        const baseBridgeUrl = bridgeUrl || "/human-bridge";
+        const resolvedBaseBridgeUrl = withApiBase(baseBridgeUrl);
+        const url = resolvedBaseBridgeUrl + (resolvedBaseBridgeUrl.includes("?") ? "&" : "?") + "ts=" + Date.now();
         if (state.humanBridgeWindow && !state.humanBridgeWindow.closed) {
           state.humanBridgeWindow.focus();
           return true;
@@ -1842,10 +2579,10 @@ const FRONTEND_HTML = `
 
       async function refreshBrowser() {
         if (appShell.classList.contains("hidden")) return;
-        screenshot.src = "/screenshot?ts=" + Date.now();
+        screenshot.src = withApiBase("/screenshot") + "?ts=" + Date.now();
         browserUrl.textContent = state.browserUrl || "about:blank";
         try {
-          const text = await fetch("/url", { credentials: "same-origin" }).then(function(res) { return res.text(); });
+          const text = await fetch(withApiBase("/url"), { credentials: "include" }).then(function(res) { return res.text(); });
           state.browserUrl = text;
           browserUrl.textContent = text;
         } catch {}
@@ -1862,21 +2599,28 @@ const FRONTEND_HTML = `
         currentUser.textContent = state.session.username || "-";
         connectEvents();
         await loadBootstrap(false);
+        setCurrentView(state.initialView);
         await refreshBrowser();
         await refreshHumanBridgeState();
         window.clearInterval(state.browserTimer);
         state.browserTimer = window.setInterval(refreshBrowser, 2800);
         window.clearInterval(state.humanBridgeTimer);
         state.humanBridgeTimer = window.setInterval(refreshHumanBridgeState, 1400);
+        if (state.signupWarning) {
+          addRuntimeEvent("error", "Account created, but Pinch customer setup is pending: " + state.signupWarning);
+          state.signupWarning = null;
+        }
       }
 
       async function boot() {
         loginModeHint.textContent = "single-operator workspace";
+        state.initialView = resolveInitialViewFromUrl();
+        applyRouteLayout();
         try {
           const session = await request("/auth/session");
           state.session = session;
           if (session.usingDefaultCredentials) {
-            loginHint.textContent = "Default local credentials are enabled. Username: admin • Password: puppeterr";
+            loginHint.textContent = "Default local credentials are enabled. Email/Username: admin • Password: puppeterr";
             loginModeHint.textContent = "default local credentials active";
             document.getElementById("loginUsername").value = "admin";
             document.getElementById("loginPassword").value = "puppeterr";
@@ -1893,11 +2637,19 @@ const FRONTEND_HTML = `
       }
 
       loginForm.addEventListener("submit", performLogin);
+      const signupBtn = document.getElementById("signupBtn");
+      if (signupBtn) signupBtn.addEventListener("click", performSignup);
       document.getElementById("logoutBtn").addEventListener("click", performLogout);
       document.getElementById("codingSectorBtn").addEventListener("click", function() {
-        window.open("/code-sector", "_blank", "noopener,noreferrer");
+        window.open(withApiBase("/code-sector"), "_blank", "noopener,noreferrer");
       });
       document.getElementById("newChatBtn").addEventListener("click", createNewChat);
+      if (upgradeViewBtn) {
+        upgradeViewBtn.addEventListener("click", function() {
+          const upgradeUrl = withApiBase("/upgrade");
+          window.open(upgradeUrl, "_blank", "noopener,noreferrer");
+        });
+      }
       document.getElementById("refreshAllBtn").addEventListener("click", function() { loadBootstrap(false); refreshBrowser(); });
       document.getElementById("refreshModelsBtn").addEventListener("click", function() { loadBootstrap(true); });
       document.getElementById("refreshMemoryBtn").addEventListener("click", refreshMemory);

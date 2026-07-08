@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ca842c84-0701-4d48-8a93-2aedfd35dd6d",
+    "email": "vstd.help@gmail.com",
+    "password_hash": "$2b$12$JMeGcP6aJL5b3YizkT/hAOPO2ZGZCz1XlbA2OJPZN8RDXT3HIu6VS",
+    "verified": false,
+    "subscription_plan": null,
+    "subscription_id": null,
+    "pinch_customer_id": null,
+    "subscription_status": "unsubscribed",
+    "createdAt": "2026-07-08T01:13:57.731Z",
+    "updatedAt": "2026-07-08T01:13:57.731Z"
+  },
+  {
+    "id": "29cf0a25-3d67-4b4d-9cd6-ea29d7eb02e5",
+    "email": "vstd.help@gmail.com2",
+    "password_hash": "$2b$12$jqJb3FaSLFW9ec3cwEklL.C1bR0R5zihyp5Um6iJfUsNq52I5J./y",
+    "verified": false,
+    "subscription_plan": null,
+    "subscription_id": null,
+    "pinch_customer_id": null,
+    "subscription_status": "unsubscribed",
+    "createdAt": "2026-07-08T01:16:16.266Z",
+    "updatedAt": "2026-07-08T01:16:16.266Z"
+  }
+]

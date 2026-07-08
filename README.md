@@ -90,3 +90,39 @@ if its not INSTALLED do this
 sudo apt-get update
 sudo apt-get install -y xvfb
 "
+
+if you have leftover processes from the agent... do this
+
+"
+pkill -9 node       || true
+pkill -9 chrome     || true
+pkill -9 chromium   || true
+pkill -9 Xvfb       || true
+PID=$(ss -ltnp | awk '/:3000/{match($NF,/pid=([0-9]+)/,a); print a[1]}')
+[ -n "$PID" ] && kill -9 "$PID" || true
+pkill -f agent.js   || true
+pkill -f vite       || true
+pkill -f webpack    || true
+rm -f .puppeterr-profile/SingletonLock \
+      .puppeterr-profile/SingletonSocket 2>/dev/null || true
+"
+
+if you see this error 
+
+"This congenial-halibut-wr945p799g5vc5rvx-3000.app.github.dev page can’t be found
+No webpage was found for the web address: https://localhost:3000 HTTP ERROR 404"
+
+then... 
+
+A: the project is being goofy
+or 
+B: the instance crashed
+
+use this to clean start it
+
+"
+fuser -k 3000/tcp || true
+pkill -f "node agent.js" || true
+pkill -f "xvfb-run -a node agent.js" || true
+xvfb-run -a node agent.js
+"
