@@ -24,7 +24,7 @@
   "dependencies": {
     "@cloudflare/ai": "^1.2.2",
     "@cloudflare/workers-types": "^4.20260629.1",
-    "@huggingface/inference": "^4.13.21",
+    "@huggingface/inference": "^4.13.22",
     "base64-js": "^1.5.1",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
