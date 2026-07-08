@@ -126,3 +126,5 @@ pkill -f "node agent.js" || true
 pkill -f "xvfb-run -a node agent.js" || true
 xvfb-run -a node agent.js
 "
+
+if you recently pushed or umm did anything related to the github repo do CTRL-SHIFT-P and then type in 'rebuild container' then press enter or click the first result... then do the 'rebuild container' steps (scroll to the last heading in this README)
