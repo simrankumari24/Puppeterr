@@ -1,4 +1,4 @@
-name = "puppeterr-session-service"
+name = "puppeterr"
 main = "cloudflare/session-service.js"
 compatibility_date = "2026-07-01"
 
