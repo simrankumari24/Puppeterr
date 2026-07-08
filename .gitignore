@@ -1,10 +1,39 @@
+# Node
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+log.json
+
+# Playwright
 screenshots/
 runs/
-.env
-*.log
 .puppeterr-profile/
+.puppeterr-profile-test/
+
+# Agent data
 chat-history.json
 memory.json
-log.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+coverage/
+
+# Database (if using SQLite)
+*.sqlite
+*.sqlite-journal
+
+# Misc
 view.png
