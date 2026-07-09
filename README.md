@@ -1,0 +1,130 @@
+### Puppeterr
+PROJECT OVERVIEW
+This project implements a browser‑automation agent composed of four cooperating modules: Planner, Instinct, Reasoner, and Vision. The system is designed to execute tasks inside a browser environment while providing real‑time reasoning, human guidance, and runtime logging. The goal is to approximate a guided autonomous workflow similar to Devin-style agents.
+
+MODULES
+Planner
+Executes step-by-step actions such as clicking, filling inputs, submitting forms, and navigating pages. Planner is responsible for interpreting tasks and producing actionable steps. It may enter fallback loops when selectors fail or page state changes unexpectedly.
+
+Instinct
+Monitors Planner’s behavior and detects confusion, repeated failures, invalid selectors, or stalled progress. Instinct can escalate warnings and request human intervention. It acts as a safety layer to prevent infinite loops or runaway behavior.
+
+Reasoner
+Generates natural-language explanations of what the agent is doing. It can request guidance from the user and respond to user-provided steering. Reasoner is the communication layer between the autonomous system and the human operator.
+
+Vision
+Captures page state, extracts DOM information, identifies visible elements, and provides context for Planner and Reasoner. Vision helps the agent understand what is currently on the screen.
+
+FEATURES
+
+Real-time reasoning output
+
+Human-in-the-loop guidance via /api/guidance
+
+Runtime event logging
+
+Selector fallback logic
+
+Basic confusion detection
+
+Modular architecture for browser automation
+
+Support for manual interruption and recovery
+
+SETUP
+Clone the repository.
+Install dependencies.
+Start the development server.
+Run the agent in a browser-enabled environment.
+
+API ENDPOINTS
+POST /api/guidance
+Accepts a JSON body containing a "text" field. This endpoint delivers user guidance to the Reasoner module.
+
+POST /api/runtime
+Logs runtime events from Planner, Instinct, and Reasoner.
+
+GET /api/status
+Returns the current agent state.
+
+KNOWN ISSUES
+Planner may generate invalid selectors during fallback attempts.
+Browser contexts may close unexpectedly if interrupted manually.
+Guidance requests require correct JSON formatting.
+Selector mutation may produce syntactically invalid CSS.
+Certain pages (such as Bing’s homepage) cause repeated fill failures.
+
+FUTURE WORK
+Improve selector sanity checks.
+Add a structured Reasoner live-stream panel.
+Implement a more robust Reality Bonk Gate for Planner.
+Enhance Vision’s DOM interpretation.
+Add better debugging tools and UI overlays.
+
+### every time you REBUILD THE CONTAINER do these steps:
+
+use "sudo find / -type f -iname "*chrome*" 2>/dev/null" fr a full nuke search and
+
+"npx playwright install chromium" if u dont find it anyway
+
+
+then install the required libaries 
+
+"
+sudo apt-get update
+sudo apt-get install -y \
+  libatk1.0-0 \
+  libatk-bridge2.0-0 \
+  libgtk-3-0 \
+  libgbm1 \
+  libnss3 \
+  libxss1 \
+  libasound2t64
+"
+
+to run the program itself you need to run this cmd
+"xvfb-run -a node agent.js"
+if its not INSTALLED do this
+
+"
+sudo apt-get update
+sudo apt-get install -y xvfb
+"
+
+if you have leftover processes from the agent... do this
+
+"
+pkill -9 node       || true
+pkill -9 chrome     || true
+pkill -9 chromium   || true
+pkill -9 Xvfb       || true
+PID=$(ss -ltnp | awk '/:3000/{match($NF,/pid=([0-9]+)/,a); print a[1]}')
+[ -n "$PID" ] && kill -9 "$PID" || true
+pkill -f agent.js   || true
+pkill -f vite       || true
+pkill -f webpack    || true
+rm -f .puppeterr-profile/SingletonLock \
+      .puppeterr-profile/SingletonSocket 2>/dev/null || true
+"
+
+if you see this error 
+
+"This congenial-halibut-wr945p799g5vc5rvx-3000.app.github.dev page can’t be found
+No webpage was found for the web address: https://localhost:3000 HTTP ERROR 404"
+
+then... 
+
+A: the project is being goofy
+or 
+B: the instance crashed
+
+use this to clean start it
+
+"
+fuser -k 3000/tcp || true
+pkill -f "node agent.js" || true
+pkill -f "xvfb-run -a node agent.js" || true
+xvfb-run -a node agent.js
+"
+
+if you recently pushed or umm did anything related to the github repo do CTRL-SHIFT-P and then type in 'rebuild container' then press enter or click the first result... then do the 'rebuild container' steps (scroll to the last heading in this README)

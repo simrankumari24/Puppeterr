@@ -1,0 +1,142 @@
+module.exports = {
+  FRONTEND_HTML: `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>AGI Terminal</title>
+<style>
+  body {
+    background: #0d0d0d;
+    color: #e0e0e0;
+    font-family: Consolas, monospace;
+    margin: 0;
+    padding: 0;
+  }
+  #header {
+    background: #111;
+    padding: 12px;
+    font-size: 20px;
+    color: #7df9ff;
+    border-bottom: 1px solid #222;
+  }
+  #container {
+    display: flex;
+    height: calc(100vh - 60px);
+  }
+  #left, #right {
+    flex: 1;
+    padding: 12px;
+    overflow-y: auto;
+    border-right: 1px solid #222;
+  }
+  #right { border-right: none; }
+  .log {
+    margin: 4px 0;
+    white-space: pre-wrap;
+  }
+  .think { color: #c01313; }
+  .status { color: #ff0000; }
+  .agent { color: #f4ff1f; }
+  .error { color: #ffffff; }
+  .step { color: #f0fc11da; }
+  #inputBar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background: #111;
+    padding: 10px;
+    border-top: 1px solid #222;
+  }
+  #msg {
+    width: 90%;
+    padding: 8px;
+    background: #000;
+    color: #fff;
+    border: 1px solid #333;
+  }
+  #sendBtn {
+    padding: 8px 14px;
+    background: #7df9ff;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+  }
+  #screenshot {
+    max-width: 100%;
+    border: 1px solid #333;
+    margin-top: 10px;
+  }
+</style>
+</head>
+
+<body>
+  <div id="header"> Puppeterr AI</div>
+
+  <div id="container">
+    <div id="left">
+      <h5>:CHAT:</h5>
+      <div id="log"></div>
+    </div>
+
+    <div id="right">
+      <h4>Live View</h4>
+      <img id="screenshot" src="" />
+      <h3>URL</h3>
+      <div id="url"></div>
+    </div>
+  </div>
+
+  <div id="inputBar">
+    <input id="msg" placeholder="Type a message or task..." />
+    <button id="sendBtn">Send</button>
+  </div>
+
+<script>
+  const logEl = document.getElementById("log");
+  const screenshotEl = document.getElementById("screenshot");
+  const urlEl = document.getElementById("url");
+
+  function addLog(type, msg) {
+    const div = document.createElement("div");
+    div.className = "log " + type;
+    div.textContent = msg;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const evt = new EventSource("/events");
+  evt.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.type === "think") addLog("think", ":Reasoning: " + data.msg);
+    if (data.type === "status") addLog("status", ":ACT: " + data.msg);
+    if (data.type === "agent") addLog("agent", "-> " + data.msg);
+    if (data.type === "error") addLog("error", ":ERROR: " + data.msg);
+    if (data.type === "step") addLog("step", ":PLAN: " + data.msg);
+    if (data.type === "screenshot") screenshotEl.src = "data:image/jpeg;base64," + data.img;
+    if (data.type === "url") urlEl.textContent = data.url;
+  };
+
+  document.getElementById("sendBtn").onclick = send;
+  document.getElementById("msg").onkeydown = (e) => {
+    if (e.key === "Enter") send();
+  };
+
+  function send() {
+    const msg = document.getElementById("msg").value.trim();
+    if (!msg) return;
+    fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg })
+    });
+    addLog("user", "->" + msg);
+    document.getElementById("msg").value = "";
+  }
+</script>
+
+</body>
+</html>
+`
+};

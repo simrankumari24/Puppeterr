@@ -1,0 +1,13 @@
+name = "puppeterr-session-service"
+main = "cloudflare/session-service.js"
+compatibility_date = "2026-07-01"
+
+[durable_objects]
+
+[[durable_objects.bindings]]
+name = "SESSION_VAULT"
+class_name = "SessionVault"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionVault"]

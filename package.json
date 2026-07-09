@@ -1,0 +1,40 @@
+{
+  "name": "puppeterr",
+  "version": "1.0.0",
+  "description": "An Ai that searches the web using browsing tools",
+  "main": "agent.js",
+  "scripts": {
+    "start": "xvfb-run -a node agent.js",
+    "start:local": "node agent.js",
+    "start:legacy": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simrankumari24/Puppeterr.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/simrankumari24/Puppeterr/issues"
+  },
+  "homepage": "https://github.com/simrankumari24/Puppeterr#readme",
+  "dependencies": {
+    "@cloudflare/ai": "^1.2.2",
+    "@cloudflare/workers-types": "^4.20260629.1",
+    "@huggingface/inference": "^4.13.21",
+    "base64-js": "^1.5.1",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mustache": "^4.2.0",
+    "nodemailer": "^9.0.3",
+    "pinch-api": "^0.1.0",
+    "playwright": "^1.61.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "undici": "^8.5.0"
+  }
+}
