@@ -35,7 +35,7 @@ pipeline {
         stage('Run Puppeterr Agent') {
             steps {
                 catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                    timeout(time: 3, unit: 'MINUTES') {
+                    timeout(time: 60, unit: 'MINUTES') {
                         bat '''
                         set CF_API_TOKEN=%CF_API_TOKEN%
                         set CF_ACCOUNT_ID=%CF_ACCOUNT_ID%
