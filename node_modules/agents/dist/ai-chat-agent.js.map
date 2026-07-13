@@ -1,0 +1,1 @@
+{"version":3,"file":"ai-chat-agent.js","names":[],"sources":["../src/ai-chat-agent.ts"],"sourcesContent":["throw new Error(\n  \"All the AI Chat related modules are now in @cloudflare/ai-chat. This module is deprecated and will be removed in the next major version. Please use @cloudflare/ai-chat instead.\"\n);\n"],"mappings":";AAAA,MAAM,IAAI,MACR,kLACF"}

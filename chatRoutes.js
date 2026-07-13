@@ -31,12 +31,15 @@ async function handleChatRequest(req, res, deps) {
   try {
     const body = await readJsonBody(req);
     const rawMessage = String(body.message || "").trim();
-    const chatId = body.chatId || ensureCurrentChat().chat.id;
+    const userId = body.userId || null;
+    const chatId = body.chatId || ensureCurrentChat(userId).chat.id;
     const imageB64Upload = String(body.imageB64 || "").trim();
     const annotatedImageB64 = String(body.annotatedImageB64 || "").trim();
     const detrDetections = Array.isArray(body.detrDetections) ? body.detrDetections : [];
     const detectedShapes = Array.isArray(body.detectedShapes) ? body.detectedShapes : [];
     const semanticAnalysis = typeof body.semanticAnalysis === "object" ? body.semanticAnalysis : {};
+    const layoutAnalysis = body.layoutAnalysis && typeof body.layoutAnalysis === "object" ? body.layoutAnalysis : null;
+    const wantsLayoutAnalysis = /ascii|page\s*map|layout|bbox|bounding\s*box|screenshot/i.test(rawMessage);
 
     let message = rawMessage;
     if (imageB64Upload && (detrDetections.length > 0 || detectedShapes.length > 0 || Object.keys(semanticAnalysis).length > 0)) {
@@ -48,20 +51,26 @@ async function handleChatRequest(req, res, deps) {
         ? `Semantic Tag: ${semanticAnalysis.description}${semanticAnalysis.confidence ? ` (${(semanticAnalysis.confidence * 100).toFixed(1)}% conf)` : ""}`
         : "No semantic classification.";
 
-      const { chat: imgChat } = ensureCurrentChat();
+      const { chat: imgChat } = ensureCurrentChat(userId);
       const imgModels = getActiveModels(imgChat);
       const visionSummary = await analyzeUploadedImageWithVision(
         annotatedImageB64 || imageB64Upload, detrCtx, rawMessage, imgModels.vision
       );
+      const layoutCtx = wantsLayoutAnalysis && layoutAnalysis && layoutAnalysis.formatted
+        ? `\n\n[Page layout analysis]\n${String(layoutAnalysis.formatted || "")}`
+        : "";
       message = rawMessage
-        ? `${rawMessage}\n\n[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`
-        : `[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`;
+        ? `${rawMessage}\n\n[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}${layoutCtx}`
+        : `[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}${layoutCtx}`;
       status(`Image enriched: ${detrDetections.length} DETR objects, ${detectedShapes.length} shapes, ${semanticAnalysis.description ? "semantic: " + semanticAnalysis.description : "no semantic tag"}.`);
     } else if (imageB64Upload) {
-      const { chat: imgChat2 } = ensureCurrentChat();
+      const { chat: imgChat2 } = ensureCurrentChat(userId);
       const imgModels2 = getActiveModels(imgChat2);
       const visionOnly = await analyzeUploadedImageWithVision(imageB64Upload, "No DETR data.", rawMessage, imgModels2.vision);
-      message = rawMessage ? `${rawMessage}\n\n[Image vision summary]\n${visionOnly}` : `[Image vision summary]\n${visionOnly}`;
+      const layoutCtx = wantsLayoutAnalysis && layoutAnalysis && layoutAnalysis.formatted
+        ? `\n\n[Page layout analysis]\n${String(layoutAnalysis.formatted || "")}`
+        : "";
+      message = rawMessage ? `${rawMessage}\n\n[Image vision summary]\n${visionOnly}${layoutCtx}` : `[Image vision summary]\n${visionOnly}${layoutCtx}`;
     }
 
     if (!message && !imageB64Upload) {
@@ -74,7 +83,7 @@ async function handleChatRequest(req, res, deps) {
       return;
     }
 
-    const { store, chat } = ensureCurrentChat();
+    const { store, chat } = ensureCurrentChat(userId);
     const activeChat = store.chats.find(item => item.id === chatId);
     if (!activeChat) {
       sendJson(res, 404, { error: "Chat not found" });
@@ -85,7 +94,7 @@ async function handleChatRequest(req, res, deps) {
     const slashModel = command ? resolveSlashModelCommand(command) : null;
     if (slashModel && command) {
       if (slashModel.kind === "reset") {
-        clearRuntimeModelOverride(chatId);
+        clearRuntimeModelOverride(chatId, userId);
         appendChatMessage(chatId, "user", message, { command: command.command });
         appendChatMessage(chatId, "assistant", "Model override cleared. I’ll go back to the chat’s saved models until you set another command.", {
           completed: true,
@@ -111,7 +120,7 @@ async function handleChatRequest(req, res, deps) {
           return;
         }
 
-        setRuntimeModelOverride(chatId, slashModel.modelId);
+        setRuntimeModelOverride(chatId, slashModel.modelId, userId);
         appendChatMessage(chatId, "user", message, { command: command.command });
         appendChatMessage(chatId, "assistant", `Model override set to ${slashModel.modelId}. I’ll keep using it until you start a new task or reset it.`, {
           completed: true,
@@ -126,13 +135,13 @@ async function handleChatRequest(req, res, deps) {
     }
 
     if (getRuntimeModelOverride(activeChat) && looksLikeTaskGoal(message)) {
-      clearRuntimeModelOverride(chatId);
+      clearRuntimeModelOverride(chatId, userId);
     }
 
     appendChatMessage(chatId, "user", message);
     sendJson(res, 202, { ok: true, chatId });
 
-    const models = getActiveModels(chat);
+    const models = getActiveModels(activeChat);
     const routed = await routeGoal(message, getSessionHistory(), models);
 
     if (routed.mode === "chat") {
