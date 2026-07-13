@@ -1040,9 +1040,35 @@ const FRONTEND_HTML = `
         background: rgba(0,0,0,.25); border: 1px solid var(--border);
         border-radius: var(--radius); padding: 10px 12px;
       }
+      .model-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
       .model-card label {
         display: block; font-size: 11px; font-weight: 600; text-transform: uppercase;
-        letter-spacing: .07em; color: var(--muted); margin-bottom: 6px;
+        letter-spacing: .07em; color: var(--muted);
+      }
+      .model-search {
+        width: 100%;
+        background: rgba(0,0,0,.3);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 6px 9px;
+        font-size: 11px;
+        color: var(--text);
+        margin-bottom: 7px;
+      }
+      .model-search:focus { border-color: var(--accent-2); outline: none; }
+      .model-count {
+        font-size: 10px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 1px 7px;
+        line-height: 1.6;
       }
       .toolbar-select {
         width: 100%; background: rgba(0,0,0,.3); border: 1px solid var(--border);
@@ -1214,6 +1240,19 @@ const FRONTEND_HTML = `
                       <div style="flex:1;min-width:0;">
                         <canvas id="detrCanvas" style="max-width:300px;max-height:200px;border:1px solid var(--border);border-radius:4px;display:block;"></canvas>
                         <div id="detrStatus" style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4;"></div>
+                        <div id="layoutAnalysisWrap" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+                          <div id="layoutStatus" style="font-size:11px;color:var(--muted);line-height:1.4;margin-bottom:8px;"></div>
+                          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;">
+                            <div style="min-width:0;">
+                              <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">ASCII Map</div>
+                              <pre id="layoutAscii" style="margin:0;max-height:220px;overflow:auto;padding:8px;border:1px solid var(--border);border-radius:6px;background:#0b1118;color:#c9d7e6;font:11px/1.35 var(--mono);white-space:pre;"></pre>
+                            </div>
+                            <div style="min-width:0;">
+                              <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Structured Key</div>
+                              <pre id="layoutKey" style="margin:0;max-height:220px;overflow:auto;padding:8px;border:1px solid var(--border);border-radius:6px;background:#0b1118;color:#c9d7e6;font:11px/1.35 var(--mono);white-space:pre;"></pre>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                     <div style="display:flex;gap:4px;margin-top:8px;justify-content:flex-end;">
@@ -1257,6 +1296,25 @@ const FRONTEND_HTML = `
             </div>
             <div class="bridge-card">
               <div class="bridge-head">
+                <span class="bridge-title">Vision UI Analysis</span>
+                <button class="ghost-btn" id="analyzeCurrentUiBtn" style="padding:4px 9px;font-size:11px;">Analyze UI</button>
+              </div>
+              <div id="browserVisionStatus" class="bridge-summary">Vision can analyze the current live browser UI on demand.</div>
+              <div id="browserVisionWrap" style="display:none;margin-top:8px;">
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px;">
+                  <div style="min-width:0;">
+                    <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">ASCII Map</div>
+                    <pre id="browserVisionAscii" style="margin:0;max-height:220px;overflow:auto;padding:8px;border:1px solid var(--border);border-radius:6px;background:#0b1118;color:#c9d7e6;font:11px/1.35 var(--mono);white-space:pre;"></pre>
+                  </div>
+                  <div style="min-width:0;">
+                    <div style="font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Structured Key</div>
+                    <pre id="browserVisionKey" style="margin:0;max-height:220px;overflow:auto;padding:8px;border:1px solid var(--border);border-radius:6px;background:#0b1118;color:#c9d7e6;font:11px/1.35 var(--mono);white-space:pre;"></pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="bridge-card">
+              <div class="bridge-head">
                 <span class="bridge-title">Human Bridge</span>
                 <span id="humanBridgeBadge" class="bridge-badge">loading</span>
               </div>
@@ -1286,6 +1344,8 @@ const FRONTEND_HTML = `
         selectedChatId: null,
         memory: [],
         models: { catalog: [], current: {}, defaults: {} },
+        modelParams: { temperature: 0.3 },
+        modelSearch: {},
         runtime: {},
         sending: false,
         eventSource: null,
@@ -1418,6 +1478,11 @@ const FRONTEND_HTML = `
       const browserUrl = document.getElementById("browserUrl");
       const screenshot = document.getElementById("screenshot");
       const browserFrame = document.querySelector(".browser-frame");
+      const analyzeCurrentUiBtn = document.getElementById("analyzeCurrentUiBtn");
+      const browserVisionStatus = document.getElementById("browserVisionStatus");
+      const browserVisionWrap = document.getElementById("browserVisionWrap");
+      const browserVisionAscii = document.getElementById("browserVisionAscii");
+      const browserVisionKey = document.getElementById("browserVisionKey");
       const humanBridgeBadge = document.getElementById("humanBridgeBadge");
       const humanBridgeSummary = document.getElementById("humanBridgeSummary");
       const humanBridgeReason = document.getElementById("humanBridgeReason");
@@ -1441,6 +1506,10 @@ const FRONTEND_HTML = `
       const imagePreviewWrap = document.getElementById("imagePreviewWrap");
       const detrCanvas = document.getElementById("detrCanvas");
       const detrStatus = document.getElementById("detrStatus");
+      const layoutAnalysisWrap = document.getElementById("layoutAnalysisWrap");
+      const layoutStatus = document.getElementById("layoutStatus");
+      const layoutAscii = document.getElementById("layoutAscii");
+      const layoutKey = document.getElementById("layoutKey");
 
       function resolveInitialViewFromUrl() {
         try {
@@ -1968,6 +2037,7 @@ const FRONTEND_HTML = `
           const key = messageKey(chat.id, index, message);
           const fullContent = String(message.content || "");
           const isUser = message.role === "user";
+          const generatedImage = message && message.generatedImage ? message.generatedImage : null;
           let renderedContent = fullContent;
           let typingCaret = "";
           let contentHtml = "";
@@ -1987,12 +2057,22 @@ const FRONTEND_HTML = `
           } else {
             contentHtml = renderRichText(renderedContent);
           }
+          const imageHtml = generatedImage
+            ? '<div class="message-attachment">' +
+                (generatedImage.b64
+                  ? '<img alt="Generated image" style="margin-top:10px;max-width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);" src="data:' + escapeHtml(generatedImage.mimeType || 'image/png') + ';base64,' + generatedImage.b64 + '">' 
+                  : (generatedImage.url
+                    ? '<img alt="Generated image" style="margin-top:10px;max-width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);" src="' + escapeHtml(generatedImage.url) + '">' 
+                    : '')) +
+                '<div class="message-meta" style="margin-top:6px;">' + escapeHtml((generatedImage.model || '').split('/').pop() || generatedImage.model || '') + '</div>' +
+              '</div>'
+            : '';
           const avatarLabel = isUser ? "Y" : "✦";
           return '<article class="message-card">' +
             '<div class="msg-avatar ' + escapeHtml(message.role) + '">' + avatarLabel + '</div>' +
             '<div class="msg-body">' +
               '<div class="msg-meta"><span class="msg-role ' + escapeHtml(message.role) + '">' + escapeHtml(isUser ? "You" : "Puppeterr") + '</span><span class="message-meta">' + escapeHtml(prettyTime(message.ts)) + '</span></div>' +
-              '<div class="message-content">' + contentHtml + typingCaret + '</div>' +
+              '<div class="message-content">' + contentHtml + typingCaret + imageHtml + '</div>' +
             '</div>' +
           '</article>';
         });
@@ -2070,8 +2150,35 @@ const FRONTEND_HTML = `
         return values;
       }
 
+      function modelProvider(item) {
+        const id = String((item && item.id) || "");
+        if (!id.startsWith("@")) return "custom";
+        const parts = id.slice(1).split("/");
+        return parts[0] || "custom";
+      }
+
+      function modelOptionLabel(item) {
+        const base = String((item && (item.name || item.id)) || "");
+        const provider = modelProvider(item);
+        return provider === "custom" ? base : (base + " · " + provider);
+      }
+
+      function filterModelsByQuery(items, query) {
+        const needle = String(query || "").trim().toLowerCase();
+        if (!needle) return items;
+        return items.filter(function(item) {
+          const haystack = [item && item.id, item && item.name, modelProvider(item)]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(needle);
+        });
+      }
+
       function renderModels() {
         const current = state.models.current || {};
+        const modelParams = state.modelParams || { temperature: 0.3 };
+        const currentTemperature = Number.isFinite(Number(modelParams.temperature)) ? Number(modelParams.temperature) : 0.3;
         const roles = [
           { key: "router", label: "Router" },
           { key: "planner", label: "Planner" },
@@ -2079,12 +2186,26 @@ const FRONTEND_HTML = `
           { key: "vision", label: "Vision" }
         ];
         modelGrid.innerHTML = roles.map(function(role) {
-          const options = selectOptionsForCurrent(current[role.key]).map(function(item) {
+          const roleQuery = String((state.modelSearch && state.modelSearch[role.key]) || "");
+          const allOptions = selectOptionsForCurrent(current[role.key]);
+          const filteredOptions = filterModelsByQuery(allOptions, roleQuery);
+          const visibleOptions = filteredOptions.length ? filteredOptions : allOptions;
+          const options = visibleOptions.map(function(item) {
             const selected = item.id === current[role.key] ? "selected" : "";
-            return '<option value="' + escapeHtml(item.id) + '" ' + selected + '>' + escapeHtml(item.name || item.id) + '</option>';
+            return '<option value="' + escapeHtml(item.id) + '" ' + selected + '>' + escapeHtml(modelOptionLabel(item)) + '</option>';
           }).join("");
-          return '<div class="model-card"><label for="model-' + escapeHtml(role.key) + '">' + escapeHtml(role.label) + '</label><select class="toolbar-select" id="model-' + escapeHtml(role.key) + '" data-role="' + escapeHtml(role.key) + '">' + options + '</select><div class="model-id">' + escapeHtml(current[role.key] || "") + '</div></div>';
-        }).join("");
+          return '<div class="model-card"><div class="model-card-head"><label for="model-' + escapeHtml(role.key) + '">' + escapeHtml(role.label) + '</label><span class="model-count">' + escapeHtml(String(visibleOptions.length)) + '</span></div><input class="model-search" type="text" data-role-search="' + escapeHtml(role.key) + '" value="' + escapeHtml(roleQuery) + '" placeholder="Search by name, id, or provider"><select class="toolbar-select" id="model-' + escapeHtml(role.key) + '" data-role="' + escapeHtml(role.key) + '">' + options + '</select><div class="model-id">' + escapeHtml(current[role.key] || "") + '</div></div>';
+        }).join("") + '<div class="model-card"><label for="model-temperature">Temperature</label><input class="toolbar-range" id="model-temperature" type="range" min="0" max="2" step="0.05" value="' + escapeHtml(currentTemperature.toFixed(2)) + '"><div class="model-id" id="model-temperature-value">' + escapeHtml(currentTemperature.toFixed(2)) + '</div></div>';
+        Array.from(modelGrid.querySelectorAll("[data-role-search]")).forEach(function(input) {
+          input.addEventListener("input", function() {
+            var role = input.getAttribute("data-role-search");
+            if (!state.modelSearch || typeof state.modelSearch !== "object") {
+              state.modelSearch = {};
+            }
+            state.modelSearch[role] = String(input.value || "").slice(0, 80);
+            renderModels();
+          });
+        });
         Array.from(modelGrid.querySelectorAll("[data-role]")).forEach(function(select) {
           select.addEventListener("change", async function() {
             if (!state.currentChat) return;
@@ -2093,9 +2214,10 @@ const FRONTEND_HTML = `
             try {
               const payload = await request("/api/chats/" + encodeURIComponent(state.currentChat.id) + "/models", {
                 method: "POST",
-                body: { models: nextModels }
+                body: { models: nextModels, params: state.modelParams || { temperature: 0.3 } }
               });
               state.models.current = payload.current;
+              state.modelParams = payload.modelParams || state.modelParams;
               state.currentChat = payload.chat;
               renderModels();
               renderTimeline();
@@ -2105,6 +2227,33 @@ const FRONTEND_HTML = `
             }
           });
         });
+        var temperatureInput = document.getElementById("model-temperature");
+        var temperatureValue = document.getElementById("model-temperature-value");
+        if (temperatureInput && temperatureValue) {
+          var syncTemperatureLabel = function() {
+            temperatureValue.textContent = Number(temperatureInput.value || 0.3).toFixed(2);
+          };
+          temperatureInput.addEventListener("input", syncTemperatureLabel);
+          temperatureInput.addEventListener("change", async function() {
+            if (!state.currentChat) return;
+            var nextParams = Object.assign({}, state.modelParams || {});
+            nextParams.temperature = Number(temperatureInput.value || 0.3);
+            try {
+              const payload = await request("/api/chats/" + encodeURIComponent(state.currentChat.id) + "/models", {
+                method: "POST",
+                body: { models: state.models.current || {}, params: nextParams }
+              });
+              state.models.current = payload.current;
+              state.modelParams = payload.modelParams || nextParams;
+              state.currentChat = payload.chat;
+              syncTemperatureLabel();
+              addRuntimeEvent("status", "Updated model temperature to " + Number((state.modelParams || {}).temperature || nextParams.temperature || 0.3).toFixed(2) + ".");
+            } catch (error) {
+              addRuntimeEvent("error", error.message);
+            }
+          });
+          syncTemperatureLabel();
+        }
       }
 
       function syncConnectionUI(connected) {
@@ -2136,6 +2285,7 @@ const FRONTEND_HTML = `
         state.selectedChatId = data.selectedChatId || (data.currentChat && data.currentChat.id) || null;
         state.memory = data.memory || [];
         state.models = data.models || state.models;
+        state.modelParams = data.modelParams || state.modelParams;
         state.browserUrl = data.browser && data.browser.url ? data.browser.url : state.browserUrl;
         const username = data.username || (state.session && state.session.username) || "-";
         currentUser.textContent = username;
@@ -2246,6 +2396,7 @@ const FRONTEND_HTML = `
             body.detrDetections = state.pendingImage.detections || [];
             body.detectedShapes = state.pendingImage.shapes || [];
             body.semanticAnalysis = state.pendingImage.semantic || {};
+            body.layoutAnalysis = state.pendingImage.layout || null;
           }
           try {
             await request("/chat", { method: "POST", body });
@@ -2589,6 +2740,37 @@ const FRONTEND_HTML = `
         } catch {}
       }
 
+      async function analyzeCurrentUi() {
+        if (!analyzeCurrentUiBtn || !browserVisionStatus) return;
+        analyzeCurrentUiBtn.disabled = true;
+        browserVisionStatus.textContent = "Vision is analyzing the current UI…";
+        if (browserVisionWrap) browserVisionWrap.style.display = "none";
+        if (browserVisionAscii) browserVisionAscii.textContent = "";
+        if (browserVisionKey) browserVisionKey.textContent = "";
+        try {
+          const payload = await request("/api/analyze-current-ui", {
+            method: "POST",
+            body: {
+              prompt: "Analyze the current browser UI and produce an ASCII page map plus structured key."
+            }
+          });
+          const analysis = payload && payload.analysis ? payload.analysis : null;
+          if (!analysis || !analysis.key) throw new Error("No layout analysis returned");
+          if (browserVisionWrap) browserVisionWrap.style.display = "block";
+          if (browserVisionStatus) {
+            const count = analysis.key && Array.isArray(analysis.key.elements) ? analysis.key.elements.length : 0;
+            browserVisionStatus.textContent = "Vision analyzed the live UI: " + count + " element" + (count === 1 ? "" : "s") + " detected.";
+          }
+          if (browserVisionAscii) browserVisionAscii.textContent = String(analysis.asciiMap || "");
+          if (browserVisionKey) browserVisionKey.textContent = JSON.stringify(analysis.key || {}, null, 2);
+        } catch (error) {
+          browserVisionStatus.textContent = "UI analysis failed: " + error.message;
+          if (browserVisionWrap) browserVisionWrap.style.display = "none";
+        } finally {
+          analyzeCurrentUiBtn.disabled = false;
+        }
+      }
+
       async function initializeApp() {
         state.session = await request("/auth/session");
         if (!state.session.authenticated) {
@@ -2740,28 +2922,44 @@ const FRONTEND_HTML = `
         });
         if (!imageB64) return;
 
-        detrStatus.textContent = "Running analysis (DETR + Shapes + ViT)\u2026";
+        detrStatus.textContent = "Running analysis (DETR + Shapes + Layout)…";
         imagePreviewWrap.style.display = "block";
+        if (layoutAnalysisWrap) layoutAnalysisWrap.style.display = "none";
+        if (layoutStatus) layoutStatus.textContent = "Detecting layout geometry…";
+        if (layoutAscii) layoutAscii.textContent = "";
+        if (layoutKey) layoutKey.textContent = "";
 
         const img = new Image();
         await new Promise(function(resolve, reject) {
           img.onload  = resolve; img.onerror = reject;
           img.src = "data:image/jpeg;base64," + imageB64;
         });
+        const previewImg = document.getElementById("previewImg");
+        if (previewImg) previewImg.src = "data:" + (file.type || "image/jpeg") + ";base64," + imageB64;
         detrCanvas.width  = img.naturalWidth  || 640;
         detrCanvas.height = img.naturalHeight || 480;
         detrCanvas.getContext("2d").drawImage(img, 0, 0);
 
         try {
-          // Run DETR object detection and shape/semantic analysis in parallel
-          const [detrResult, shapeResult] = await Promise.all([
+          // Run DETR object detection, shape analysis, and page-layout mapping in parallel
+          const [detrResult, shapeResult, layoutResult] = await Promise.all([
             request("/api/analyze-image", { method: "POST", body: { imageB64: imageB64 } }).catch(e => ({ detections: [], error: e.message })),
-            request("/api/analyze-shapes", { method: "POST", body: { imageB64: imageB64 } }).catch(e => ({ analysis: { shapes: [], semantic: { error: e.message } } }))
+            request("/api/analyze-shapes", { method: "POST", body: { imageB64: imageB64 } }).catch(e => ({ analysis: { shapes: [], semantic: { error: e.message } } })),
+            request("/api/analyze-layout", {
+              method: "POST",
+              body: {
+                imageB64: imageB64,
+                imageMimeType: file.type || "image/jpeg",
+                imageFileName: file.name || "image.jpg",
+                prompt: "Analyze this webpage screenshot and produce an ASCII page map plus structured element key."
+              }
+            }).catch(e => ({ error: e.message }))
           ]);
 
           const detections = Array.isArray(detrResult.detections) ? detrResult.detections : [];
           const shapes = shapeResult.analysis && Array.isArray(shapeResult.analysis.shapes) ? shapeResult.analysis.shapes : [];
           const semantic = shapeResult.analysis && shapeResult.analysis.semantic ? shapeResult.analysis.semantic : {};
+          const layoutAnalysis = layoutResult && layoutResult.analysis && layoutResult.analysis.key ? layoutResult.analysis : null;
 
           const annotatedDataUrl = drawDetrDetections(detrCanvas, img, detections);
           state.pendingImage = {
@@ -2770,6 +2968,7 @@ const FRONTEND_HTML = `
             detections: detections,
             shapes: shapes,
             semantic: semantic,
+            layout: layoutAnalysis,
             filename: file.name || "image.jpg"
           };
 
@@ -2783,10 +2982,24 @@ const FRONTEND_HTML = `
             ? detrCount + " object" + (detrCount !== 1 ? "s" : "") + " detected: " + topLabels + (detections.length > 3 ? "\u2026" : "") + shapesText + semanticText
             : "No DETR objects." + shapesText + semanticText + " Image attached.";
 
+          if (layoutAnalysis && layoutAnalysisWrap && layoutAscii && layoutKey && layoutStatus) {
+            layoutAnalysisWrap.style.display = "block";
+            layoutStatus.textContent = "Layout map ready: " + ((layoutAnalysis.key && layoutAnalysis.key.elements && layoutAnalysis.key.elements.length) || 0) + " elements detected.";
+            layoutAscii.textContent = String(layoutAnalysis.asciiMap || "");
+            layoutKey.textContent = JSON.stringify(layoutAnalysis.key || {}, null, 2);
+          } else if (layoutAnalysisWrap && layoutStatus) {
+            layoutAnalysisWrap.style.display = "block";
+            layoutStatus.textContent = layoutResult && layoutResult.error ? "Layout analysis unavailable: " + layoutResult.error : "Layout analysis unavailable.";
+          }
+
           addRuntimeEvent("status", "Hybrid analysis: " + detrCount + " DETR, " + shapeCount + " shapes, semantic tag on \\"" + (file.name || "image") + "\\".");
         } catch (err) {
-          state.pendingImage = { original: imageB64, annotated: imageB64, detections: [], shapes: [], semantic: {}, filename: file.name || "image.jpg" };
+          state.pendingImage = { original: imageB64, annotated: imageB64, detections: [], shapes: [], semantic: {}, layout: null, filename: file.name || "image.jpg" };
           detrStatus.textContent = "Analysis unavailable \u2014 image attached without annotations.";
+          if (layoutAnalysisWrap) layoutAnalysisWrap.style.display = "none";
+          if (layoutStatus) layoutStatus.textContent = "";
+          if (layoutAscii) layoutAscii.textContent = "";
+          if (layoutKey) layoutKey.textContent = "";
         }
       }
 
@@ -2805,7 +3018,14 @@ const FRONTEND_HTML = `
         clearImageBtn.addEventListener("click", function() {
           state.pendingImage = null;
           if (imagePreviewWrap) imagePreviewWrap.style.display = "none";
+          if (layoutAnalysisWrap) layoutAnalysisWrap.style.display = "none";
+          if (layoutStatus) layoutStatus.textContent = "";
+          if (layoutAscii) layoutAscii.textContent = "";
+          if (layoutKey) layoutKey.textContent = "";
         });
+      }
+      if (analyzeCurrentUiBtn) {
+        analyzeCurrentUiBtn.addEventListener("click", analyzeCurrentUi);
       }
 
       boot();

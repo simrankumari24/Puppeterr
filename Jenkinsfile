@@ -1,0 +1,61 @@
+pipeline {
+    agent any
+
+    environment {
+        CF_API_TOKEN = credentials('CF_API_TOKEN')
+        CF_ACCOUNT_ID = credentials('CF_ACCOUNT_ID')
+    }
+
+    stages {
+
+        stage('Install Chromium') {
+            steps {
+                bat '''
+                npx playwright install chromium
+                '''
+            }
+        }
+
+        stage('Install Playwright Dependencies') {
+            steps {
+                bat '''
+                npx playwright install-deps
+                '''
+            }
+        }
+
+        stage('Install Node Dependencies') {
+            steps {
+                bat '''
+                npm ci
+                '''
+            }
+        }
+
+        stage('Run Puppeterr Agent') {
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    timeout(time: 60, unit: 'MINUTES') {
+                        bat '''
+                        set CF_API_TOKEN=%CF_API_TOKEN%
+                        set CF_ACCOUNT_ID=%CF_ACCOUNT_ID%
+                        node agent.js
+                        echo done
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        aborted {
+            echo "Timeout aborted the build — forcing SUCCESS."
+            script { currentBuild.result = 'SUCCESS' }
+        }
+        failure {
+            echo "Build failed — forcing SUCCESS."
+            script { currentBuild.result = 'SUCCESS' }
+        }
+    }
+}

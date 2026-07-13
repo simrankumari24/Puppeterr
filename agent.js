@@ -170,8 +170,14 @@ const SUPERVISOR_MODE = String(process.env.SUPERVISOR_MODE || "enforce").toLower
 const SUPERVISOR_BLOCK_SCORE = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_BLOCK_SCORE || 0.52)));
 const SUPERVISOR_WARN_SCORE = Math.max(SUPERVISOR_BLOCK_SCORE, Math.min(0.98, Number(process.env.SUPERVISOR_WARN_SCORE || 0.67)));
 const SUPERVISOR_ACTION_BLOCK_RISK = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_ACTION_BLOCK_RISK || 0.72)));
+const SUPERVISOR_ROUTE_FAIL_TTL_MS = Math.max(5000, Number(process.env.SUPERVISOR_ROUTE_FAIL_TTL_MS || 90000));
+const SUPERVISOR_DECISION_CACHE_TTL_MS = Math.max(500, Number(process.env.SUPERVISOR_DECISION_CACHE_TTL_MS || 4000));
+const SUPERVISOR_DECISION_CACHE_MAX = Math.max(8, Number(process.env.SUPERVISOR_DECISION_CACHE_MAX || 64));
 const DYNAMIC_UI_CHANGED_FRAME_THRESHOLD = Math.max(4, Number(process.env.DYNAMIC_UI_CHANGED_FRAME_THRESHOLD || 8));
 const DYNAMIC_UI_CHANGE_RATIO = Math.max(1, Number(process.env.DYNAMIC_UI_CHANGE_RATIO || 1.5));
+const ESCAPE_MAX_CONSECUTIVE_FAILURES = 3;
+const ESCAPE_STEP_TIMEOUT_MS = 20000;
+const ESCAPE_DYNAMIC_STREAK_LIMIT = 3;
 const IDLE_HUMAN_IDLE_MIN_MS = Number(process.env.IDLE_HUMAN_IDLE_MIN_MS || 2500);
 const IDLE_HUMAN_IDLE_MAX_MS = Number(process.env.IDLE_HUMAN_IDLE_MAX_MS || 7000);
 const IDLE_HUMAN_SCHEDULE_FLOOR_MS = Math.max(120, Number(process.env.IDLE_HUMAN_SCHEDULE_FLOOR_MS || 180));
@@ -191,14 +197,17 @@ const MAX_PLANNER_HISTORY_MESSAGES = 15; // system + last X turns
 const fetchImpl = globalThis.fetch || undiciFetch;
 
 const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
+const ROUTER_LOCK_MODEL = String(process.env.ROUTER_LOCK_MODEL || "false").toLowerCase() === "true";
+const ROUTER_THINKING_DEFAULT = String(process.env.ROUTER_THINKING_DEFAULT || "true").toLowerCase() !== "false";
 const DEFAULT_MODELS = {
   // Internal Cloudflare IDs (for example @alibaba/...) are supported via env
   // overrides and catalog resolution. These are only generic starting defaults.
   router: process.env.DEFAULT_ROUTER_MODEL || "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-  planner: process.env.DEFAULT_PLANNER_MODEL || "@cf/nvidia/nemotron-3-120b-a12b",
+  planner: process.env.DEFAULT_PLANNER_MODEL || "@cf/moonshotai/kimi-k2.7-code",
   reasoner: process.env.DEFAULT_REASONER_MODEL || "@anthropic/claude-sonnet-4.6",
   vision: process.env.DEFAULT_VISION_MODEL || "@cf/meta/llama-3.2-11b-vision-instruct"
 };
+const SUPERVISOR_MODEL = String(process.env.SUPERVISOR_MODEL || process.env.DEFAULT_SUPERVISOR_MODEL || "").trim();
 
 function isVisionLikeModel(model = {}) {
   const text = [model.id, model.name, model.type, ...(Array.isArray(model.capabilities) ? model.capabilities : [])]
@@ -222,7 +231,7 @@ function pickModelId(catalog, preferredIds, wantVision) {
 
 function resolveDefaultModels(catalog) {
   const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], true) || DEFAULT_MODELS.router;
-  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/nvidia/nemotron-3-120b-a12b", router], false) || router;
+  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/moonshotai/kimi-k2.7-code", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
   return { router, planner, reasoner, vision };
@@ -239,17 +248,188 @@ function sanitizeModels(models, catalog) {
   return merged;
 }
 
+const ROUTER_TASK_PROFILES = {
+  image_analysis: {
+    intent: ["analyze image", "describe image", "what is in this image", "image analysis", "inspect image"],
+    capability: ["vision", "multimodal", "image understanding", "image analysis", "image"]
+  },
+  video_analysis: {
+    intent: ["analyze video", "video analysis", "what is in this video", "inspect video"],
+    capability: ["video", "video understanding", "multimodal", "vision"]
+  },
+  screenshot_analysis: {
+    intent: ["analyze screenshot", "screenshot", "screen capture", "screen analysis"],
+    capability: ["vision", "multimodal", "image analysis", "image"]
+  },
+  general_media: {
+    intent: ["analyze attachment", "analyze media", "uploaded media", "attached file"],
+    capability: ["multimodal", "vision", "media"]
+  },
+  image_generation: {
+    intent: ["generate image", "make a picture", "render art", "poster", "logo", "illustration", "text-to-image", "image gen", "create image"],
+    capability: ["image generation", "text-to-image", "image-gen", "sdxl", "flux", "dall", "stable diffusion"]
+  },
+  browser_control: {
+    intent: ["click", "scroll", "open tab", "navigate", "search this page", "fill", "submit", "go to"],
+    capability: ["browser control", "browser automation", "agentic", "tool use", "actions", "navigation"]
+  },
+  deep_reasoning: {
+    intent: ["analysis", "plan", "multi-step", "reason", "logic", "evaluate", "strategy", "compare"],
+    capability: ["reasoning", "deep reasoning", "analysis", "planning", "chain of thought", "multistep"]
+  },
+  extraction: {
+    intent: ["extract", "structured", "json", "list", "parse", "schema", "fields", "table"],
+    capability: ["structured output", "json", "extraction", "parser", "information extraction"]
+  },
+  audio: {
+    intent: ["generate audio", "voice", "sound", "speech", "tts", "text to audio"],
+    capability: ["text-to-audio", "audio generation", "speech synthesis", "voice", "tts"]
+  },
+  video: {
+    intent: ["generate video", "animate", "clip", "text-to-video", "video generation"],
+    capability: ["text-to-video", "video generation", "animation", "video"]
+  },
+  code: {
+    intent: ["write code", "fix code", "explain code", "debug", "refactor", "function", "script"],
+    capability: ["code generation", "coding", "debugging", "programming", "code assistant"]
+  },
+  general: {
+    intent: [],
+    capability: ["assistant", "general", "chat", "instruction"]
+  }
+};
+
+function classifyRouterTaskType(goalText, routeContext = {}) {
+  const explicitMediaType = String(routeContext?.mediaTaskType || "").trim();
+  if (explicitMediaType && ROUTER_TASK_PROFILES[explicitMediaType]) {
+    return explicitMediaType;
+  }
+
+  const mediaList = Array.isArray(routeContext?.media) ? routeContext.media : [];
+  if (mediaList.length) {
+    if (mediaList.some(item => String(item?.mediaType || "") === "video")) return "video_analysis";
+    if (mediaList.some(item => String(item?.kind || "").includes("screenshot"))) return "screenshot_analysis";
+    if (mediaList.some(item => String(item?.mediaType || "") === "image")) return "image_analysis";
+    return "general_media";
+  }
+
+  const goal = String(goalText || "").toLowerCase();
+  const order = ["image_analysis", "video_analysis", "screenshot_analysis", "general_media", "image_generation", "audio", "video", "code", "extraction", "browser_control", "deep_reasoning"];
+  for (const key of order) {
+    const profile = ROUTER_TASK_PROFILES[key];
+    if (profile.intent.some(keyword => goal.includes(keyword))) {
+      return key;
+    }
+  }
+  return "general";
+}
+
+function flattenModelSignals(model) {
+  const capabilities = Array.isArray(model?.capabilities) ? model.capabilities : [];
+  const tags = Array.isArray(model?.tags) ? model.tags : [];
+  const description = String(model?.description || "");
+  const type = String(model?.type || "");
+  const metadata = model?.metadata && typeof model.metadata === "object"
+    ? JSON.stringify(model.metadata)
+    : String(model?.metadata || "");
+  return [type, description, metadata, ...capabilities, ...tags]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function extractReliabilityScore(model) {
+  const metadata = model?.metadata && typeof model.metadata === "object" ? model.metadata : {};
+  const numericFields = [metadata.reliability, metadata.score, metadata.quality, metadata.successRate, metadata.uptime]
+    .map(value => Number(value))
+    .filter(Number.isFinite);
+  if (numericFields.length) {
+    const average = numericFields.reduce((sum, n) => sum + n, 0) / numericFields.length;
+    return average > 1 ? Math.max(0, Math.min(1, average / 100)) : Math.max(0, Math.min(1, average));
+  }
+
+  const statusText = flattenModelSignals(model);
+  if (/production|stable|ga\b|reliable/.test(statusText)) return 0.82;
+  if (/preview|beta|experimental|alpha/.test(statusText)) return 0.42;
+  return 0.58;
+}
+
+function scoreModelForTask(model, taskType, baselineModelId) {
+  const profile = ROUTER_TASK_PROFILES[taskType] || ROUTER_TASK_PROFILES.general;
+  const signalText = flattenModelSignals(model);
+  const capabilityHits = profile.capability.filter(keyword => signalText.includes(keyword)).length;
+  const capabilityScore = profile.capability.length ? capabilityHits / profile.capability.length : 0;
+  const specificity = Math.max(0, Math.min(1, capabilityHits / 3));
+  const reliability = extractReliabilityScore(model);
+  const fallbackStrength = model?.id === baselineModelId ? 1 : (/assistant|general|reasoning|instruct|chat/.test(signalText) ? 0.7 : 0.35);
+  const total = capabilityScore * 0.56 + reliability * 0.2 + specificity * 0.16 + fallbackStrength * 0.08;
+  return {
+    total,
+    capabilityScore,
+    reliability,
+    specificity,
+    fallbackStrength,
+    reason: `cap=${capabilityScore.toFixed(2)} rel=${reliability.toFixed(2)} spec=${specificity.toFixed(2)} fb=${fallbackStrength.toFixed(2)}`
+  };
+}
+
+function pickBestRouterModelForTask(taskType, baselineModelId, catalog, failedSet) {
+  if (ROUTER_LOCK_MODEL) {
+    return {
+      modelToUse: baselineModelId,
+      reason: `router lock enabled; using baseline router for ${taskType}`,
+      swapped: false
+    };
+  }
+  const models = Array.isArray(catalog) ? catalog : [];
+  const blocked = failedSet instanceof Set ? failedSet : new Set();
+  const scored = [];
+
+  for (const model of models) {
+    const modelId = String(model?.id || "");
+    if (!modelId || blocked.has(modelId)) continue;
+    const score = scoreModelForTask(model, taskType, baselineModelId);
+    scored.push({ modelId, score });
+  }
+
+  scored.sort((a, b) => b.score.total - a.score.total);
+  const best = scored[0];
+  if (best && best.score.capabilityScore >= 0.92) {
+    return {
+      modelToUse: best.modelId,
+      reason: `perfect capability match for ${taskType}; ${best.score.reason}`,
+      swapped: best.modelId !== baselineModelId
+    };
+  }
+  if (best && best.score.capabilityScore >= 0.45) {
+    return {
+      modelToUse: best.modelId,
+      reason: `strong partial capability match for ${taskType}; ${best.score.reason}`,
+      swapped: best.modelId !== baselineModelId
+    };
+  }
+  return {
+    modelToUse: baselineModelId,
+    reason: `no adequate capability match for ${taskType}; using baseline router`,
+    swapped: false
+  };
+}
+
 let browser, context, page;
 let sessionHistory  = [];
 let agentRunning    = false;
 let currentTaskUserId = null; // tracks which user triggered the active task
 let modelCatalogCache = { expiresAt: 0, items: [] };
+let routerTaskTypeFailures = new Map(); // runtime-only model failures by task type
 let learningLogCache = null;
 let screenshotCaptureQueue = Promise.resolve();
 let bridgeVisionTimer = null;
 let bridgeVisionInFlight = false;
 let bridgeVisionClearStreak = 0;
 let bridgeVisionModelId = DEFAULT_MODELS.vision;
+let lastSupervisorFallbackWarning = "";
+let supervisorRouteFailCache = new Map();
+let supervisorDecisionCache = new Map();
 let idleHumanTimer = null;
 let idleHumanInFlight = false;
 let lastExecutorWorkAt = 0;
@@ -1029,6 +1209,21 @@ async function signupUser({ email, password }) {
   return safeUser;
 }
 
+function clampTemperature(value, fallback = 0.3) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(2, n));
+}
+
+function clampOptionalBoolean(value, fallback) {
+  if (value === undefined || value === null) return !!fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return !!fallback;
+}
+
 function createChatRecord(title = "New Chat") {
   const now = new Date().toISOString();
   return {
@@ -1037,6 +1232,7 @@ function createChatRecord(title = "New Chat") {
     createdAt: now,
     updatedAt: now,
     models: { ...resolveDefaultModels(modelCatalogCache.items) },
+    modelParams: { temperature: 0.3, routerThinking: ROUTER_THINKING_DEFAULT },
     messages: []
   };
 }
@@ -1213,11 +1409,133 @@ function applyRuntimeModelOverride(models, chat) {
 function parseSlashCommand(message) {
   const raw = String(message || "").trim();
   if (!raw.startsWith("/")) return null;
-  const [command, ...rest] = raw.slice(1).split(/\s+/);
-  return { command: normalizeCommandKey(command), args: rest.join(" ").trim() };
+  const rawBody = raw.slice(1).trim();
+  if (!rawBody) return null;
+
+  const firstSpace = rawBody.search(/\s/);
+  const commandToken = firstSpace === -1 ? rawBody : rawBody.slice(0, firstSpace);
+  const rawArgs = firstSpace === -1 ? "" : rawBody.slice(firstSpace + 1).trim();
+  const tokens = [];
+  const re = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|(\S+)/g;
+  let match;
+  while ((match = re.exec(rawArgs)) !== null) {
+    const token = match[1] ?? match[2] ?? match[3] ?? "";
+    tokens.push(String(token).replace(/\\(["'\\])/g, "$1"));
+  }
+
+  const positionals = [];
+  const options = {};
+  const flags = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (/^--[a-z0-9][a-z0-9_-]*=/i.test(token)) {
+      const eqIndex = token.indexOf("=");
+      const key = normalizeCommandKey(token.slice(2, eqIndex));
+      options[key] = token.slice(eqIndex + 1);
+      continue;
+    }
+    if (/^--[a-z0-9][a-z0-9_-]*$/i.test(token)) {
+      const key = normalizeCommandKey(token.slice(2));
+      const next = tokens[i + 1];
+      if (next && !/^-{1,2}[a-z0-9]/i.test(next)) {
+        options[key] = next;
+        i += 1;
+      } else {
+        options[key] = true;
+        flags.push(key);
+      }
+      continue;
+    }
+    if (/^-[a-z]+$/i.test(token)) {
+      const shortFlags = token.slice(1).split("");
+      for (const shortFlag of shortFlags) {
+        const key = normalizeCommandKey(shortFlag);
+        options[key] = true;
+        flags.push(key);
+      }
+      continue;
+    }
+    positionals.push(token);
+  }
+
+  return {
+    command: normalizeCommandKey(commandToken),
+    args: rawArgs,
+    raw: raw,
+    tokens,
+    positionals,
+    options,
+    flags
+  };
+}
+
+function resolveExplicitSlashAction(command) {
+  const cmd = normalizeCommandKey(command?.command);
+  if (!cmd) return { kind: "unknown" };
+  if (["browser", "browse", "web"].includes(cmd)) return { kind: "browser" };
+  if (["image", "img", "paint", "draw"].includes(cmd)) return { kind: "image" };
+  if (["help", "commands"].includes(cmd)) return { kind: "help" };
+  return { kind: "unknown" };
+}
+
+function buildBrowserCommandGoal(command, enrichedMessage = "") {
+  const options = command?.options || {};
+  const positionals = Array.isArray(command?.positionals) ? command.positionals : [];
+  const promptParts = [];
+  const mainPrompt = [options.task, options.goal, options.prompt, options.query, positionals.join(" ")]
+    .map(value => String(value || "").trim())
+    .find(Boolean);
+  if (mainPrompt) promptParts.push(mainPrompt);
+  if (options.url) promptParts.push(`Start at URL: ${String(options.url).trim()}`);
+  if (options.site) promptParts.push(`Preferred site: ${String(options.site).trim()}`);
+  if (options.tab) promptParts.push(`Use tab: ${String(options.tab).trim()}`);
+  const knownKeys = new Set(["task", "goal", "prompt", "query", "url", "site", "tab"]);
+  const extraOptions = Object.entries(options)
+    .filter(([key, value]) => !knownKeys.has(key) && value !== true)
+    .map(([key, value]) => `${key}: ${String(value).trim()}`);
+  if (extraOptions.length) promptParts.push(`Constraints:\n${extraOptions.join("\n")}`);
+  if (enrichedMessage && !String(enrichedMessage).startsWith(String(command?.raw || ""))) {
+    promptParts.push(String(enrichedMessage).trim());
+  }
+  return promptParts.join("\n\n").trim();
+}
+
+function buildImageCommandPrompt(command) {
+  const options = command?.options || {};
+  const positionals = Array.isArray(command?.positionals) ? command.positionals : [];
+  const mainPrompt = [options.prompt, options.subject, options.idea, positionals.join(" ")]
+    .map(value => String(value || "").trim())
+    .find(Boolean);
+  if (!mainPrompt) return "";
+  const promptParts = [mainPrompt];
+  const decorativeKeys = ["style", "size", "aspect", "ratio", "quality", "lighting", "camera", "palette", "seed", "negative"];
+  for (const key of decorativeKeys) {
+    const value = options[key];
+    if (value === undefined || value === true || value === false || value === "") continue;
+    if (key === "negative") {
+      promptParts.push(`Negative prompt: ${String(value).trim()}`);
+    } else {
+      promptParts.push(`${key}: ${String(value).trim()}`);
+    }
+  }
+  return promptParts.join("\n");
+}
+
+function buildSlashHelpText() {
+  return [
+    "Available slash commands:",
+    "/browser <task> [--url <url>] [--site <domain>] [--goal <text>]",
+    "/image <prompt> [--style <style>] [--size <size>] [--aspect <ratio>] [--negative <text>]",
+    "/model <model name or id>",
+    "/reset"
+  ].join("\n");
 }
 
 function resolveSlashModelCommand(command) {
+  const reservedCommands = new Set(["browser", "browse", "web", "image", "img", "paint", "draw", "help", "commands"]);
+  if (reservedCommands.has(normalizeCommandKey(command?.command))) {
+    return null;
+  }
   const modelQuery = [command?.command, command?.args].filter(Boolean).join(" ").trim();
   if (!modelQuery) return { kind: "unknown" };
 
@@ -1256,11 +1574,19 @@ function appendChatMessage(chatId, role, content, meta = {}, userId = currentTas
   return chat;
 }
 
-function updateChatModels(chatId, models, userId) {
+function updateChatModels(chatId, models, userId, params) {
   const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
   chat.models = sanitizeModels({ ...(chat.models || {}), ...(models || {}) }, modelCatalogCache.items);
+  if (params && typeof params === "object") {
+    const currentParams = chat.modelParams || { temperature: 0.3, routerThinking: ROUTER_THINKING_DEFAULT };
+    chat.modelParams = {
+      ...currentParams,
+      ...(params.temperature !== undefined ? { temperature: clampTemperature(params.temperature, currentParams.temperature) } : {}),
+      ...(params.routerThinking !== undefined ? { routerThinking: clampOptionalBoolean(params.routerThinking, currentParams.routerThinking) } : {})
+    };
+  }
   chat.updatedAt = new Date().toISOString();
   saveChatStore(store, userId);
   syncSessionHistory(chat);
@@ -1269,6 +1595,31 @@ function updateChatModels(chatId, models, userId) {
 
 function getActiveModels(chat) {
   return applyRuntimeModelOverride(chat?.models || {}, chat);
+}
+
+function getActiveModelParams(chat) {
+  return {
+    temperature: clampTemperature(chat?.modelParams?.temperature, 0.3),
+    routerThinking: clampOptionalBoolean(chat?.modelParams?.routerThinking, ROUTER_THINKING_DEFAULT)
+  };
+}
+
+function attachModelRuntimeParams(models, params) {
+  return {
+    ...(models || {}),
+    __params: {
+      temperature: clampTemperature(params?.temperature, 0.3),
+      routerThinking: clampOptionalBoolean(params?.routerThinking, ROUTER_THINKING_DEFAULT)
+    }
+  };
+}
+
+function getRuntimeTemperature(models) {
+  return clampTemperature(models?.__params?.temperature, 0.3);
+}
+
+function getRuntimeRouterThinking(models) {
+  return clampOptionalBoolean(models?.__params?.routerThinking, ROUTER_THINKING_DEFAULT);
 }
 
 function buildBootstrapPayload(catalog = modelCatalogCache.items, auth = null) {
@@ -1295,6 +1646,7 @@ function buildBootstrapPayload(catalog = modelCatalogCache.items, auth = null) {
       defaults,
       current: applyRuntimeModelOverride(chat?.models || {}, chat)
     },
+    modelParams: getActiveModelParams(chat),
     browser: {
       url: page ? page.url() : "about:blank"
     }
@@ -1308,6 +1660,9 @@ function normalizeModelCatalog(data) {
     id: item.id || item.name || item.model || item.slug,
     name: item.name || item.id || item.model || item.slug,
     type: item.type || item.task || item.source || "",
+    description: item.description || item.summary || "",
+    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {},
+    tags: Array.isArray(item.tags) ? item.tags : [],
     capabilities: Array.isArray(item.capabilities)
       ? item.capabilities
       : Array.isArray(item.tags)
@@ -1371,6 +1726,7 @@ function status(msg)  { console.log("  ⚡ " + msg); broadcast("status",  { msg 
 function agentMsg(msg){ console.log("  🤖 " + msg); broadcast("agent",   { msg }); }
 function stepLogMsg(msg) { console.log("  📋 " + msg); broadcast("step", { msg }); }
 function errLog(msg)  { console.log("  ❌ " + msg); broadcast("error",   { msg }); }
+function routerThink(models, msg) { if (getRuntimeRouterThinking(models)) think(msg); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LIVE NARRATION & GUIDANCE SYSTEM (Devin-style interactive agent)
@@ -1444,8 +1800,12 @@ function normalizeMessages(messages) {
 }
 
 // ── CF AI wrapper (TEXT models — content is always normalized to string) ────
-async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2) {
+async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null) {
   const safeMessages = normalizeMessages(messages);
+  const requestBody = { messages: safeMessages, max_tokens: maxTokens };
+  if (temperature !== null && temperature !== undefined) {
+    requestBody.temperature = clampTemperature(temperature, 0.3);
+  }
   for (let i = 0; i <= retries; i++) {
     try {
       const ctrl = new AbortController();
@@ -1455,7 +1815,7 @@ async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2) {
         {
           method:  "POST",
           headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" },
-          body:    JSON.stringify({ messages: safeMessages, max_tokens: maxTokens }),
+          body:    JSON.stringify(requestBody),
           signal:  ctrl.signal
         }
       );
@@ -1574,6 +1934,709 @@ Describe what is visible. Identify which detected objects appear interactive (bu
   }
 }
 
+function readImageDimensions(buffer, mimeType = "") {
+  const mime = String(mimeType || "").toLowerCase();
+  if (!buffer || !buffer.length) return { width: 0, height: 0 };
+
+  if (mime.includes("png") || (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47)) {
+    if (buffer.length >= 24) {
+      return {
+        width: buffer.readUInt32BE(16),
+        height: buffer.readUInt32BE(20)
+      };
+    }
+  }
+
+  if (mime.includes("gif") || (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46)) {
+    if (buffer.length >= 10) {
+      return {
+        width: buffer.readUInt16LE(6),
+        height: buffer.readUInt16LE(8)
+      };
+    }
+  }
+
+  if (mime.includes("webp") || (buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP")) {
+    const chunk = buffer.toString("ascii", 12, 16);
+    if (chunk === "VP8X" && buffer.length >= 30) {
+      return {
+        width: 1 + buffer.readUIntLE(24, 3),
+        height: 1 + buffer.readUIntLE(27, 3)
+      };
+    }
+  }
+
+  if (mime.includes("jpeg") || mime.includes("jpg") || (buffer[0] === 0xff && buffer[1] === 0xd8)) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      const size = buffer.readUInt16BE(offset + 2);
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return {
+          width: buffer.readUInt16BE(offset + 7),
+          height: buffer.readUInt16BE(offset + 5)
+        };
+      }
+      if (!size || size < 2) break;
+      offset += 2 + size;
+    }
+  }
+
+  return { width: 0, height: 0 };
+}
+
+function buildPageLayoutId(rawId, index, seen) {
+  const base = String(rawId || `element_${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 24) || `element_${index + 1}`;
+  let candidate = base;
+  let suffix = 2;
+  while (seen.has(candidate)) {
+    candidate = `${base.slice(0, Math.max(1, 24 - String(suffix).length - 1))}_${suffix}`;
+    suffix += 1;
+  }
+  seen.add(candidate);
+  return candidate;
+}
+
+function normalizePageLayoutElements(rawElements, imageWidth, imageHeight) {
+  const seen = new Set();
+  const maxWidth = Math.max(1, Number(imageWidth || 1));
+  const maxHeight = Math.max(1, Number(imageHeight || 1));
+  return (Array.isArray(rawElements) ? rawElements : [])
+    .map((item, index) => {
+      const bbox = item && typeof item.bbox === "object" ? item.bbox : {};
+      const x = Math.max(0, Math.min(maxWidth - 1, Math.round(Number(bbox.x) || 0)));
+      const y = Math.max(0, Math.min(maxHeight - 1, Math.round(Number(bbox.y) || 0)));
+      const width = Math.max(1, Math.min(maxWidth - x, Math.round(Number(bbox.width) || 1)));
+      const height = Math.max(1, Math.min(maxHeight - y, Math.round(Number(bbox.height) || 1)));
+      const role = String(item?.role || "region").trim().toLowerCase() || "region";
+      const text = String(item?.text || "").replace(/\s+/g, " ").trim();
+      return {
+        id: buildPageLayoutId(item?.id || text || role, index, seen),
+        role,
+        text,
+        bbox: { x, y, width, height },
+        confidence: clamp01(Number(item?.confidence || 0.5)),
+        priority: Math.max(1, Math.min(10, Math.round(Number(item?.priority || 5))))
+      };
+    })
+    .filter(item => item.bbox.width > 0 && item.bbox.height > 0)
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      const areaA = a.bbox.width * a.bbox.height;
+      const areaB = b.bbox.width * b.bbox.height;
+      return areaB - areaA;
+    });
+}
+
+function renderAsciiPageMap(elements, imageWidth, imageHeight) {
+  const width = Math.max(1, Number(imageWidth || 1));
+  const height = Math.max(1, Number(imageHeight || 1));
+  const columns = Math.max(48, Math.min(96, Math.round(width / 17)));
+  const rows = Math.max(18, Math.min(40, Math.round(height / 32)));
+  const pxPerCol = width / columns;
+  const pxPerRow = height / rows;
+  const grid = Array.from({ length: rows }, () => Array.from({ length: columns }, () => " "));
+
+  function writeLabel(row, startCol, text, maxWidth) {
+    const label = `[${String(text || "region").slice(0, Math.max(1, maxWidth - 2))}]`;
+    for (let index = 0; index < Math.min(label.length, maxWidth); index += 1) {
+      grid[row][startCol + index] = label[index];
+    }
+  }
+
+  for (const element of elements) {
+    const left = Math.max(0, Math.min(columns - 1, Math.floor(element.bbox.x / pxPerCol)));
+    const top = Math.max(0, Math.min(rows - 1, Math.floor(element.bbox.y / pxPerRow)));
+    const right = Math.max(left, Math.min(columns - 1, Math.ceil((element.bbox.x + element.bbox.width) / pxPerCol) - 1));
+    const bottom = Math.max(top, Math.min(rows - 1, Math.ceil((element.bbox.y + element.bbox.height) / pxPerRow) - 1));
+
+    for (let row = top; row <= bottom; row += 1) {
+      for (let col = left; col <= right; col += 1) {
+        grid[row][col] = ".";
+      }
+    }
+
+    if (right - left >= 3) {
+      writeLabel(top, left, element.id, right - left + 1);
+    } else {
+      grid[top][left] = String(element.id || "?")[0] || "?";
+    }
+  }
+
+  const map = [`scale: ~${pxPerCol.toFixed(1)} px/col x ${pxPerRow.toFixed(1)} px/row over ${width}x${height}`];
+  for (const row of grid) {
+    map.push(row.join("").replace(/\s+$/g, ""));
+  }
+
+  return {
+    asciiMap: map.join("\n"),
+    grid: {
+      columns,
+      rows,
+      pixelsPerColumn: Number(pxPerCol.toFixed(2)),
+      pixelsPerRow: Number(pxPerRow.toFixed(2))
+    }
+  };
+}
+
+function isSparsePageLayout(elements, imageWidth, imageHeight) {
+  const list = Array.isArray(elements) ? elements : [];
+  const width = Math.max(1, Number(imageWidth || 1));
+  const height = Math.max(1, Number(imageHeight || 1));
+  const largeScreenshot = width >= 900 && height >= 500;
+  const interactiveCount = list.filter(item => /button|input|link/.test(String(item?.role || ""))).length;
+  const structuralCount = list.filter(item => /panel|region|image|text|separator|scrollbar/.test(String(item?.role || ""))).length;
+  if (!largeScreenshot) return list.length < 3;
+  return list.length < 6 || interactiveCount < 2 || structuralCount < 3;
+}
+
+function buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, mode = "primary", priorRaw = "") {
+  const baseIntent = String(userQuery || "Produce an ASCII page map and structured element key.").slice(0, 500);
+  const repairNote = mode === "repair"
+    ? `\nThe previous answer was too sparse or too coarse. Do not return only 2-3 giant boxes like logo/search bar. Decompose the visible UI into all major visible regions and controls.`
+    : "";
+  const priorSnippet = mode === "repair" && priorRaw
+    ? `\nPrevious weak answer:\n${String(priorRaw).slice(0, 1200)}`
+    : "";
+  return `Analyze this webpage screenshot as a UI layout auditor. Use the exact image size ${imageWidth}x${imageHeight} pixels.
+
+User intent: ${baseIntent}${repairNote}${priorSnippet}
+
+Your job:
+- Identify the visible UI structure of the page.
+- Enumerate major visible elements, not just the top 1-2 items.
+- Include header bars, nav groups, logos, buttons, links, inputs, prominent text blocks, cards/panels, dividers, hero images, sidebars, and scrollbars when visible.
+- For text-heavy areas, include the major text block as one region rather than one box per word.
+- For navigation, split distinct visible nav items when they are individually visible.
+- Use approximate but image-grounded pixel boxes.
+- If an area is clearly visible but unlabeled, use role=region or role=panel.
+
+Minimum coverage expectations for a typical full-page desktop screenshot:
+- top navigation/header regions
+- primary headline or body text block
+- main image/media block if visible
+- any visible sidebar/back rail if present
+- scrollbar if visible
+
+Return ONLY one compact JSON object with this exact shape:
+{
+  "elements": [
+    {
+      "id": "short_unique_name",
+      "role": "button|input|link|image|text|panel|separator|scrollbar|region",
+      "text": "visible text if any",
+      "bbox": { "x": 0, "y": 0, "width": 0, "height": 0 },
+      "confidence": 0.0,
+      "priority": 1
+    }
+  ]
+}
+
+Hard rules:
+- Detect only visible elements.
+- Use pixel coordinates in the original image.
+- Keep ids short and stable.
+- If uncertain, lower confidence instead of guessing.
+- Do not output markdown or commentary.
+- Do not collapse the whole page into a tiny number of oversized boxes unless the page is genuinely empty.`;
+}
+
+async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAULT_MODELS.vision, mimeType = "") {
+  const buffer = Buffer.from(String(imageB64 || ""), "base64");
+  const dimensions = readImageDimensions(buffer, mimeType);
+  const imageWidth = Math.max(1, Number(dimensions.width || 0) || 1);
+  const imageHeight = Math.max(1, Number(dimensions.height || 0) || 1);
+  const prompt = buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, "primary");
+
+  let parsed = null;
+  let raw = await callVisionAI(imageB64, prompt, 1800, visionModelId || DEFAULT_MODELS.vision);
+  parsed = safeParseJSON(raw);
+
+  if ((!parsed || !Array.isArray(parsed.elements)) && raw) {
+    const repaired = await callCFAI(
+      DEFAULT_MODELS.reasoner || DEFAULT_MODELS.router,
+      [
+        { role: "system", content: "Rewrite the user input as strict JSON only. Return exactly one JSON object with key elements. Preserve ids, roles, text, bbox, confidence, and priority. No markdown." },
+        { role: "user", content: String(raw || "") }
+      ],
+      1400,
+      1,
+      0
+    );
+    parsed = safeParseJSON(repaired);
+  }
+
+  let elements = normalizePageLayoutElements(parsed?.elements || [], imageWidth, imageHeight);
+  if (isSparsePageLayout(elements, imageWidth, imageHeight)) {
+    const retryPrompt = buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, "repair", raw);
+    raw = await callVisionAI(imageB64, retryPrompt, 2200, visionModelId || DEFAULT_MODELS.vision);
+    let retryParsed = safeParseJSON(raw);
+    if ((!retryParsed || !Array.isArray(retryParsed.elements)) && raw) {
+      const repairedRetry = await callCFAI(
+        DEFAULT_MODELS.reasoner || DEFAULT_MODELS.router,
+        [
+          { role: "system", content: "Rewrite the user input as strict JSON only. Return exactly one JSON object with key elements. Preserve ids, roles, text, bbox, confidence, and priority. No markdown." },
+          { role: "user", content: String(raw || "") }
+        ],
+        1400,
+        1,
+        0
+      );
+      retryParsed = safeParseJSON(repairedRetry);
+    }
+    const retriedElements = normalizePageLayoutElements(retryParsed?.elements || [], imageWidth, imageHeight);
+    if (retriedElements.length >= elements.length) {
+      elements = retriedElements;
+    }
+  }
+
+  const rendered = renderAsciiPageMap(elements, imageWidth, imageHeight);
+  const key = {
+    image: {
+      width: imageWidth,
+      height: imageHeight
+    },
+    grid: rendered.grid,
+    elements
+  };
+
+  return {
+    taskType: "page_layout_analysis",
+    model: String(visionModelId || DEFAULT_MODELS.vision),
+    asciiMap: rendered.asciiMap,
+    key,
+    formatted: `ASCII_MAP:\n${rendered.asciiMap}\n\nKEY:\n${JSON.stringify(key, null, 2)}`
+  };
+}
+
+function wantsPageLayoutAnalysis(text = "") {
+  const query = String(text || "");
+  return /ascii|page\s*map|layout|bbox|bounding\s*box|ui\s+analysis|analy[sz]e\s+(the\s+)?ui|vision\s+analy/i.test(query);
+}
+
+async function analyzeCurrentBrowserUILayout(userQuery = "", userId = null) {
+  if (!page) throw new Error("browser not ready");
+  const screenshotB64 = await getVisionScreenshotB64({ broadcastImage: false, writeFile: false });
+  const { chat } = ensureCurrentChat(userId);
+  const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
+  const analysis = await analyzePageLayout(
+    screenshotB64,
+    `${String(userQuery || "Analyze the current browser UI.").slice(0, 400)}\nCurrent URL: ${page.url()}`,
+    models.vision,
+    "image/jpeg"
+  );
+  return {
+    ...analysis,
+    url: page.url()
+  };
+}
+
+function parseBase64Input(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return { b64: "", mimeType: "" };
+  const dataUriMatch = value.match(/^data:([^;]+);base64,(.+)$/i);
+  if (dataUriMatch) {
+    return {
+      mimeType: String(dataUriMatch[1] || "").trim().toLowerCase(),
+      b64: String(dataUriMatch[2] || "").replace(/\s+/g, "")
+    };
+  }
+  return { b64: value.replace(/\s+/g, ""), mimeType: "" };
+}
+
+function inferMediaType(mimeType, fallbackKind = "") {
+  const mime = String(mimeType || "").toLowerCase();
+  const kind = String(fallbackKind || "").toLowerCase();
+  if (mime.startsWith("video/") || kind === "video") return "video";
+  if (mime.startsWith("image/") || kind === "image" || kind.includes("screenshot") || kind.includes("clipboard")) return "image";
+  return "unknown";
+}
+
+function inferMimeFromName(name, mediaType) {
+  const n = String(name || "").toLowerCase();
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+  if (n.endsWith(".webp")) return "image/webp";
+  if (n.endsWith(".gif")) return "image/gif";
+  if (n.endsWith(".mp4")) return "video/mp4";
+  if (n.endsWith(".webm")) return "video/webm";
+  if (n.endsWith(".mov")) return "video/quicktime";
+  if (mediaType === "video") return "video/mp4";
+  if (mediaType === "image") return "image/png";
+  return "application/octet-stream";
+}
+
+function buildMediaReference(media) {
+  const source = String(media?.source || "upload");
+  const fallbackPreviewUrl = source === "agent_screenshot" ? "/screenshot" : null;
+  return {
+    id: String(media?.id || ""),
+    source,
+    mediaType: String(media?.mediaType || "unknown"),
+    kind: String(media?.kind || "upload"),
+    mimeType: String(media?.mimeType || "application/octet-stream"),
+    fileName: String(media?.fileName || ""),
+    previewUrl: fallbackPreviewUrl,
+    thumbnailUrl: fallbackPreviewUrl
+  };
+}
+
+function normalizeIncomingMedia(body = {}) {
+  const media = [];
+  const now = new Date().toISOString();
+
+  function pushMedia(item) {
+    const input = parseBase64Input(item?.dataB64 || item?.imageB64 || item?.videoB64 || item?.data || "");
+    const explicitMime = String(item?.mimeType || item?.contentType || input.mimeType || "").trim().toLowerCase();
+    const kind = String(item?.kind || "upload").trim().toLowerCase();
+    const mediaType = inferMediaType(explicitMime, kind);
+    const mimeType = explicitMime || inferMimeFromName(item?.fileName || item?.name, mediaType);
+    const b64 = input.b64;
+    if (!b64) return;
+    media.push({
+      id: crypto.randomUUID(),
+      kind,
+      source: String(item?.source || kind || "upload"),
+      mediaType,
+      mimeType,
+      fileName: String(item?.fileName || item?.name || ""),
+      dataB64: b64,
+      createdAt: now,
+      sizeBytes: Math.floor((b64.length * 3) / 4),
+      metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : {}
+    });
+  }
+
+  const arrayMedia = Array.isArray(body.media) ? body.media : [];
+  for (const entry of arrayMedia) {
+    pushMedia(entry || {});
+  }
+
+  const imageB64 = String(body.imageB64 || "").trim();
+  if (imageB64) pushMedia({ kind: "image_upload", source: "upload", dataB64: imageB64, mimeType: body.imageMimeType, fileName: body.imageFileName });
+
+  const clipboardImageB64 = String(body.clipboardImageB64 || "").trim();
+  if (clipboardImageB64) pushMedia({ kind: "clipboard_image", source: "clipboard", dataB64: clipboardImageB64, mimeType: body.clipboardMimeType || "image/png", fileName: body.clipboardFileName || "clipboard.png" });
+
+  const screenshotB64 = String(body.screenshotB64 || "").trim();
+  if (screenshotB64) pushMedia({ kind: "screenshot", source: "screenshot", dataB64: screenshotB64, mimeType: body.screenshotMimeType || "image/png", fileName: body.screenshotFileName || "screenshot.png" });
+
+  const videoB64 = String(body.videoB64 || "").trim();
+  if (videoB64) pushMedia({ kind: "video_upload", source: "upload", dataB64: videoB64, mimeType: body.videoMimeType || body.mimeType, fileName: body.videoFileName || body.fileName || "video.mp4" });
+
+  return media;
+}
+
+function classifyMediaTask(mediaItems) {
+  const items = Array.isArray(mediaItems) ? mediaItems : [];
+  if (!items.length) return "general_media";
+  if (items.some(item => String(item?.mediaType || "") === "video")) return "video_analysis";
+  if (items.some(item => String(item?.kind || "").includes("screenshot"))) return "screenshot_analysis";
+  if (items.some(item => String(item?.mediaType || "") === "image")) return "image_analysis";
+  return "general_media";
+}
+
+async function runWithEphemeralCapabilityModel(taskType, baselineModel, runner) {
+  const baseline = String(baselineModel || DEFAULT_MODELS.router);
+  const failedSet = routerTaskTypeFailures.get(taskType) || new Set();
+  const selection = pickBestRouterModelForTask(taskType, baseline, modelCatalogCache.items, failedSet);
+  const attemptOrder = selection.modelToUse === baseline
+    ? [baseline]
+    : [selection.modelToUse, baseline];
+  let usedModel = selection.modelToUse;
+  let retriedWithBaseline = false;
+  let lastError = null;
+
+  try {
+    for (const candidate of attemptOrder) {
+      try {
+        const result = await runner(candidate);
+        usedModel = candidate;
+        return {
+          result,
+          meta: {
+            taskType,
+            modelToUse: usedModel,
+            baselineModel: baseline,
+            reason: selection.reason,
+            swapped: usedModel !== baseline,
+            retriedWithBaseline
+          }
+        };
+      } catch (err) {
+        lastError = err;
+        if (candidate !== baseline) {
+          const failed = routerTaskTypeFailures.get(taskType) || new Set();
+          failed.add(String(candidate));
+          routerTaskTypeFailures.set(taskType, failed);
+          retriedWithBaseline = true;
+          think(`Capability swap failed for ${taskType} on ${candidate}; retrying once with baseline ${baseline}.`);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw (lastError || new Error("media model selection failed"));
+  } finally {
+    think(`Capability model restore: taskType=${taskType} baseline=${baseline} used=${usedModel} retry=${retriedWithBaseline}.`);
+  }
+}
+
+async function runImageAnalysis(media, modelId, userQuery = "") {
+  const chosenModel = String(modelId || DEFAULT_MODELS.vision);
+  const detr = await callDETR(media.dataB64);
+  const detrContext = buildDETRContext(detr);
+  const summary = await analyzeUploadedImageWithVision(media.dataB64, detrContext, userQuery, chosenModel);
+  return {
+    taskType: "image_analysis",
+    model: chosenModel,
+    text: summary,
+    structured: {
+      detections: detr,
+      detectionCount: detr.length
+    },
+    media: [buildMediaReference(media)]
+  };
+}
+
+async function extractVideoFrameB64(media) {
+  const tempDir = path.join(WORKSPACE_ROOT, ".tmp-media");
+  fs.mkdirSync(tempDir, { recursive: true });
+  const ext = String(media?.mimeType || "").includes("webm") ? "webm" : (String(media?.mimeType || "").includes("quicktime") ? "mov" : "mp4");
+  const inputPath = path.join(tempDir, `${media.id}.${ext}`);
+  const framePath = path.join(tempDir, `${media.id}.jpg`);
+  try {
+    fs.writeFileSync(inputPath, Buffer.from(String(media?.dataB64 || ""), "base64"));
+    execSync(`ffmpeg -y -i "${inputPath}" -vf "fps=1" -frames:v 1 "${framePath}"`, { stdio: "ignore" });
+    if (!fs.existsSync(framePath)) return null;
+    const frameB64 = fs.readFileSync(framePath, { encoding: "base64" });
+    return frameB64 || null;
+  } catch {
+    return null;
+  } finally {
+    try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch {}
+    try { if (fs.existsSync(framePath)) fs.unlinkSync(framePath); } catch {}
+  }
+}
+
+async function runVideoAnalysis(media, modelId, userQuery = "") {
+  const chosenModel = String(modelId || DEFAULT_MODELS.vision);
+  const frameB64 = await extractVideoFrameB64(media);
+  if (frameB64) {
+    const frameMedia = {
+      ...media,
+      id: crypto.randomUUID(),
+      kind: "video_frame",
+      source: "video_frame",
+      mediaType: "image",
+      mimeType: "image/jpeg",
+      dataB64: frameB64
+    };
+    const imageResult = await runImageAnalysis(frameMedia, chosenModel, `Video frame analysis request: ${String(userQuery || "")}`);
+    return {
+      taskType: "video_analysis",
+      model: chosenModel,
+      text: imageResult.text,
+      structured: {
+        frameExtracted: true,
+        frameAnalysis: imageResult.structured
+      },
+      media: [buildMediaReference(media), ...imageResult.media]
+    };
+  }
+
+  const fallbackSummary = await callCFAI(chosenModel, [
+    {
+      role: "system",
+      content: "You are a media analyst. If no frame data is available, provide a concise limitation-aware response and ask for a shorter clip or keyframe."
+    },
+    {
+      role: "user",
+      content: `Analyze this uploaded video request: ${String(userQuery || "")}. A direct frame extract was unavailable in runtime.`
+    }
+  ], 260, 1);
+
+  return {
+    taskType: "video_analysis",
+    model: chosenModel,
+    text: String(fallbackSummary || "Video analysis could not process frames in this runtime."),
+    structured: {
+      frameExtracted: false
+    },
+    media: [buildMediaReference(media)]
+  };
+}
+
+async function runMediaAnalysis(mediaItems, models, userQuery = "") {
+  const list = Array.isArray(mediaItems) ? mediaItems : [];
+  if (!list.length) {
+    return {
+      taskType: "general_media",
+      analysis: {
+        taskType: "general_media",
+        model: String(models?.vision || models?.router || DEFAULT_MODELS.vision),
+        text: "No media was provided.",
+        structured: {},
+        media: []
+      },
+      routerMeta: {
+        taskType: "general_media",
+        modelToUse: String(models?.vision || models?.router || DEFAULT_MODELS.vision),
+        baselineModel: String(models?.vision || models?.router || DEFAULT_MODELS.vision),
+        reason: "no media",
+        swapped: false,
+        retriedWithBaseline: false
+      }
+    };
+  }
+
+  const taskType = classifyMediaTask(list);
+  const primary = list.find(item => taskType === "video_analysis" ? item.mediaType === "video" : item.mediaType === "image") || list[0];
+  const baselineModel = String(models?.vision || models?.router || DEFAULT_MODELS.vision);
+  return runWithEphemeralCapabilityModel(taskType, baselineModel, async (modelToUse) => {
+    if (taskType === "video_analysis") {
+      return runVideoAnalysis(primary, modelToUse, userQuery);
+    }
+    return runImageAnalysis(primary, modelToUse, userQuery);
+  }).then(({ result, meta }) => ({ taskType, analysis: result, routerMeta: meta }));
+}
+
+async function callCFImageGeneration(modelName, promptText) {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${CF_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ prompt: String(promptText || "").trim() }),
+        signal: ctrl.signal
+      }
+    );
+
+    const contentType = String(res.headers.get("content-type") || "").toLowerCase();
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "Image generation request failed");
+      throw new Error(errorText || "Image generation request failed");
+    }
+
+    if (contentType.startsWith("image/")) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      return {
+        mimeType: contentType,
+        b64: buf.toString("base64")
+      };
+    }
+
+    const data = await res.json();
+    if (data && data.success === false) {
+      throw new Error(JSON.stringify(data.errors || [{ message: "Image generation failed" }]));
+    }
+
+    const result = data?.result || data || {};
+    const directImage = typeof result.image === "string" ? result.image : "";
+    const directUrl = typeof result.url === "string" ? result.url : "";
+    const nestedB64 = typeof result?.data?.[0]?.b64_json === "string"
+      ? result.data[0].b64_json
+      : (typeof result?.images?.[0]?.b64_json === "string" ? result.images[0].b64_json : "");
+    const nestedUrl = typeof result?.data?.[0]?.url === "string"
+      ? result.data[0].url
+      : (typeof result?.images?.[0]?.url === "string" ? result.images[0].url : "");
+
+    if (directImage) {
+      return {
+        mimeType: "image/png",
+        b64: String(directImage).replace(/^data:[^;]+;base64,/i, "")
+      };
+    }
+    if (nestedB64) {
+      return {
+        mimeType: "image/png",
+        b64: String(nestedB64).replace(/^data:[^;]+;base64,/i, "")
+      };
+    }
+    if (directUrl || nestedUrl) {
+      return {
+        mimeType: "image/png",
+        url: directUrl || nestedUrl
+      };
+    }
+
+    throw new Error("Selected model did not return image data");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function generateImageFromPrompt(promptText, models) {
+  const prompt = String(promptText || "").trim();
+  if (!prompt) throw new Error("Image prompt is required");
+  const baselineModel = String(models?.router || DEFAULT_MODELS.router);
+  const { result, meta } = await runWithEphemeralCapabilityModel("image_generation", baselineModel, async (modelToUse) => {
+    const image = await callCFImageGeneration(modelToUse, prompt);
+    return {
+      prompt,
+      model: modelToUse,
+      mimeType: image.mimeType || "image/png",
+      b64: image.b64 || "",
+      url: image.url || ""
+    };
+  });
+  return { image: result, routerMeta: meta };
+}
+
+function isModelIdentityQuestion(text) {
+  const message = String(text || "").toLowerCase();
+  if (!message) return false;
+  return /(what\s+model|which\s+model|model\s+are\s+you|who\s+made\s+you|are\s+you\s+gpt|gpt-?4|openai)/.test(message);
+}
+
+function getCasualIdentityReply(models = {}) {
+  const reasoner = String(models.reasoner || "").trim();
+  const router = String(models.router || "").trim();
+  const active = reasoner || router || "(unknown)";
+  return `I'm Puppeterr. This chat currently runs on ${active}.`;
+}
+
+async function answerCasualChat(rawMessage, conversationHistory, models) {
+  if (isModelIdentityQuestion(rawMessage)) {
+    return getCasualIdentityReply(models);
+  }
+
+  const convCtx = (conversationHistory || []).slice(-8)
+    .map(item => `${item.role === "user" ? "User" : "Assistant"}: ${item.content}`)
+    .join("\n");
+
+  try {
+    const raw = await callCFAI(models.reasoner || models.router, [
+      {
+        role: "system",
+        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. Keep replies concise. Never claim to be GPT-4 or OpenAI unless the configured runtime model is actually from OpenAI. If asked what model you are, state the configured model id exactly."
+      },
+      {
+        role: "user",
+        content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}`
+      }
+    ], 500, 1, getRuntimeTemperature(models));
+    return stripThinking(raw) || "How can I help?";
+  } catch (err) {
+    errLog("Casual chat fallback: " + err.message);
+    return "How can I help?";
+  }
+}
+
 function configurePinchClient() {
   if (!PINCH_API_TOKEN || !PINCH_API_EMAIL) {
     throw new Error("Missing PINCH_API_TOKEN or PINCH_API_EMAIL");
@@ -1633,16 +2696,52 @@ async function pinchListWebhookTypes() {
   return Array.isArray(types) ? types : [];
 }
 
-  function stripThinking(text) { return String(text || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim(); }
+  function stripThinking(text) {
+    return String(text || "")
+      .replace(/<think>[\s\S]*?(<\/think>|$)/gi, "")
+      .trim();
+  }
 
   function safeParseJSON(raw) {
     const stripped = stripThinking(raw);
-    const clean = stripped.replace(/```(?:json)?\n?([\s\S]*?)```/, "$1").trim();
-    try { return JSON.parse(clean); } catch {
-      const m = clean.match(/\{[\s\S]*\}/);
-      if (m) { try { return JSON.parse(m[0]); } catch {} }
-      return null;
+    const clean = stripped.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1").trim();
+    try { return JSON.parse(clean); } catch {}
+
+    const starts = ["{", "["];
+    for (let idx = 0; idx < clean.length; idx++) {
+      if (!starts.includes(clean[idx])) continue;
+      const openChar = clean[idx];
+      const closeChar = openChar === "{" ? "}" : "]";
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let end = idx; end < clean.length; end++) {
+        const ch = clean[end];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch === "\\") {
+            escaped = true;
+          } else if (ch === '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch === '"') {
+          inString = true;
+          continue;
+        }
+        if (ch === openChar) depth += 1;
+        if (ch === closeChar) {
+          depth -= 1;
+          if (depth === 0) {
+            const candidate = clean.slice(idx, end + 1);
+            try { return JSON.parse(candidate); } catch { break; }
+          }
+        }
+      }
     }
+    return null;
   }
 
   /**
@@ -2794,7 +3893,7 @@ Rules:
   // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: ROUTER
 // ─────────────────────────────────────────────────────────────────────────────
-async function routeGoal(rawGoal, conversationHistory, models) {
+async function routeGoal(rawGoal, conversationHistory, models, routeContext = {}) {
   status("Router thinking...");
   
   // Sanitize: Filter out system instruction patterns that shouldn't be tasks
@@ -2802,17 +3901,36 @@ async function routeGoal(rawGoal, conversationHistory, models) {
   
   // If sanitization removed harmful content, respond appropriately
   if (sanitizedGoal !== String(rawGoal || "").trim()) {
-    think("Router: Filtered out system instruction injection. Treating as chat.");
+    routerThink(models, "Router: Filtered out system instruction injection. Treating as chat.");
     return { 
       mode: "chat", 
       chatReply: "I'm Puppeterr, an autonomous browser agent. How can I help you with web automation or information gathering?",
       reasoning: "Blocked system instruction injection"
     };
   }
+
+  const taskType = classifyRouterTaskType(sanitizedGoal, routeContext);
+  const baselineRouterModel = String(models?.router || DEFAULT_MODELS.router);
+  const failedForTaskType = routerTaskTypeFailures.get(taskType) || new Set();
+  const selection = pickBestRouterModelForTask(taskType, baselineRouterModel, modelCatalogCache.items, failedForTaskType);
+  let activeRouterModel = selection.modelToUse;
+  let retriedWithBaseline = false;
   
   if (looksLikeTaskGoal(sanitizedGoal)) {
-    think("Router heuristic: classified as task from action-oriented intent.");
-    return { mode: "task", taskGoal: sanitizedGoal };
+    routerThink(models, "Router heuristic: classified as task from action-oriented intent.");
+    routerThink(models, `Router model restore: taskType=${taskType} baseline=${baselineRouterModel} used=${activeRouterModel} swapped=${selection.swapped} retry=${retriedWithBaseline}.`);
+    return {
+      mode: "task",
+      taskGoal: sanitizedGoal,
+      routerMeta: {
+        taskType,
+        modelToUse: activeRouterModel,
+        baselineModel: baselineRouterModel,
+        reason: `heuristic task classification; ${selection.reason}`,
+        swapped: selection.swapped,
+        retriedWithBaseline
+      }
+    };
   }
   const mem     = searchRelevantMemory(sanitizedGoal, 5);
   const memCtx  = mem.map(m => {
@@ -2843,15 +3961,67 @@ Output ONLY valid JSON:
 }`;
 
   try {
-    const raw    = await callCFAI(models.router, [
-      { role: "system", content: system },
-      { role: "user",   content: rawGoal }
-    ], 700);
-    const parsed = safeParseJSON(raw);
-    if (!parsed) throw new Error("unparseable");
-    think(`Router: ${parsed.reasoning || parsed.mode}`);
-    if (parsed.mode === "task") return { mode: "task", taskGoal: parsed.taskGoal || rawGoal };
-    return { mode: "chat", chatReply: parsed.chatReply || "What can I help you with?" };
+    let parsed = null;
+    let lastError = null;
+
+    const attemptOrder = activeRouterModel === baselineRouterModel
+      ? [baselineRouterModel]
+      : [activeRouterModel, baselineRouterModel];
+
+    for (const modelCandidate of attemptOrder) {
+      if (modelCandidate === baselineRouterModel && retriedWithBaseline) continue;
+      try {
+        const raw = await callCFAI(modelCandidate, [
+          { role: "system", content: system },
+          { role: "user", content: rawGoal }
+        ], 700, 2, getRuntimeTemperature(models));
+        parsed = safeParseJSON(raw);
+        if (!parsed) throw new Error("unparseable");
+        activeRouterModel = modelCandidate;
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (modelCandidate !== baselineRouterModel) {
+          const failed = routerTaskTypeFailures.get(taskType) || new Set();
+          failed.add(String(modelCandidate));
+          routerTaskTypeFailures.set(taskType, failed);
+          retriedWithBaseline = true;
+          routerThink(models, `Router swap failed for ${taskType} on ${modelCandidate}; retrying once with baseline ${baselineRouterModel}.`);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!parsed) throw (lastError || new Error("unparseable"));
+    routerThink(models, `Router: ${parsed.reasoning || parsed.mode}`);
+    if (parsed.mode === "task") {
+      return {
+        mode: "task",
+        taskGoal: parsed.taskGoal || rawGoal,
+        routerMeta: {
+          taskType,
+          modelToUse: activeRouterModel,
+          baselineModel: baselineRouterModel,
+          reason: selection.reason,
+          swapped: selection.swapped,
+          retriedWithBaseline
+        }
+      };
+    }
+    return {
+      mode: "chat",
+      chatReply: parsed.chatReply || "What can I help you with?",
+      routerMeta: {
+        taskType,
+        modelToUse: activeRouterModel,
+        baselineModel: baselineRouterModel,
+        reason: selection.reason,
+        swapped: selection.swapped,
+        retriedWithBaseline
+      }
+    };
   } catch (err) {
     const msg = String(err && err.message ? err.message : "");
     errLog("Router fallback: " + msg);
@@ -2862,6 +4032,10 @@ Output ONLY valid JSON:
       };
     }
     return { mode: "chat", chatReply: "I had trouble understanding that — could you rephrase?" };
+  } finally {
+    const usedModel = activeRouterModel;
+    activeRouterModel = baselineRouterModel;
+    routerThink(models, `Router model restore: taskType=${taskType} baseline=${baselineRouterModel} used=${usedModel} swapped=${selection.swapped} retry=${retriedWithBaseline}.`);
   }
 }
 
@@ -3110,6 +4284,335 @@ function buildSelectorVariants(selector, maxVariants = HYBRID_SELECTOR_VARIANTS)
   return variants.slice(0, Math.max(1, Math.min(10, maxVariants * 2)));
 }
 
+function extractTargetKeywords(goal, selector) {
+  const stopwords = new Set([
+    "the", "and", "for", "with", "from", "that", "this", "into", "then", "your", "you", "about", "open", "click", "button", "link", "page", "card", "item", "select", "submit", "continue"
+  ]);
+  const seed = `${String(goal || "")} ${String(selector || "")}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]+/g, " ")
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 3 && !stopwords.has(token));
+  const deduped = [];
+  const seen = new Set();
+  for (const token of seed) {
+    if (seen.has(token)) continue;
+    seen.add(token);
+    deduped.push(token);
+    if (deduped.length >= 12) break;
+  }
+  return deduped;
+}
+
+function normalizeCqardsAnchors(cqards, viewport) {
+  const width = Math.max(1, Number(viewport?.width || 1920));
+  const height = Math.max(1, Number(viewport?.height || 1080));
+  const anchors = (Array.isArray(cqards) ? cqards : [])
+    .map((point, index) => ({
+      id: index,
+      x: clampNumber(point?.x, 0, width - 1),
+      y: clampNumber(point?.y, 0, height - 1)
+    }))
+    .filter(point => point.x !== null && point.y !== null);
+  return dedupePoints(anchors.map(point => ({ x: point.x, y: point.y })), 4)
+    .map((point, index) => ({ id: index, x: point.x, y: point.y }));
+}
+
+function nearestAnchorForCandidate(candidate, anchors) {
+  if (!anchors.length) return { anchor: null, distance: Number.POSITIVE_INFINITY };
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const anchor of anchors) {
+    const dx = Number(candidate.cx) - Number(anchor.x);
+    const dy = Number(candidate.cy) - Number(anchor.y);
+    const distance = Math.hypot(dx, dy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = anchor;
+    }
+  }
+  return { anchor: best, distance: bestDistance };
+}
+
+function overlapScoreWithAnchor(candidate, anchor, anchorSize = 64) {
+  if (!anchor) return 0;
+  const half = anchorSize / 2;
+  const ax1 = Number(anchor.x) - half;
+  const ay1 = Number(anchor.y) - half;
+  const ax2 = Number(anchor.x) + half;
+  const ay2 = Number(anchor.y) + half;
+
+  const bx1 = Number(candidate.left);
+  const by1 = Number(candidate.top);
+  const bx2 = Number(candidate.left) + Number(candidate.width);
+  const by2 = Number(candidate.top) + Number(candidate.height);
+
+  if (Number(anchor.x) >= bx1 && Number(anchor.x) <= bx2 && Number(anchor.y) >= by1 && Number(anchor.y) <= by2) {
+    return 1;
+  }
+
+  const ix1 = Math.max(ax1, bx1);
+  const iy1 = Math.max(ay1, by1);
+  const ix2 = Math.min(ax2, bx2);
+  const iy2 = Math.min(ay2, by2);
+  const iw = Math.max(0, ix2 - ix1);
+  const ih = Math.max(0, iy2 - iy1);
+  const intersection = iw * ih;
+  const area = Math.max(1, Number(candidate.width) * Number(candidate.height));
+  return Math.max(0, Math.min(1, intersection / area));
+}
+
+function semanticMatchScore(candidate, keywords) {
+  if (!keywords.length) return 0.5;
+  const text = `${candidate.text || ""} ${candidate.aria || ""} ${candidate.selector || ""} ${candidate.href || ""}`.toLowerCase();
+  let hits = 0;
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) hits += 1;
+  }
+  return Math.max(0, Math.min(1, hits / keywords.length));
+}
+
+function linkRelevanceScore(candidate, keywords) {
+  const href = String(candidate.href || "").toLowerCase();
+  if (!href || !keywords.length) return 0;
+  const hits = keywords.filter(keyword => href.includes(keyword)).length;
+  return Math.max(0, Math.min(1, hits / Math.min(4, keywords.length)));
+}
+
+function adRiskScore(candidate) {
+  const haystack = `${candidate.text || ""} ${candidate.href || ""} ${candidate.selector || ""} ${candidate.className || ""}`.toLowerCase();
+  const risky = /(sponsored|promoted|advert|adservice|doubleclick|outbrain|taboola|affiliate|utm_)/.test(haystack);
+  return risky ? 1 : 0;
+}
+
+async function buildFullPageClickMap(targetKeywords, cqardsAnchors) {
+  const rawMap = await page.evaluate(() => {
+    const vw = Math.max(1, window.innerWidth || 1920);
+    const vh = Math.max(1, window.innerHeight || 1080);
+    const nodes = Array.from(document.querySelectorAll("*"));
+
+    const esc = value => {
+      try { return CSS.escape(String(value || "")); } catch { return String(value || "").replace(/[^a-zA-Z0-9_-]/g, ""); }
+    };
+
+    const visible = (el, rect, style) => {
+      if (!rect || rect.width < 2 || rect.height < 2) return false;
+      if (!style || style.display === "none" || style.visibility === "hidden" || Number(style.opacity || "1") < 0.05) return false;
+      if (style.pointerEvents === "none") return false;
+      return rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
+    };
+
+    const buildSelector = el => {
+      if (!el || el.nodeType !== 1) return "";
+      const tag = (el.tagName || "").toLowerCase();
+      const id = el.id ? `#${esc(el.id)}` : "";
+      if (id) return id;
+
+      const testId = el.getAttribute("data-testid") || el.getAttribute("data-qa") || "";
+      if (testId) return `[data-testid='${String(testId).replace(/'/g, "\\'")}']`;
+
+      const name = el.getAttribute("name") || "";
+      if (name) return `${tag}[name='${String(name).replace(/'/g, "\\'")}']`;
+
+      const aria = el.getAttribute("aria-label") || "";
+      if (aria) return `${tag}[aria-label='${String(aria).slice(0, 80).replace(/'/g, "\\'")}']`;
+
+      const href = tag === "a" ? (el.getAttribute("href") || "") : "";
+      if (href && href.startsWith("#")) return `${tag}[href='${String(href).replace(/'/g, "\\'")}']`;
+
+      let path = tag;
+      let node = el;
+      let depth = 0;
+      while (node && node.parentElement && depth < 4) {
+        const parent = node.parentElement;
+        const siblings = Array.from(parent.children).filter(sib => sib.tagName === node.tagName);
+        const idx = Math.max(1, siblings.indexOf(node) + 1);
+        const part = `${(node.tagName || "").toLowerCase()}:nth-of-type(${idx})`;
+        path = depth === 0 ? part : `${part} > ${path}`;
+        if (parent.id) {
+          path = `#${esc(parent.id)} > ${path}`;
+          break;
+        }
+        node = parent;
+        depth += 1;
+      }
+      return path;
+    };
+
+    return nodes.map((el, idx) => {
+      const tag = (el.tagName || "").toLowerCase();
+      const role = String(el.getAttribute("role") || "").toLowerCase();
+      const onclick = el.getAttribute("onclick");
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const clickable = tag === "a" || tag === "button" || role === "button" || !!onclick || style.cursor === "pointer";
+      if (!clickable) return null;
+      if (!visible(el, rect, style)) return null;
+
+      const text = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 180);
+      const href = tag === "a" ? (el.getAttribute("href") || "") : "";
+      return {
+        domIndex: idx,
+        tag,
+        role,
+        selector: buildSelector(el),
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+        cx: Math.round(rect.left + rect.width / 2),
+        cy: Math.round(rect.top + rect.height / 2),
+        text,
+        href,
+        aria: String(el.getAttribute("aria-label") || "").slice(0, 120),
+        className: String(el.className || "").slice(0, 200),
+        visible: true
+      };
+    }).filter(Boolean);
+  }).catch(() => []);
+
+  const viewport = await page.evaluate(() => ({
+    width: Math.max(1, Math.round(window.innerWidth || 1920)),
+    height: Math.max(1, Math.round(window.innerHeight || 1080))
+  })).catch(() => ({ width: 1920, height: 1080 }));
+
+  const anchors = normalizeCqardsAnchors(cqardsAnchors, viewport);
+  const diagonal = Math.hypot(viewport.width, viewport.height) || 1;
+
+  const scored = rawMap.map(candidate => {
+    const { anchor, distance } = nearestAnchorForCandidate(candidate, anchors);
+    const semantic = semanticMatchScore(candidate, targetKeywords);
+    const overlap = overlapScoreWithAnchor(candidate, anchor);
+    const distanceScore = anchors.length ? Math.max(0, Math.min(1, 1 - (distance / diagonal))) : 0.4;
+    const link = linkRelevanceScore(candidate, targetKeywords);
+    const visibility = candidate.visible ? 1 : 0;
+    const adRisk = adRiskScore(candidate);
+
+    const confidence = Math.max(0, Math.min(1,
+      semantic * 0.42 +
+      visibility * 0.16 +
+      overlap * 0.18 +
+      distanceScore * 0.16 +
+      link * 0.12 -
+      adRisk * 0.7
+    ));
+
+    return {
+      ...candidate,
+      nearestAnchor: anchor,
+      nearestAnchorDistance: Number.isFinite(distance) ? Number(distance.toFixed(2)) : null,
+      scoreBreakdown: {
+        semantic: Number(semantic.toFixed(3)),
+        visibility: Number(visibility.toFixed(3)),
+        overlap: Number(overlap.toFixed(3)),
+        distance: Number(distanceScore.toFixed(3)),
+        link: Number(link.toFixed(3)),
+        adRisk: Number(adRisk.toFixed(3))
+      },
+      confidence: Number(confidence.toFixed(4))
+    };
+  });
+
+  scored.sort((a, b) => {
+    if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+    return a.domIndex - b.domIndex;
+  });
+
+  const safeCandidates = scored.filter(candidate => candidate.scoreBreakdown.adRisk < 0.8);
+  return {
+    viewport,
+    anchors,
+    candidates: safeCandidates,
+    allCandidates: scored
+  };
+}
+
+async function captureInteractionSnapshot(selector = "", point = null) {
+  return page.evaluate(({ selectorValue, pointValue }) => {
+    const safeSelectorState = () => {
+      if (!selectorValue) return { exists: false, visible: false, disabled: false, checked: false, value: "", text: "" };
+      try {
+        const el = document.querySelector(selectorValue);
+        if (!el) return { exists: false, visible: false, disabled: false, checked: false, value: "", text: "" };
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        const visible = rect.width > 1 && rect.height > 1 && style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0.05;
+        return {
+          exists: true,
+          visible,
+          disabled: !!el.disabled,
+          checked: !!el.checked,
+          value: String(el.value || "").slice(0, 120),
+          text: String(el.innerText || el.textContent || "").trim().slice(0, 160)
+        };
+      } catch {
+        return { exists: false, visible: false, disabled: false, checked: false, value: "", text: "" };
+      }
+    };
+
+    const safePointFingerprint = () => {
+      if (!pointValue || !Number.isFinite(Number(pointValue.x)) || !Number.isFinite(Number(pointValue.y))) return "";
+      const x = Number(pointValue.x);
+      const y = Number(pointValue.y);
+      const el = document.elementFromPoint(x, y);
+      if (!el) return "";
+      const tag = String(el.tagName || "").toLowerCase();
+      const id = el.id ? `#${String(el.id).slice(0, 80)}` : "";
+      const cls = String(el.className || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".");
+      return `${tag}${id}${cls ? "." + cls : ""}`;
+    };
+
+    return {
+      url: String(window.location.href || ""),
+      title: String(document.title || ""),
+      selector: safeSelectorState(),
+      pointFingerprint: safePointFingerprint()
+    };
+  }, {
+    selectorValue: String(selector || ""),
+    pointValue: point && Number.isFinite(Number(point.x)) && Number.isFinite(Number(point.y))
+      ? { x: Number(point.x), y: Number(point.y) }
+      : null
+  }).catch(() => ({
+    url: (() => { try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; } })(),
+    title: "",
+    selector: { exists: false, visible: false, disabled: false, checked: false, value: "", text: "" },
+    pointFingerprint: ""
+  }));
+}
+
+function hasMeaningfulInteractionEffect(before, after) {
+  if (!before || !after) return false;
+  if (String(before.url || "") !== String(after.url || "")) return true;
+  if (String(before.title || "") !== String(after.title || "")) return true;
+
+  const bs = before.selector || {};
+  const as = after.selector || {};
+  if (bs.exists !== as.exists) return true;
+  if (bs.visible !== as.visible) return true;
+  if (bs.disabled !== as.disabled) return true;
+  if (bs.checked !== as.checked) return true;
+  if (String(bs.value || "") !== String(as.value || "")) return true;
+  if (String(bs.text || "") !== String(as.text || "")) return true;
+
+  if (String(before.pointFingerprint || "") !== String(after.pointFingerprint || "")) return true;
+  return false;
+}
+
+async function waitForMeaningfulInteractionEffect(before, selector = "", point = null, timeoutMs = 1200) {
+  const started = Date.now();
+  while ((Date.now() - started) < timeoutMs) {
+    const after = await captureInteractionSnapshot(selector, point);
+    if (hasMeaningfulInteractionEffect(before, after)) {
+      return { changed: true, after };
+    }
+    await page.waitForTimeout(160).catch(() => {});
+  }
+  const after = await captureInteractionSnapshot(selector, point);
+  return { changed: hasMeaningfulInteractionEffect(before, after), after };
+}
+
 function isDynamicUiHot(visionSnap) {
   const changedFrames = Number(visionSnap?.changedFrames || 0);
   const unchangedFrames = Number(visionSnap?.unchangedFrames || 0);
@@ -3279,8 +4782,29 @@ Output JSON only.`;
   // confusing "Bad input" error too, distinct from the content-shape bug).
   const bounded = trimHistory(plannerHistory, MAX_PLANNER_HISTORY_MESSAGES);
 
+  const normalizePlannerResponse = (rawPlan, fallbackReason = "") => {
+    const plan = rawPlan && typeof rawPlan === "object" ? { ...rawPlan } : {};
+    const parsedConfidence = Number(plan.confidence);
+    const confidenceMissing = !Number.isFinite(parsedConfidence);
+    plan.confidence = confidenceMissing
+      ? 0
+      : Math.max(0, Math.min(100, Math.round(parsedConfidence)));
+    plan._confidenceMissing = confidenceMissing;
+    plan.reasoning = String(plan.reasoning || fallbackReason || "Planner returned no reasoning. Using conservative recovery.")
+      .trim()
+      .slice(0, 1200);
+    if (confidenceMissing) {
+      plan.reasoning = (`Confidence missing from planner output. ${plan.reasoning}`).slice(0, 1200);
+    }
+    plan.done = !!plan.done;
+    plan.actions = Array.isArray(plan.actions)
+      ? plan.actions.filter(item => item && typeof item === "object" && item.action).slice(0, 3)
+      : [];
+    return plan;
+  };
+
   try {
-    const raw    = await callCFAI(models.planner, bounded, 1500);
+    const raw    = await callCFAI(models.planner, bounded, 1500, 2, getRuntimeTemperature(models));
     const parsed = safeParseJSON(raw);
     if (!parsed) {
       plannerHistory.push({ role: "assistant", content: raw });
@@ -3288,14 +4812,20 @@ Output JSON only.`;
       const fixed = await callCFAI(models.reasoner, [
         { role: "system", content: "Fix this malformed JSON action plan. Output ONLY valid JSON with reasoning, confidence, done, actions fields." },
         { role: "user",   content: raw }
-      ], 800);
+      ], 800, 2, getRuntimeTemperature(models));
       const fixedParsed = safeParseJSON(fixed);
-      if (!fixedParsed) return { reasoning: "parse failed", done: false, actions: [], confidence: 0, _parseFailed: true };
-      return fixedParsed;
+      if (!fixedParsed) {
+        return normalizePlannerResponse(
+          { reasoning: "Planner parse failed after repair.", done: false, actions: [], confidence: 0, _parseFailed: true },
+          "Planner parse failed after repair."
+        );
+      }
+      return normalizePlannerResponse(fixedParsed, "Planner output repaired from malformed JSON.");
     }
     plannerHistory.push({ role: "assistant", content: raw });
-    const alignment = evaluatePeerAlignment(parsed, peerSignals);
-    think(`Planner [${parsed.confidence ?? "?"}% | peer ${Math.round(alignment.score * 100)}%]: ${(parsed.reasoning || "").slice(0, 300)}`);
+    const normalizedParsed = normalizePlannerResponse(parsed, "Planner response had missing fields.");
+    const alignment = evaluatePeerAlignment(normalizedParsed, peerSignals);
+    think(`Planner [${normalizedParsed.confidence}% | peer ${Math.round(alignment.score * 100)}%]: ${(normalizedParsed.reasoning || "").slice(0, 300)}`);
     broadcast("peer_alignment", {
       score: Number(alignment.score.toFixed(2)),
       alignment: Number(alignment.alignment.toFixed(2)),
@@ -3305,7 +4835,7 @@ Output JSON only.`;
       hints: alignment.hints,
       summary: `${alignment.verdict.toUpperCase()} peer signals (${alignment.matched}/${alignment.total || 0})`
     });
-    return parsed;
+    return normalizedParsed;
   } catch (err) {
     errLog("Planner error: " + err.message);
     throw err;
@@ -3315,182 +4845,74 @@ Output JSON only.`;
 // The Planner's system prompt — defined once, pushed once at task start.
 // (Pulled out as its own constant so it's easy to find/edit, and so it's
 // unambiguous that this is the ONLY place that ever sets plannerHistory[0].)
-const PLANNER_SYSTEM_PROMPT = `You are the Planner — the elite strategic brain of an autonomous browser agent.
-You are methodical, adaptive, and always make forward progress. You NEVER give up without exhausting every strategy.
+const PLANNER_SYSTEM_PROMPT = `You are the Planner for an autonomous browser agent.
+Be concise, reliable, and progress-focused.
 
-═══════════════════════════════════════════════════════
-AVAILABLE ACTIONS (EXACT action names only)
-═══════════════════════════════════════════════════════
-Navigation:   goto(url), reload(), goBack(), goForward()
-Interaction:  click(selector), dblclick(selector), hover(selector)
-              fill(selector, text), type(selector, text), press(selector, key)
-              check(selector), uncheck(selector), selectOption(selector, value)
-              scrollIntoView(selector)
-Submit:       submitForm(selector?)  ← USE THIS for search/forms instead of clicking hidden buttons
-Keyboard:     keyboardType(text), keyboardPress(key)
-Mouse:        mouseMove(x,y), mouseClick(x,y), mouseWheel(deltaX, deltaY)
-Wait:         waitForSelector(selector), waitForVisible(selector), waitForTimeout(ms)
-              waitForLoadState(state)  ← ONLY valid states: load | domcontentloaded | networkidle | commit
-              waitForURLChange(currentURL)  ← best for SPA navigation detection
-Extract:      getText(selector), getAttribute(selector, name), getAllText()
-Check:        isVisible(selector), elementExists(selector)
-Other:        evaluate(script), screenshot(path)
-Tabs:         openNewTab(url?), switchToTab(index|urlIncludes), listTabs(), closeCurrentTab()
-Pinch API:    pinchListTickets(), pinchSendTicketMessage(ticketId, body), pinchListWebhooks(), pinchListWebhookTypes()
+Allowed actions:
+goto, reload, goBack, goForward,
+click, dblclick, hover, fill, type, press, check, uncheck, selectOption, scrollIntoView,
+submitForm, keyboardType, keyboardPress, mouseMove, mouseClick, mouseWheel,
+waitForSelector, waitForVisible, waitForTimeout, waitForLoadState, waitForURLChange,
+getText, getAttribute, getAllText, isVisible, elementExists, evaluate, screenshot,
+openNewTab, switchToTab, listTabs, closeCurrentTab,
+pinchListTickets, pinchSendTicketMessage, pinchListWebhooks, pinchListWebhookTypes.
 
-═══════════════════════════════════════════════════════
-SELECTOR PRIORITY (try in order)
-═══════════════════════════════════════════════════════
-1. Text:    button:has-text('Search')   a:has-text('Login')   [role='button']:has-text('Go')
-2. ARIA:    [aria-label='Search']   [placeholder='Search the web']   [role='searchbox']
-3. Data:    [data-testid='...']   [name='q']   [id='search-input']
-4. Type:    input[type='search']   input[type='text']:visible   textarea:visible
-5. SUBMIT:  submitForm() NOT click([type='submit']) — submit buttons are almost always hidden!
-6. JS:      evaluate('document.querySelector("...").click()')
+Hard rules:
+1) JSON only output.
+2) Max 3 atomic actions.
+3) Never use waitForLoadState("complete"); only load|domcontentloaded|networkidle|commit.
+4) For search boxes: fill(selector,text) then submitForm(selector) or press(selector,"Enter").
+5) Never click hidden/generic submit controls when submitForm can be used.
+6) Do not repeat the same failing action+selector pair.
+7) If vision already shows required content, prefer extraction/done over extra clicks.
+8) If peer/supervisor signals conflict with your default guess, prioritize peer/supervisor.
 
-═══════════════════════════════════════════════════════
-CRITICAL RULES — MUST FOLLOW
-═══════════════════════════════════════════════════════
-CRITICAL RULES — MUST FOLLOW
+Selector priority:
+text > aria > data-testid/name/id > type-visible > js/evaluate fallback.
 
-✦ NEVER use waitForLoadState("complete"). Valid states: "load", "domcontentloaded", "networkidle", "commit".
-✦ when you dont understand the UI of a search engine go to this https://bing.com/search?q=*your query here*
-✦ NEVER click [type='submit'] or [name='search']. These are hidden.
-→ Use submitForm() or press(inputSelector, "Enter").
+Creativity policy (small, safe):
+- You may try one novel but low-risk variation per step (alternate selector family, nearby semantic link, or direct results URL) if prior approach is stalling.
+- Keep creativity bounded: no speculative navigation to unrelated domains.
 
-✦ NEVER repeat the same failing (action + selector) twice.
-→ If click fails: submitForm → press Enter → evaluate JS click → mouseClick via vision.
-
-✦ For ALL search engines (Bing/Google/DDG): fill input → submitForm(). Never click a button.
-
-✦ After fill/type: ALWAYS follow with submitForm() or press(selector, "Enter").
-
-✦ For SPA pages: use waitForURLChange(currentURL) or waitForVisible(expectedElement).
-
-✦ Set done:true ONLY when vision confirms goal completion with visible evidence.
-
-✦ Multi‑stage prompts (STAGE 1, STAGE 2…): complete in order. Never skip stages.
-
-✦ When user asks for ticketing/webhook operations, prefer Pinch actions over browser clicks.
-
-✦ Validate each stage: confirm URL/title + at least one expected element/text.
-
-✦ If navigation fails: retry ONCE, then switch strategy.
-
-✦ If a stage requires a new tab: openNewTab(), then switchToTab() later.
-
-✦ PEER PRIORITY: treat Reasoner instinct, Vision feedback, Supervisor gate history, and research hints as first-class signals.
-→ If your default guess conflicts with these peer signals, follow peer signals.
-→ If supervisor recently warned/blocked, choose a more conservative next action set.
-
-═══════════════════════════════════════════════════════
-EFFICIENCY & INTUITIVE REASONING (Smart Agent Behavior)
-═══════════════════════════════════════════════════════
-✦ VISION-FIRST APPROACH: Always check VISIBLE_TEXT_EXACT from vision BEFORE trying DOM selectors.
-   If the text you need is already in the vision feedback, use it directly. Done.
-
-✦ Example: Task = "Extract first paragraph"
-   Vision shows: "VISIBLE_TEXT_EXACT: The potato is a root vegetable native to the Americas..."
-   Action: Use getAllText() to grab visible text, or reason that you already have it.
-   DON'T waste steps trying multiple DOM selectors that will fail.
-
-✦ FAST CIRCUIT BREAKING: If a strategy fails 2x consecutively, abandon it immediately.
-   Example: getText selector failed? Try ONE alternate selector. If that fails, use getAllText().
-   Don't try 5 different selector variations.
-
-✦ RECOGNIZE TASK COMPLETION: If the goal asks for text/info that vision already captured, mark done:true.
-   Don't keep extracting once you have the answer visible.
-
-✦ SKIP UNNECESSARY EXTRACTIONS: If the page is asking you to summarize what you see, and vision has it,
-   use vision data directly. No need to extract via getText() — you already see it.
-
-✦ FAST PIVOTING: If current strategy is stalling (2+ failures with same approach):
-   → Try adjacent selector family (Text → ARIA → Data)
-   → Or switch from getText to getAllText to vision extraction
-   → Don't repeat the same selector 10 times.
-
-✦ REASONABLE DEFAULTS: For common tasks (search for X, read first paragraph, etc.):
-   Use proven approaches: getText(firstParagraphSelector), getAllText() for full content,
-   or extract from visible text in vision feedback.
-
-CLICK & FILL EXECUTION
-
-✦ click(selector) and fill(selector, text) already execute with smooth human-like cursor motion internally.
-  Just emit click(selector) or fill(selector, text) — do NOT add separate mouseMove steps before them.
-  Only use mouseMove/mouseClick when you have real pixel coordinates from a vision report.
-
-✦ click(selector) vs mouseClick(x, y): these are different actions, never mix their params.
-  click takes { "selector": "..." } only. mouseClick takes { "x": <number>, "y": <number> }
-  only — never put a selector in mouseClick's params.
-CLICK FAILURE RECOVERY LADDER
-
-Step 1: scrollIntoView(selector) → click(selector)
-Step 2: submitForm(selector)
-Step 3: press(inputSelector, "Enter")
-Step 4: evaluate("document.querySelector('selector').click()")
-Step 5: mouseClick(x,y) using vision coordinates
-═══════════════════════════════════════════════════════
-CLICK FAILURE RECOVERY LADDER
-═══════════════════════════════════════════════════════
-Step 1: scrollIntoView(selector) then click(selector)
-Step 2: submitForm(selector)
-Step 3: press(inputSelector, 'Enter')
-Step 4: evaluate('document.querySelector("selector").click()')
-Step 5: Use vision coordinates with mouseClick(x, y)
-
-═══════════════════════════════════════════════════════
-OUTPUT — JSON ONLY, no markdown, no extra text
-═══════════════════════════════════════════════════════
+Output schema:
 {
-  "reasoning": "What I see, what I'm doing, why this strategy will work",
+  "reasoning": "short tactical reason",
   "confidence": 0-100,
   "done": false,
-  "actions": [
-    { "action": "actionName", "params": { "key": "value" } }
-  ]
-}
+  "actions": [{ "action": "name", "params": {} }]
+}`;
 
-- Max 3 actions per turn. Atomic, focused steps.
-- confidence < 35: goto the URL directly and start fresh.
-- Stuck or all-fail: completely switch selector family, submit method, or navigation path.`;
-
-const REASONER_INSTINCT_PROMPT = `You are the Reasoner instinct layer for an autonomous browser agent.
-IF the USER is merely talking you may ignore the rest of this prompt. However, if the USER is asking a browser task to be done, you must FOLLOW EVERY STEP of this prompt. You are the fast intuition that helps the Planner avoid dumb moves.
-You do not plan the whole task. You do not write long explanations.
-You act like fast intuition before the Planner moves.
-
-Your job is to inspect the current goal, page state, recent steps, and any vision notes,
-then return a sharp instinct that helps the Planner avoid dumb moves.
+const REASONER_INSTINCT_PROMPT = `You are the fast instinct layer.
+Give short, operational guidance before planning.
 
 Output JSON only:
 {
-  "instinct": "one short, concrete sentence about what matters right now",
-  "risk": "low" | "medium" | "high",
-  "next_focus": "one short phrase naming the most important target or action family",
-  "caution": "one short warning or failure pattern to avoid"
+  "instinct": "one concrete sentence",
+  "risk": "low|medium|high",
+  "next_focus": "short target/action family",
+  "caution": "one likely failure to avoid"
 }
 
 Rules:
-- Be immediate and operational.
-- Prefer the simplest useful interpretation.
-- If the page looks blocked, say so.
-- If the next move is obvious, state it plainly.
-- Do not restate the full task.
-- Do not be verbose. Think like instinct, not narration.
-
-CRITICAL EFFICIENCY CHECKS:
-- If vision already captured the text/data needed for the task → suggest using it directly.
-  Example: "Vision has the text already. Use getAllText() and extract from there."
-- If recent actions kept failing with same selector → suggest pivoting to a different selector family.
-  Example: "DOM selector failed 2x. Try vision text extraction instead."
-- If task is to extract/read something visible → check if it's already in VISIBLE_TEXT_EXACT.
-  If yes → suggest marking done or extracting from vision, not retrying DOM selectors.`;
+1) No narration, no long explanations.
+2) If page is blocked or uncertain, say it clearly.
+3) If vision already contains needed answer, advise extract/finish.
+4) If same selector/action keeps failing, advise a different selector family or submit path.
+5) Allow one small creative suggestion only when risk is low and it directly supports the goal.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: EXECUTOR
 // ─────────────────────────────────────────────────────────────────────────────
 async function runActionWithFallback(item, goal, models) {
-  const { action, params } = item;
+  const action = item?.action;
+  const params = { ...(item?.params || {}) };
+  if (action === "goto" && params?.url) {
+    let normalizedUrl = String(params.url).trim().replace(/[\]\[)\("'`]+$/g, "").replace(/[.,;!?]+$/g, "");
+    if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl)) {
+      normalizedUrl = `https://${normalizedUrl}`;
+    }
+    params.url = normalizedUrl;
+  }
   const currentUrl = (() => {
     try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
   })();
@@ -3844,55 +5266,78 @@ async function executeActionPlan(plan, goal, models, throttle = {}, supervisorCo
         : buildSelectorVariants(baseSelector, HYBRID_SELECTOR_VARIANTS);
       const pointerAction = action === "hybridDblclick" ? "mouseDblclick" : "mouseClick";
       const selectorAction = action === "hybridDblclick" ? "dblclick" : "click";
-      let cycle = 0;
-      let changed = false;
-      let urlBefore = (() => {
-        try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
-      })();
-      let urlAfter = urlBefore;
-      const cycleResults = [];
+      const targetKeywords = extractTargetKeywords(goal, baseSelector);
+      const clickMap = await buildFullPageClickMap(targetKeywords, cqards);
+      const rankedCandidates = clickMap.candidates.slice(0, Math.max(1, HYBRID_SELECTOR_VARIANTS * 2));
 
-      while (!changed && cycle < HYBRID_URL_CHANGE_MAX_CYCLES) {
-        cycle += 1;
-        stepLogMsg(`Hybrid ${selectorAction} cycle ${cycle}/${HYBRID_URL_CHANGE_MAX_CYCLES} for ${baseSelector}: cqards first, selectors second.`);
+      stepLogMsg(`Fusion click sweep: selector=${baseSelector || "(none)"}, clickable=${clickMap.allCandidates.length}, safe=${clickMap.candidates.length}, anchors=${clickMap.anchors.length}.`);
 
-        for (const point of cqards) {
-          const clickResult = await runActionWithFallback({ action: pointerAction, params: { x: point.x, y: point.y } }, goal, models);
-          cycleResults.push(clickResult);
-          const nowUrl = (() => {
-            try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
-          })();
-          if (nowUrl !== urlBefore) {
-            changed = true;
-            urlAfter = nowUrl;
-            break;
-          }
-          await sleepLikeHuman(90 + Math.random() * 120, page, { x: point.x, y: point.y });
-        }
-
-        if (changed) break;
-
-        for (const variant of selectorVariants) {
-          const clickResult = await runActionWithFallback({ action: selectorAction, params: { selector: variant } }, goal, models);
-          cycleResults.push(clickResult);
-          const nowUrl = (() => {
-            try { return page?.url?.() || "about:blank"; } catch { return "about:blank"; }
-          })();
-          if (nowUrl !== urlBefore) {
-            changed = true;
-            urlAfter = nowUrl;
-            break;
-          }
-          await sleepLikeHuman(110 + Math.random() * 150, page);
-        }
+      if (!rankedCandidates.length) {
+        errLog(`Fusion click found no safe candidates for ${baseSelector || "(none)"}`);
+        results.push({ action, status: "error", error: `fusion click found no safe candidates for ${baseSelector || "(none)"}` });
+        break;
       }
 
-      if (changed) {
-        status(`Hybrid click detected URL change: ${urlBefore} -> ${urlAfter}`);
-        results.push({ action, status: "ok", result: `url-changed ${urlBefore} -> ${urlAfter}`, attempts: cycleResults.length });
+      let fusionSuccess = null;
+      const fusionAttempts = [];
+
+      for (const candidate of rankedCandidates) {
+        const selectorLadder = [candidate.selector, ...selectorVariants].filter(Boolean);
+        const nearestAnchor = candidate.nearestAnchor || clickMap.anchors[0] || null;
+
+        for (const selectorCandidate of selectorLadder) {
+          try {
+            const result = await actions[selectorAction]({ page, context, selector: selectorCandidate });
+            fusionSuccess = { candidate, method: "selector", selector: selectorCandidate, result: String(result || "") };
+            fusionAttempts.push({ method: "selector", selector: selectorCandidate, status: "ok" });
+            break;
+          } catch (err) {
+            fusionAttempts.push({ method: "selector", selector: selectorCandidate, status: "error", error: String(err?.message || err) });
+          }
+        }
+        if (fusionSuccess) break;
+
+        try {
+          const result = await actions[pointerAction]({ page, context, x: candidate.cx, y: candidate.cy });
+          fusionSuccess = { candidate, method: "bbox-center", x: candidate.cx, y: candidate.cy, result: String(result || "") };
+          fusionAttempts.push({ method: "bbox-center", x: candidate.cx, y: candidate.cy, status: "ok" });
+          break;
+        } catch (err) {
+          fusionAttempts.push({ method: "bbox-center", x: candidate.cx, y: candidate.cy, status: "error", error: String(err?.message || err) });
+        }
+
+        if (nearestAnchor) {
+          try {
+            const result = await actions[pointerAction]({ page, context, x: nearestAnchor.x, y: nearestAnchor.y });
+            fusionSuccess = { candidate, method: "cqards-anchor", x: nearestAnchor.x, y: nearestAnchor.y, result: String(result || "") };
+            fusionAttempts.push({ method: "cqards-anchor", x: nearestAnchor.x, y: nearestAnchor.y, status: "ok" });
+            break;
+          } catch (err) {
+            fusionAttempts.push({ method: "cqards-anchor", x: nearestAnchor.x, y: nearestAnchor.y, status: "error", error: String(err?.message || err) });
+          }
+        }
+
+        for (const selectorCandidate of selectorLadder) {
+          try {
+            await actions.scrollIntoView({ page, context, selector: selectorCandidate });
+            const result = await actions[selectorAction]({ page, context, selector: selectorCandidate });
+            fusionSuccess = { candidate, method: "scroll-retry", selector: selectorCandidate, result: String(result || "") };
+            fusionAttempts.push({ method: "scroll-retry", selector: selectorCandidate, status: "ok" });
+            break;
+          } catch (err) {
+            fusionAttempts.push({ method: "scroll-retry", selector: selectorCandidate, status: "error", error: String(err?.message || err) });
+          }
+        }
+        if (fusionSuccess) break;
+      }
+
+      if (fusionSuccess) {
+        const summary = `${fusionSuccess.method} score=${fusionSuccess.candidate.confidence} selector=${fusionSuccess.candidate.selector || "(none)"}`;
+        status(`Fusion click success: ${summary}`);
+        results.push({ action, status: "ok", result: summary, attempts: fusionAttempts.length });
       } else {
-        errLog(`Hybrid click exhausted without URL change for ${baseSelector}`);
-        results.push({ action, status: "error", error: `hybrid click exhausted without URL change for ${baseSelector}` });
+        errLog(`Fusion click exhausted for ${baseSelector || "(none)"}`);
+        results.push({ action, status: "error", error: `fusion click exhausted for ${baseSelector || "(none)"}`, attempts: fusionAttempts.length });
         break;
       }
       burstCount++;
@@ -3936,7 +5381,7 @@ Write a natural, intelligent, specific answer (2-6 sentences).
 If completed: report exactly what you found/did with specific details (numbers, names, URLs, text).
 If incomplete: explain honestly what happened and what would be needed to complete it.
 Output ONLY the answer — no JSON, no markdown, no headers.`
-    }], 600);
+    }], 600, 2, getRuntimeTemperature(models));
     return stripThinking(raw);
   } catch (err) {
     return completed
@@ -3965,7 +5410,7 @@ ${taskLog.slice(-6).join("\n") || "(none)"}
 
 Mark done=true only when there is clear evidence the goal is satisfied.`
       }
-    ], 220, 1);
+    ], 220, 1, getRuntimeTemperature(models));
 
     const parsed = safeParseJSON(raw);
     return {
@@ -3995,7 +5440,7 @@ ${taskLog.slice(-6).join("\n") || "(none)"}
 
 Return the instinct JSON now.`
       }
-    ], 220, 1);
+    ], 220, 1, getRuntimeTemperature(models));
 
     const parsed = safeParseJSON(raw);
     if (parsed) {
@@ -4089,7 +5534,8 @@ function sanitizeTaskGoal(rawGoal) {
 
 function extractUrlFromText(goalText) {
   const m = String(goalText || "").match(/https?:\/\/[^\s)]+/i);
-  return m ? m[0] : null;
+  if (!m) return null;
+  return String(m[0] || "").replace(/[\]\[)\("'`]+$/g, "").replace(/[.,;!?]+$/g, "");
 }
 
 function extractSearchQuery(goalText) {
@@ -4098,6 +5544,65 @@ function extractSearchQuery(goalText) {
   if (quoted) return quoted[1].trim();
   const m = g.match(/search\s+for\s+([^\n\.]{2,120})/i) || g.match(/look\s+up\s+([^\n\.]{2,120})/i);
   return m ? m[1].trim() : null;
+}
+
+function getOriginalQuery(goalText) {
+  const fromGoal = extractSearchQuery(goalText);
+  if (fromGoal) return fromGoal;
+  return String(goalText || "").trim().slice(0, 180);
+}
+
+function isMapsLikeUrl(rawUrl) {
+  const value = String(rawUrl || "").toLowerCase();
+  if (!value) return false;
+  return value.includes("google.com/maps") || value.includes("/place/");
+}
+
+function isActionFailureStatus(status) {
+  const normalized = String(status || "").toLowerCase();
+  return normalized === "error" || normalized === "blocked" || normalized === "failed";
+}
+
+function isEscapeManagedActionName(actionName) {
+  const normalized = String(actionName || "").toLowerCase();
+  return ["click", "type", "scrollintoview", "hybridclick", "submitform", "switchtotab", "switchtab", "goto"].includes(normalized);
+}
+
+function detectVisionDynamicFailureSignal(visionFeedback, visionSnap, dynamicUiHot = false) {
+  const feedbackText = String(visionFeedback || "").toLowerCase();
+  const rawText = String(visionSnap?.raw || "").toLowerCase();
+  const signalText = [
+    String(visionSnap?.signal?.state || ""),
+    String(visionSnap?.signal?.blocker || ""),
+    String(visionSnap?.signal?.evidence || ""),
+    String(visionSnap?.signal?.next_focus || "")
+  ].join(" ").toLowerCase();
+
+  return dynamicUiHot ||
+    /no_usable_elements_found/.test(feedbackText) ||
+    /action_result\s*:\s*"?failed"?/.test(feedbackText) ||
+    /pointer\s+events?\s+intercept/.test(`${feedbackText} ${rawText} ${signalText}`) ||
+    /dynamic\s+ui\s+detected/.test(`${feedbackText} ${rawText} ${signalText}`) ||
+    /stale\s+dom/.test(`${feedbackText} ${rawText} ${signalText}`);
+}
+
+function computePlanSignature(plan) {
+  const actionsList = Array.isArray(plan?.actions) ? plan.actions : [];
+  return JSON.stringify(actionsList.map(item => ({
+    action: String(item?.action || ""),
+    selector: String(item?.params?.selector || ""),
+    url: String(item?.params?.url || ""),
+    index: Number.isFinite(Number(item?.params?.index)) ? Number(item.params.index) : null,
+    urlIncludes: String(item?.params?.urlIncludes || "")
+  })));
+}
+
+function actionEntersMaps(item) {
+  const action = String(item?.action || "");
+  const params = item?.params || {};
+  if (action !== "goto" && action !== "switchToTab") return false;
+  const url = action === "goto" ? params?.url : params?.urlIncludes;
+  return isMapsLikeUrl(url);
 }
 
 function extractDomainHints(text) {
@@ -4390,14 +5895,33 @@ function buildConfusionHintContext(researchResult) {
 function inferHeuristicPlan(goal, state, taskLog, failures) {
   const lowerGoal = String(goal || "").toLowerCase();
   const currentUrl = String(state?.url || "about:blank");
-  const directUrl = extractUrlFromText(goal);
+  const directUrlRaw = extractUrlFromText(goal);
+  const directUrl = String(directUrlRaw || "").replace(/[\]\[)\("'`]+$/g, "").replace(/[.,;!?]+$/g, "");
+  const currentHost = getHostFromUrl(currentUrl);
+
+  const countRecentActionStatus = (needle) => {
+    const token = String(needle || "").toLowerCase();
+    return (taskLog || []).slice(-10).reduce((sum, line) => {
+      return String(line || "").toLowerCase().includes(token) ? sum + 1 : sum;
+    }, 0);
+  };
 
   // 1) If goal includes an explicit URL and we are not there, go directly.
   if (directUrl) {
     const host = (() => {
       try { return new URL(directUrl).host; } catch { return ""; }
     })();
-    if (host && !currentUrl.includes(host)) {
+    const normalizedCurrent = currentUrl.replace(/\/+$/g, "");
+    const normalizedDirect = directUrl.replace(/\/+$/g, "");
+    const isSameUrl = normalizedCurrent === normalizedDirect;
+    const isSameHost = !!host && host === currentHost;
+    const query = extractSearchQuery(goal);
+
+    // Avoid self-looping reset gotos (especially to google homepage) when we already
+    // have a query-driven task to progress.
+    if (isSameUrl || (isSameHost && query)) {
+      // skip direct-url goto fallback and continue to query heuristics below
+    } else if (host && !currentUrl.includes(host)) {
       return {
         reasoning: `Heuristic: navigate directly to target URL ${directUrl}`,
         confidence: 78,
@@ -4410,6 +5934,23 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
   // 2) Search workflow: fill visible search input then submit via Enter.
   const query = extractSearchQuery(goal);
   if (query) {
+    const recentFillAttempts = countRecentActionStatus("fill:ok") + countRecentActionStatus("submitform:ok");
+    const recentGotoGoogle = countRecentActionStatus("goto:ok") + countRecentActionStatus("google.com");
+    const shouldForceSearchUrl = recentFillAttempts >= 4 || recentGotoGoogle >= 4 || failures >= 2;
+
+    if (shouldForceSearchUrl) {
+      const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+      return {
+        reasoning: `Heuristic anti-loop: jump directly to search results for \"${query}\" to avoid repeating homepage actions.`,
+        confidence: 76,
+        done: false,
+        actions: [
+          { action: "goto", params: { url: searchUrl } },
+          { action: "waitForVisible", params: { selector: "a[href]", timeout: 8000 } }
+        ]
+      };
+    }
+
     const visibleInput = (state?.inputs || []).find(i => i.visible && /search|text/i.test(String(i.type || "")));
     const inputSelector = visibleInput
       ? (visibleInput.id ? `#${visibleInput.id}` : (visibleInput.name ? `[name='${visibleInput.name}']` : "input[type='search'],input[type='text'],textarea"))
@@ -4506,6 +6047,38 @@ function detectPsychosisState(taskLog, failures, step) {
   return "ok";
 }
 
+async function detectMapsTrap(state) {
+  const urlLower = String(state?.url || "").toLowerCase();
+  const mapsHostOrPlace = isMapsLikeUrl(urlLower);
+  let mapGridOnSearch = false;
+  let pointerInterceptOverlay = false;
+
+  if (page) {
+    mapGridOnSearch = await page.evaluate(() => {
+      const href = String(location.href || "").toLowerCase();
+      if (!href.includes("/search/")) return false;
+      const selectors = [
+        "[aria-label*='map' i]",
+        "#scene",
+        ".m6QErb",
+        "[data-result-index]",
+        "a[href*='google.com/maps']"
+      ];
+      return selectors.some(sel => !!document.querySelector(sel));
+    }).catch(() => false);
+
+    pointerInterceptOverlay = await page.evaluate(() => {
+      return !!document.querySelector(".ZHeE1b, .DgCNMb, .Owrmqf.t090lc");
+    }).catch(() => false);
+  }
+
+  const triggered = mapsHostOrPlace || mapGridOnSearch || pointerInterceptOverlay;
+  const reason = mapsHostOrPlace
+    ? "maps-url"
+    : (mapGridOnSearch ? "maps-grid-search" : (pointerInterceptOverlay ? "maps-pointer-overlay" : "none"));
+  return { triggered, reason };
+}
+
 function clamp01(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
@@ -4521,7 +6094,6 @@ function instinctRiskValue(riskLabel) {
 
 function visionRiskValue(visionSignal, visionFresh) {
   const state = String(visionSignal?.state || "").toLowerCase();
-  if (!visionFresh) return 0.34;
   if (state === "uncertain") return 0.36;
   if (state === "blocked" || state === "challenge") return 0.44;
   if (state === "clear" || state === "ready") return 0.08;
@@ -4595,10 +6167,22 @@ function evaluateSupervisorPlanGate(input = {}) {
   const plan = input.plan || {};
   const failures = Number(input.failures || 0);
   const stuck = !!input.stuck;
+  const currentUrl = String(input.currentUrl || "").toLowerCase();
   const confidence = clamp01(Number(plan.confidence || 0) / 100);
   const instinctRisk = instinctRiskValue(input.instinct?.risk);
   const visionRisk = visionRiskValue(input.visionSignal, !!input.visionFresh);
   const planRisk = planRiskValue(plan.actions || []);
+  const actionsList = Array.isArray(plan.actions) ? plan.actions : [];
+  const planSignature = computePlanSignature(plan);
+  const previousPlanSignature = String(input.previousPlanSignature || "");
+  const escapedAction = String(input.escapeContext?.lastFailedAction || "");
+  const escapedSelector = String(input.escapeContext?.lastFailedSelector || "");
+
+  const repeatsFailedSelector = !!escapedSelector && actionsList.some(item => String(item?.params?.selector || "") === escapedSelector);
+  const repeatsFailedAction = !!escapedAction && actionsList.some(item => String(item?.action || "") === escapedAction);
+  const reentersMaps = actionsList.some(actionEntersMaps);
+  const repeatsSamePlan = !!previousPlanSignature && previousPlanSignature === planSignature;
+  const blankLoopRisk = currentUrl === "about:blank" && !actionsList.some(item => String(item?.action || "") === "goto");
 
   let score = 0.76;
   score += (confidence - 0.5) * 0.34;
@@ -4607,14 +6191,24 @@ function evaluateSupervisorPlanGate(input = {}) {
   score -= visionRisk * 0.21;
   score -= Math.min(0.3, failures * 0.08);
   if (stuck) score -= 0.12;
+  if (repeatsFailedSelector) score -= 0.32;
+  if (repeatsFailedAction) score -= 0.22;
+  if (reentersMaps) score -= 0.4;
+  if (repeatsSamePlan) score -= 0.28;
+  if (blankLoopRisk) score -= 0.24;
   score = clamp01(score);
 
   const reasons = [];
   if (planRisk >= 0.58) reasons.push(`high plan risk ${planRisk.toFixed(2)}`);
   if (instinctRisk >= 0.7) reasons.push(`reasoner marked high risk (${String(input.instinct?.risk || "high")})`);
-  if (visionRisk >= 0.3) reasons.push(input.visionFresh ? "vision uncertain" : "vision stale");
+  if (visionRisk >= 0.3) reasons.push("vision uncertain");
   if (failures >= 2) reasons.push(`recent failures: ${failures}`);
   if (stuck) reasons.push("looping pattern detected");
+  if (repeatsFailedSelector) reasons.push("re-attempts previously failed selector");
+  if (repeatsFailedAction) reasons.push("re-attempts previously failed action");
+  if (reentersMaps) reasons.push("plan re-enters Maps flow");
+  if (repeatsSamePlan) reasons.push("plan repeats previous plan");
+  if (blankLoopRisk) reasons.push("blank-page loop risk");
   if (!reasons.length) reasons.push("signals stable");
 
   let decision = "ok";
@@ -4646,14 +6240,6 @@ function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
     return {
       allow: SUPERVISOR_MODE === "passive",
       reason: "blocked high-risk evaluate() under unstable conditions",
-      severity: "blocked"
-    };
-  }
-
-  if ((a === "mouseClick" || a === "mouseDblclick") && !visionFresh) {
-    return {
-      allow: SUPERVISOR_MODE === "passive",
-      reason: "blocked coordinate click because vision feed is stale",
       severity: "blocked"
     };
   }
@@ -4703,6 +6289,69 @@ async function evaluateSupervisorPlanGateWithAI(input = {}, models = {}) {
   const visionSignal = input.visionSignal || "stable";
   const visionFresh = !!input.visionFresh;
 
+  const now = Date.now();
+  for (const [modelId, until] of supervisorRouteFailCache.entries()) {
+    if (!modelId || until <= now) supervisorRouteFailCache.delete(modelId);
+  }
+  for (const [key, entry] of supervisorDecisionCache.entries()) {
+    if (!entry || entry.expiresAt <= now) supervisorDecisionCache.delete(key);
+  }
+
+  const looksLikeRouteError = (err) => {
+    const msg = String(err?.message || "");
+    if (!msg) return false;
+    if (/No route for that URI/i.test(msg)) return true;
+    if (/"code"\s*:\s*7000/.test(msg)) return true;
+    try {
+      const parsed = JSON.parse(msg);
+      if (Array.isArray(parsed)) {
+        return parsed.some((item) => Number(item?.code) === 7000 || /No route for that URI/i.test(String(item?.message || "")));
+      }
+      return Number(parsed?.code) === 7000 || /No route for that URI/i.test(String(parsed?.message || ""));
+    } catch {
+      return false;
+    }
+  };
+
+  const decisionCacheKey = JSON.stringify({
+    actions: (plan.actions || []).slice(0, 3),
+    confidence: Math.round(confidence * 100),
+    failures,
+    stuck,
+    visionSignal,
+    visionFresh,
+    step: Number(input.step || 0)
+  });
+
+  const cachedDecision = supervisorDecisionCache.get(decisionCacheKey);
+  if (cachedDecision && cachedDecision.expiresAt > now) {
+    const hardGate = evaluateSupervisorPlanGate(input);
+    if (!hardGate.allow && hardGate.decision === "blocked") {
+      return {
+        ...hardGate,
+        source: "heuristic-hard-block"
+      };
+    }
+    return {
+      score: cachedDecision.score,
+      decision: cachedDecision.decision,
+      allow: SUPERVISOR_MODE === "passive" ? true : cachedDecision.decision !== "blocked",
+      reasons: cachedDecision.reasons,
+      mode: SUPERVISOR_MODE,
+      source: `${cachedDecision.source || "ai"}:memo`
+    };
+  }
+
+  const candidateModels = [
+    SUPERVISOR_MODEL,
+    models?.planner,
+    models?.reasoner,
+    models?.router,
+    DEFAULT_MODELS.planner,
+    DEFAULT_MODELS.router,
+    DEFAULT_MODELS.reasoner
+  ].filter(Boolean).filter((modelId, index, list) => list.indexOf(modelId) === index);
+
   // Build reasoning prompt for Sonnet
   const supervisorPrompt = `You are a risk supervisor for an autonomous browser agent. Evaluate this plan's safety and likelihood of success.
 
@@ -4711,7 +6360,7 @@ CURRENT CONTEXT:
 - Plan actions: ${JSON.stringify((plan.actions || []).slice(0, 3))}
 - Recent failures: ${failures}
 - Agent stuck/looping: ${stuck ? "yes" : "no"}
-- Vision quality: ${visionSignal} (${visionFresh ? "fresh" : "stale"})
+- Vision quality: ${visionSignal}
 - Step number: ${input.step || 0}/60
 
 EVALUATE:
@@ -4736,36 +6385,80 @@ RESPOND WITH THIS JSON SHAPE ONLY:
 - score > 0.67: ok (safe to proceed)`;
 
   try {
-    const reasonerModel = models.reasoner || DEFAULT_MODELS.reasoner;
-    const aiResponse = await callCFAI(
-      reasonerModel,
-      [
-        { role: "user", content: supervisorPrompt }
-      ],
-      300,
-      1 // no retries on supervisor, fail fast
-    );
+    let aiResult = null;
+    let lastError = null;
+    let usedModel = "";
 
-    let aiResult = safeParseJSON(aiResponse);
-    if (!aiResult || typeof aiResult !== "object") {
-      const fixed = await callCFAI(
-        reasonerModel,
-        [
-          { role: "system", content: "Rewrite the input as a strict JSON object only. Return ONLY JSON with keys: score (0..1 number), decision (ok|warn|blocked), reasons (array of strings). No markdown, no commentary." },
-          { role: "user", content: String(aiResponse || "") }
-        ],
-        220,
-        0
-      );
-      aiResult = safeParseJSON(fixed);
+    for (const supervisorModel of candidateModels) {
+      const routeFailedUntil = supervisorRouteFailCache.get(supervisorModel) || 0;
+      if (routeFailedUntil > Date.now()) continue;
+      try {
+        const aiResponse = await callCFAI(
+          supervisorModel,
+          [
+            { role: "system", content: "You are a strict JSON-only risk supervisor. Return exactly one compact JSON object with keys score, decision, reasons. No markdown, no prose, no thinking." },
+            { role: "user", content: supervisorPrompt }
+          ],
+          220,
+          1,
+          0
+        );
+
+        aiResult = safeParseJSON(aiResponse);
+        if (!aiResult || typeof aiResult !== "object") {
+          const fixed = await callCFAI(
+            supervisorModel,
+            [
+              { role: "system", content: "Rewrite the input as a strict JSON object only. Return ONLY JSON with keys: score (0..1 number), decision (ok|warn|blocked), reasons (array of strings). No markdown, no commentary." },
+              { role: "user", content: String(aiResponse || "") }
+            ],
+            160,
+            0,
+            0
+          );
+          aiResult = safeParseJSON(fixed);
+        }
+        if (!aiResult || typeof aiResult !== "object") {
+          throw new Error(`Invalid JSON from supervisor via ${supervisorModel}`);
+        }
+        usedModel = supervisorModel;
+        supervisorRouteFailCache.delete(supervisorModel);
+        break;
+      } catch (err) {
+        lastError = err;
+        if (looksLikeRouteError(err)) {
+          supervisorRouteFailCache.set(supervisorModel, Date.now() + SUPERVISOR_ROUTE_FAIL_TTL_MS);
+        }
+      }
     }
+
     if (!aiResult || typeof aiResult !== "object") {
-      throw new Error("Invalid JSON from supervisor");
+      throw (lastError || new Error("Invalid JSON from supervisor"));
     }
 
     const score = clamp01(Number(aiResult.score || 0.5));
     const decision = String(aiResult.decision || "ok").toLowerCase();
     const reasons = Array.isArray(aiResult.reasons) ? aiResult.reasons : ["ai reasoning"];
+
+    const hardGate = evaluateSupervisorPlanGate(input);
+    if (!hardGate.allow && hardGate.decision === "blocked") {
+      return {
+        ...hardGate,
+        source: "heuristic-hard-block"
+      };
+    }
+
+    supervisorDecisionCache.set(decisionCacheKey, {
+      score,
+      decision,
+      reasons,
+      source: usedModel ? `ai:${usedModel}` : "ai",
+      expiresAt: Date.now() + SUPERVISOR_DECISION_CACHE_TTL_MS
+    });
+    if (supervisorDecisionCache.size > SUPERVISOR_DECISION_CACHE_MAX) {
+      const firstKey = supervisorDecisionCache.keys().next().value;
+      if (firstKey) supervisorDecisionCache.delete(firstKey);
+    }
 
     return {
       score,
@@ -4773,11 +6466,15 @@ RESPOND WITH THIS JSON SHAPE ONLY:
       allow: SUPERVISOR_MODE === "passive" ? true : decision !== "blocked",
       reasons,
       mode: SUPERVISOR_MODE,
-      source: "ai"
+      source: usedModel ? `ai:${usedModel}` : "ai"
     };
   } catch (err) {
     // AI call failed, fall back to heuristic
-    agentMsg(`⚠️ Supervisor AI unavailable, using heuristic: ${err.message}`);
+    const warning = `⚠️ Supervisor AI unavailable, using heuristic: ${err.message}`;
+    if (warning !== lastSupervisorFallbackWarning) {
+      lastSupervisorFallbackWarning = warning;
+      agentMsg(warning);
+    }
     return evaluateSupervisorPlanGate(input); // fallback to heuristic
   }
 }
@@ -4801,6 +6498,78 @@ async function runTask(goal, models, chatId) {
   const captchaGentleUntilByHost = new Map();
   const navigationCooldownByHost = new Map();
   let psychosisCounter = 0; // Tracks confusion state
+  const actionFailureStreaks = new Map();
+  let dynamicSignalStreak = 0;
+  let lastAttemptedPlanSignature = "";
+  const originalQuery = getOriginalQuery(goal);
+  const escapeContext = {
+    active: false,
+    lastType: "",
+    lastFailedAction: "",
+    lastFailedSelector: "",
+    lastTriggeredStep: 0,
+    mapsEscaped: false
+  };
+
+  function resetPlannerAndPeerState() {
+    plannerHistory.splice(0, plannerHistory.length, { role: "system", content: PLANNER_SYSTEM_PROMPT });
+    lastSupervisorSignal = null;
+    failures = 0;
+    broadcast("peer_alignment", {
+      score: 0,
+      alignment: 0,
+      verdict: "reset",
+      matched: 0,
+      total: 0,
+      hints: [],
+      summary: "Peer alignment reset after recovery."
+    });
+  }
+
+  function shouldCompleteImmediatelyFromAction(goalText, results) {
+    const g = String(goalText || "").toLowerCase();
+    const list = Array.isArray(results) ? results : [];
+    if (!list.length) return false;
+    if (/close\s+(the\s+)?tab/.test(g)) return list.some(item => item?.action === "closeCurrentTab" && item?.status === "ok");
+    if (/open\s+(a\s+)?new\s+tab/.test(g)) return list.some(item => item?.action === "openNewTab" && item?.status === "ok");
+    if (/(click|open)\s+.*(link|result)/.test(g)) return list.some(item => ["click", "hybridClick", "mouseClick"].includes(String(item?.action || "")) && item?.status === "ok");
+    return false;
+  }
+
+  async function triggerEscapeHatch(step, reason, tag, options = {}) {
+    const requestedUrl = String(options?.targetUrl || "https://google.com");
+    stepLogMsg(`Step ${step}: ${tag} — ${reason}`);
+    taskLog.push(`Step ${step}: ${tag}`);
+    broadcast("escape_hatch", {
+      msg: `${tag}: ${reason}`,
+      step,
+      tag,
+      reason,
+      targetUrl: requestedUrl
+    });
+
+    escapeContext.mapsEscaped = true;
+    escapeContext.active = true;
+    escapeContext.lastType = String(tag || "RECOVERED");
+    escapeContext.lastFailedAction = String(options?.failedAction || "");
+    escapeContext.lastFailedSelector = String(options?.failedSelector || "");
+    escapeContext.lastTriggeredStep = Number(step || 0);
+
+    try {
+      await withExecutorWork(() => actions.goto({ page, url: requestedUrl }));
+      await sleepLikeHuman(550, page);
+      const stableState = await withExecutorWork(() => getPageState());
+      finalState = stableState;
+      const screenshotB64 = await withExecutorWork(() => getVisionScreenshotB64({ broadcastImage: false, writeFile: false }));
+      visionFeedback = await withExecutorWork(() => analyzeScreen(screenshotB64, stableState, { action: "goto", params: { url: requestedUrl } }, goal, models));
+    } catch (err) {
+      errLog(`Escape hatch navigation failed: ${err.message}`);
+    }
+
+    resetPlannerAndPeerState();
+    dynamicSignalStreak = 0;
+    actionFailureStreaks.clear();
+  }
 
   try {
     clearHumanBridgeState();
@@ -4820,6 +6589,7 @@ async function runTask(goal, models, chatId) {
     });
 
     for (let step = 1; step <= MAX_STEPS; step++) {
+      const stepStartedAt = Date.now();
       broadcast("step_start", { step, max: MAX_STEPS });
       status(`Step ${step}/${MAX_STEPS}`);
 
@@ -4857,6 +6627,25 @@ async function runTask(goal, models, chatId) {
       }
       if (dynamicUiHot) {
         think("Dynamic UI detected: switching click execution to vision coordinates only for this step.");
+      }
+
+      const mapsTrap = await detectMapsTrap(state);
+      if (mapsTrap.triggered) {
+        const serpUrl = `https://google.com/search?q=${encodeURIComponent(originalQuery || goal)}`;
+        await triggerEscapeHatch(step, `Maps trap detected (${mapsTrap.reason})`, "MAPS_ESCAPE", { targetUrl: serpUrl });
+        continue;
+      }
+
+      const dynamicFailureSignal = detectVisionDynamicFailureSignal(visionFeedback, visionSnap, dynamicUiHot);
+      dynamicSignalStreak = dynamicFailureSignal ? (dynamicSignalStreak + 1) : 0;
+      if (dynamicSignalStreak > ESCAPE_DYNAMIC_STREAK_LIMIT) {
+        await triggerEscapeHatch(step, `Dynamic UI failure streak reached ${dynamicSignalStreak}`, "DYNAMIC_ESCAPE", { targetUrl: "https://google.com" });
+        continue;
+      }
+
+      if ((Date.now() - stepStartedAt) > ESCAPE_STEP_TIMEOUT_MS) {
+        await triggerEscapeHatch(step, `Step runtime exceeded ${ESCAPE_STEP_TIMEOUT_MS}ms before execution`, "RECOVERED", { targetUrl: "https://google.com" });
+        continue;
       }
 
       const captcha = await detectCaptchaChallenge(state);
@@ -5033,6 +6822,46 @@ async function runTask(goal, models, chatId) {
         }
       }
 
+      if (escapeContext.active && Array.isArray(plan.actions)) {
+        const filteredActions = plan.actions.filter(item => {
+          const actionName = String(item?.action || "");
+          const selector = String(item?.params?.selector || "");
+          if (escapeContext.mapsEscaped && actionEntersMaps(item)) return false;
+          if (escapeContext.lastFailedAction && actionName === escapeContext.lastFailedAction) return false;
+          if (escapeContext.lastFailedSelector && selector && selector === escapeContext.lastFailedSelector) return false;
+          return true;
+        });
+
+        if (!filteredActions.length) {
+          filteredActions.push({ action: "goto", params: { url: `https://google.com/search?q=${encodeURIComponent(originalQuery || goal)}` } });
+        }
+
+        if (filteredActions.length !== plan.actions.length) {
+          think("Post-recovery guard removed risky repeated actions and forced a fresh path.");
+          plan = {
+            ...plan,
+            reasoning: `${plan.reasoning || ""} Post-recovery guard: removed repeated failing strategy.`.trim(),
+            actions: filteredActions
+          };
+        }
+      }
+
+      if (dynamicFailureSignal && Array.isArray(plan.actions)) {
+        const nonRisky = plan.actions.filter(item => {
+          const a = String(item?.action || "").toLowerCase();
+          return !["click", "dblclick", "hybridclick", "hybriddblclick", "mouseclick", "mousedblclick", "evaluate"].includes(a);
+        });
+        if (nonRisky.length) {
+          plan = {
+            ...plan,
+            reasoning: `${plan.reasoning || ""} Vision-priority override: avoiding dynamic click paths.`.trim(),
+            actions: nonRisky.slice(0, 3)
+          };
+        }
+      }
+
+      const planSignature = computePlanSignature(plan);
+
       const supervisorGate = await evaluateSupervisorPlanGateWithAI({
         plan,
         instinct,
@@ -5040,8 +6869,12 @@ async function runTask(goal, models, chatId) {
         visionFresh,
         failures,
         stuck,
-        step
+        step,
+        currentUrl: state.url,
+        previousPlanSignature: lastAttemptedPlanSignature,
+        escapeContext
       }, models);
+      lastAttemptedPlanSignature = planSignature;
       const gateSummary = `Supervisor ${supervisorGate.decision.toUpperCase()} score=${supervisorGate.score.toFixed(2)} (${supervisorGate.reasons.join("; ")})`;
       lastSupervisorSignal = {
         decision: supervisorGate.decision,
@@ -5065,7 +6898,29 @@ async function runTask(goal, models, chatId) {
         think(gateSummary);
         const supervisorRecovery = inferHeuristicPlan(goal, state, taskLog, failures);
         if (supervisorRecovery && Array.isArray(supervisorRecovery.actions) && supervisorRecovery.actions.length) {
-          plan = supervisorRecovery;
+          const supervisorRecoverySignature = computePlanSignature(supervisorRecovery);
+          const recoveryRepeats = supervisorRecoverySignature === planSignature || supervisorRecoverySignature === lastAttemptedPlanSignature;
+          if (recoveryRepeats) {
+            const query = extractSearchQuery(goal);
+            const forcedActions = query
+              ? [
+                  { action: "goto", params: { url: `https://www.google.com/search?q=${encodeURIComponent(query)}` } },
+                  { action: "waitForVisible", params: { selector: "a[href]", timeout: 8000 } },
+                  { action: "getAllText", params: {} }
+                ]
+              : [
+                  { action: "waitForTimeout", params: { ms: 900 } },
+                  { action: "getAllText", params: {} }
+                ];
+            plan = {
+              reasoning: "Supervisor anti-loop reroute: forcing progressive recovery path.",
+              confidence: 62,
+              done: false,
+              actions: forcedActions
+            };
+          } else {
+            plan = supervisorRecovery;
+          }
           broadcast("supervisor", {
             msg: "Supervisor reroute: switching to conservative recovery plan.",
             decision: "reroute",
@@ -5085,6 +6940,7 @@ async function runTask(goal, models, chatId) {
           continue;
         }
       }
+
 
       if (plan.reasoning) think(plan.reasoning);
 
@@ -5141,6 +6997,62 @@ async function runTask(goal, models, chatId) {
       const logLine = `Step ${step} [${plan.confidence ?? "?"}%]: ${summary} — ${(plan.reasoning || "").slice(0, 60)}`;
       taskLog.push(logLine);
       stepLogMsg(logLine);
+
+      let recoveredByActionFailure = false;
+      for (const result of results) {
+        const actionName = String(result?.action || "");
+        if (!isEscapeManagedActionName(actionName)) continue;
+        const previous = Number(actionFailureStreaks.get(actionName) || 0);
+        if (isActionFailureStatus(result?.status)) {
+          escapeContext.lastFailedAction = actionName;
+          escapeContext.lastFailedSelector = String(result?.selector || plan.actions?.find(item => String(item?.action || "") === actionName)?.params?.selector || "");
+          const next = previous + 1;
+          actionFailureStreaks.set(actionName, next);
+          if (next > ESCAPE_MAX_CONSECUTIVE_FAILURES) {
+            await triggerEscapeHatch(
+              step,
+              `${actionName} failed ${next} consecutive times`,
+              "RECOVERED",
+              {
+                targetUrl: "https://google.com",
+                failedAction: actionName,
+                failedSelector: result?.selector || plan.actions?.find(item => String(item?.action || "") === actionName)?.params?.selector || ""
+              }
+            );
+            recoveredByActionFailure = true;
+            break;
+          }
+        } else {
+          actionFailureStreaks.set(actionName, 0);
+        }
+      }
+
+      if (recoveredByActionFailure) {
+        continue;
+      }
+
+      const hadSuccessfulAction = results.some(item => String(item?.status || "") === "ok");
+      if (!hadSuccessfulAction && (Date.now() - stepStartedAt) > ESCAPE_STEP_TIMEOUT_MS) {
+        const failedItem = (results || []).find(item => isActionFailureStatus(item?.status)) || {};
+        await triggerEscapeHatch(step, `Step runtime exceeded ${ESCAPE_STEP_TIMEOUT_MS}ms`, "RECOVERED", {
+          targetUrl: "https://google.com",
+          failedAction: failedItem.action || "",
+          failedSelector: failedItem.selector || ""
+        });
+        continue;
+      }
+
+      if (shouldCompleteImmediatelyFromAction(goal, results)) {
+        const doneLine = `Step ${step}: DONE (action-complete)`;
+        taskLog.push(doneLine);
+        stepLogMsg(doneLine);
+        completed = true;
+        break;
+      }
+
+      if (escapeContext.active && step > escapeContext.lastTriggeredStep) {
+        escapeContext.active = false;
+      }
 
       const allFailed = results.every(r => r.status === "error" || r.status === "blocked");
       failures = allFailed ? failures + 1 : 0;
@@ -5475,14 +7387,82 @@ async function handleRequest(req, res) {
     if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
     try {
       const body = await readJsonBody(req);
-      const imageB64 = String(body.imageB64 || "").trim();
-      if (!imageB64) { sendJson(res, 400, { error: "imageB64 required" }); return; }
-      status("Running DETR on uploaded image…");
-      const detections = await callDETR(imageB64);
-      broadcast("detr_result", { count: detections.length, labels: detections.slice(0, 5).map(d => d.label) });
-      sendJson(res, 200, { detections, count: detections.length });
+      const mediaItems = normalizeIncomingMedia(body).filter(item => item.mediaType === "image");
+      if (!mediaItems.length) { sendJson(res, 400, { error: "image media required" }); return; }
+      const catalog = await fetchModelCatalog(false);
+      const defaults = resolveDefaultModels(catalog);
+      const mediaResult = await runMediaAnalysis(mediaItems, { vision: defaults.vision, router: defaults.router }, String(body.prompt || body.query || ""));
+      broadcast("media_result", { taskType: mediaResult.taskType, mediaCount: mediaItems.length });
+      sendJson(res, 200, {
+        ok: true,
+        taskType: mediaResult.taskType,
+        analysis: mediaResult.analysis,
+        routerSwap: mediaResult.routerMeta,
+        media: mediaItems.map(buildMediaReference)
+      });
     } catch (err) {
-      sendJson(res, 500, { error: err.message || "DETR analysis failed" });
+      sendJson(res, 500, { error: err.message || "Image analysis failed" });
+    }
+    return;
+  }
+
+  if (pathname === "/api/analyze-layout" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const mediaItems = normalizeIncomingMedia(body).filter(item => item.mediaType === "image");
+      if (!mediaItems.length) { sendJson(res, 400, { error: "image media required" }); return; }
+      const catalog = await fetchModelCatalog(false);
+      const defaults = resolveDefaultModels(catalog);
+      const primary = mediaItems[0];
+      const analysis = await analyzePageLayout(primary.dataB64, String(body.prompt || body.query || ""), defaults.vision, primary.mimeType);
+      sendJson(res, 200, {
+        ok: true,
+        taskType: analysis.taskType,
+        analysis,
+        media: mediaItems.map(buildMediaReference)
+      });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Layout analysis failed" });
+    }
+    return;
+  }
+
+  if (pathname === "/api/analyze-current-ui" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const analysis = await analyzeCurrentBrowserUILayout(String(body.prompt || body.query || ""), auth?.userId || null);
+      sendJson(res, 200, {
+        ok: true,
+        taskType: analysis.taskType,
+        url: analysis.url,
+        analysis
+      });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Current UI analysis failed" });
+    }
+    return;
+  }
+
+  if (pathname === "/api/analyze-media" && req.method === "POST") {
+    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    try {
+      const body = await readJsonBody(req);
+      const mediaItems = normalizeIncomingMedia(body);
+      if (!mediaItems.length) { sendJson(res, 400, { error: "media required" }); return; }
+      const catalog = await fetchModelCatalog(false);
+      const defaults = resolveDefaultModels(catalog);
+      const mediaResult = await runMediaAnalysis(mediaItems, { vision: defaults.vision, router: defaults.router }, String(body.prompt || body.query || ""));
+      sendJson(res, 200, {
+        ok: true,
+        taskType: mediaResult.taskType,
+        analysis: mediaResult.analysis,
+        routerSwap: mediaResult.routerMeta,
+        media: mediaItems.map(buildMediaReference)
+      });
+    } catch (err) {
+      sendJson(res, 500, { error: err.message || "Media analysis failed" });
     }
     return;
   }
@@ -5632,7 +7612,7 @@ async function handleRequest(req, res) {
   if (pathname === "/api/models") {
     const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
     const { chat } = ensureCurrentChat(auth?.userId || null);
-    sendJson(res, 200, { catalog, current: getActiveModels(chat), defaults: DEFAULT_MODELS });
+    sendJson(res, 200, { catalog, current: getActiveModels(chat), defaults: DEFAULT_MODELS, modelParams: getActiveModelParams(chat) });
     return;
   }
 
@@ -5675,13 +7655,13 @@ async function handleRequest(req, res) {
   if (modelsMatch && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const chat = updateChatModels(modelsMatch[1], body.models || {}, auth?.userId || null);
+      const chat = updateChatModels(modelsMatch[1], body.models || {}, auth?.userId || null, body.params || {});
       if (!chat) {
         sendJson(res, 404, { error: "Chat not found" });
         return;
       }
       const catalog = await fetchModelCatalog(false);
-      sendJson(res, 200, { current: getActiveModels(chat), catalog, chat });
+      sendJson(res, 200, { current: getActiveModels(chat), catalog, chat, modelParams: getActiveModelParams(chat) });
     } catch {
       sendJson(res, 400, { error: "Invalid request body" });
     }
@@ -5697,38 +7677,42 @@ async function handleRequest(req, res) {
       const rawMessage = String(body.message || "").trim();
       const userId = auth?.userId || null;
       const chatId = body.chatId || ensureCurrentChat(userId).chat.id;
-      const imageB64Upload = String(body.imageB64 || "").trim();
-      const annotatedImageB64 = String(body.annotatedImageB64 || "").trim();
-      const detrDetections = Array.isArray(body.detrDetections) ? body.detrDetections : [];
-      const detectedShapes = Array.isArray(body.detectedShapes) ? body.detectedShapes : [];
-      const semanticAnalysis = typeof body.semanticAnalysis === "object" ? body.semanticAnalysis : {};
+      const mediaItems = normalizeIncomingMedia(body);
+      const mediaTaskType = mediaItems.length ? classifyMediaTask(mediaItems) : null;
+      const shouldAnalyzeLiveUi = !mediaItems.length && wantsPageLayoutAnalysis(rawMessage);
 
       let message = rawMessage;
-      if (imageB64Upload && (detrDetections.length > 0 || detectedShapes.length > 0 || Object.keys(semanticAnalysis).length > 0)) {
-        const detrCtx = detrDetections.length > 0 ? buildDETRContext(detrDetections) : "No DETR detections.";
-        const shapeCtx = detectedShapes.length > 0
-          ? `Shape Analysis:\n${detectedShapes.slice(0, 10).map((s, i) => `  ${i+1}. ${s.type}: area=${Math.round(s.area || 0)}, conf=${(s.confidence || 0).toFixed(2)}`).join("\n")}`
-          : "No geometric shapes detected.";
-        const semanticCtx = semanticAnalysis.description
-          ? `Semantic Tag: ${semanticAnalysis.description}${semanticAnalysis.confidence ? ` (${(semanticAnalysis.confidence * 100).toFixed(1)}% conf)` : ""}`
-          : "No semantic classification.";
-        const { chat: imgChat } = ensureCurrentChat(userId);
-        const imgModels = getActiveModels(imgChat);
-        const visionSummary = await analyzeUploadedImageWithVision(
-          annotatedImageB64 || imageB64Upload, detrCtx, rawMessage, imgModels.vision
-        );
-        message = rawMessage
-          ? `${rawMessage}\n\n[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`
-          : `[Attached image analysis]\nDETR detections:\n${detrCtx}\n\n${shapeCtx}\n\n${semanticCtx}\n\nVision summary:\n${visionSummary}`;
-        status(`Image enriched: ${detrDetections.length} DETR objects, ${detectedShapes.length} shapes.`);
-      } else if (imageB64Upload) {
-        const { chat: imgChat2 } = ensureCurrentChat(userId);
-        const imgModels2 = getActiveModels(imgChat2);
-        const visionOnly = await analyzeUploadedImageWithVision(imageB64Upload, "No DETR data.", rawMessage, imgModels2.vision);
-        message = rawMessage ? `${rawMessage}\n\n[Image vision summary]\n${visionOnly}` : `[Image vision summary]\n${visionOnly}`;
+      let mediaAnalysisMeta = null;
+      if (mediaItems.length) {
+        const { chat: mediaChat } = ensureCurrentChat(userId);
+        const mediaModels = attachModelRuntimeParams(getActiveModels(mediaChat), getActiveModelParams(mediaChat));
+        const mediaResult = await runMediaAnalysis(mediaItems, mediaModels, rawMessage);
+        const refs = mediaItems.map(buildMediaReference);
+        const summary = String(mediaResult?.analysis?.text || "Media attached.");
+        const structured = mediaResult?.analysis?.structured || {};
+        const structuredJson = JSON.stringify(structured).slice(0, 2200);
+        const mediaContext = `[Attached media analysis]\nTask: ${mediaResult.taskType}\nMedia IDs: ${refs.map(r => r.id).join(", ") || "none"}\nSummary:\n${summary}\n\nStructured:\n${structuredJson}`;
+        message = rawMessage ? `${rawMessage}\n\n${mediaContext}` : mediaContext;
+        mediaAnalysisMeta = {
+          taskType: mediaResult.taskType,
+          analysis: mediaResult.analysis,
+          routerSwap: mediaResult.routerMeta,
+          media: refs
+        };
+        status(`Media enriched: ${refs.length} item(s), task=${mediaResult.taskType}.`);
+      } else if (shouldAnalyzeLiveUi) {
+        const liveLayout = await analyzeCurrentBrowserUILayout(rawMessage, userId);
+        const liveLayoutContext = `[Current browser UI layout]\nURL: ${liveLayout.url}\n${liveLayout.formatted}`;
+        message = rawMessage ? `${rawMessage}\n\n${liveLayoutContext}` : liveLayoutContext;
+        mediaAnalysisMeta = {
+          taskType: liveLayout.taskType,
+          analysis: liveLayout,
+          media: [{ id: "live_browser_ui", source: "agent_screenshot", mediaType: "image", kind: "screenshot", mimeType: "image/jpeg", fileName: "live-browser-ui.jpg", previewUrl: "/screenshot", thumbnailUrl: "/screenshot" }]
+        };
+        status("Live browser UI analyzed via vision.");
       }
 
-      if (!message && !imageB64Upload) {
+      if (!message && !mediaItems.length) {
         sendJson(res, 400, { error: "Message is required" });
         return;
       }
@@ -5748,7 +7732,8 @@ async function handleRequest(req, res) {
         activeChat = fallback.chat;
       }
 
-      const command = parseSlashCommand(message);
+      const command = parseSlashCommand(rawMessage);
+      const explicitSlashAction = command ? resolveExplicitSlashAction(command) : { kind: "unknown" };
       const slashModel = command ? resolveSlashModelCommand(command) : null;
       if (slashModel && command) {
         if (slashModel.kind === "reset") {
@@ -5779,29 +7764,100 @@ async function handleRequest(req, res) {
         }
       }
 
-      if (getRuntimeModelOverride(activeChat) && looksLikeTaskGoal(message)) {
-        clearRuntimeModelOverride(chatId, userId);
+      if (command && explicitSlashAction.kind === "help") {
+        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        const helpText = buildSlashHelpText();
+        appendChatMessage(chatId, "assistant", helpText, { completed: true, command: command.command }, userId);
+        sendJson(res, 200, { ok: true, chatId, command: command.command, help: helpText });
+        broadcast("chat_sync", { chatId });
+        currentTaskUserId = null;
+        return;
+      }
+
+      if (command && explicitSlashAction.kind === "image") {
+        const imagePrompt = buildImageCommandPrompt(command);
+        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        if (!imagePrompt) {
+          appendChatMessage(chatId, "assistant", "Use /image followed by a prompt. You can also pass options like --style, --size, or --negative.", { completed: true, command: command.command }, userId);
+          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "missing_prompt" });
+          broadcast("chat_sync", { chatId });
+          currentTaskUserId = null;
+          return;
+        }
+
+        try {
+          const generated = await generateImageFromPrompt(imagePrompt, attachModelRuntimeParams(getActiveModels(activeChat), getActiveModelParams(activeChat)));
+          const assistantText = `Generated an image for: ${imagePrompt}`;
+          appendChatMessage(chatId, "assistant", assistantText, {
+            completed: true,
+            command: command.command,
+            generatedImage: generated.image,
+            routerSwap: generated.routerMeta
+          }, userId);
+          sendJson(res, 200, { ok: true, chatId, command: command.command, generatedImage: generated.image, routerSwap: generated.routerMeta });
+          broadcast("chat_sync", { chatId });
+        } catch (err) {
+          appendChatMessage(chatId, "assistant", `Image generation failed: ${err.message}`, {
+            completed: true,
+            command: command.command,
+            error: true
+          }, userId);
+          sendJson(res, 200, { ok: true, chatId, command: command.command, error: err.message || "Image generation failed" });
+          broadcast("chat_sync", { chatId });
+        }
+        currentTaskUserId = null;
+        return;
+      }
+
+      if (command && explicitSlashAction.kind === "browser") {
+        const browserGoal = buildBrowserCommandGoal(command, mediaItems.length ? message : "");
+        if (!browserGoal) {
+          appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+          appendChatMessage(chatId, "assistant", "Use /browser followed by the task you want me to do in the browser. You can also pass options like --url, --site, or --goal.", { completed: true, command: command.command }, userId);
+          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "missing_prompt" });
+          broadcast("chat_sync", { chatId });
+          currentTaskUserId = null;
+          return;
+        }
+
+        if (getRuntimeModelOverride(activeChat)) {
+          clearRuntimeModelOverride(chatId, userId);
+        }
+
+        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        sendJson(res, 202, { ok: true, chatId, command: command.command, media: mediaAnalysisMeta });
+        const { chat } = ensureCurrentChat(userId);
+        const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
+        await runTask(browserGoal, models, chatId);
+        broadcast("url", { url: page.url() });
+        return;
+      }
+
+      if (command && explicitSlashAction.kind === "unknown") {
+        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        const helpText = buildSlashHelpText();
+        appendChatMessage(chatId, "assistant", `Unknown slash command: /${command.command}\n\n${helpText}`, { completed: true, command: command.command, error: true }, userId);
+        sendJson(res, 200, { ok: true, chatId, command: command.command, error: "unknown_command", help: helpText });
+        broadcast("chat_sync", { chatId });
+        currentTaskUserId = null;
+        return;
       }
 
       appendChatMessage(chatId, "user", message, {}, userId);
-      sendJson(res, 202, { ok: true, chatId });
+      sendJson(res, 202, { ok: true, chatId, media: mediaAnalysisMeta });
 
       const { chat } = ensureCurrentChat(userId);
-      const models = getActiveModels(chat);
-      const routed = await routeGoal(message, sessionHistory, models);
-
-      if (routed.mode === "chat") {
-        appendChatMessage(chatId, "assistant", routed.chatReply, { completed: true });
-        agentMsg(routed.chatReply);
-        broadcast("chat_sync", { chatId });
-      } else {
-        await runTask(routed.taskGoal, models, chatId);
-        broadcast("url", { url: page.url() });
-      }
+      const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
+      const chatReply = await answerCasualChat(message, sessionHistory, models);
+      appendChatMessage(chatId, "assistant", chatReply, { completed: true });
+      agentMsg(chatReply);
+      broadcast("chat_sync", { chatId });
+      currentTaskUserId = null;
     } catch (err) {
       errLog("Chat handler: " + err.message);
       broadcast("task_done", { answer: "Something went wrong: " + err.message, completed: false });
       agentRunning = false;
+      currentTaskUserId = null;
     }
     return;
   }

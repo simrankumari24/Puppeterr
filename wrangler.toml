@@ -1,6 +1,7 @@
 name = "puppeterr-session-service"
-main = "cloudflare/session-service.js"
+main = "cloudflare/session-service.mjs"
 compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
 
 [durable_objects]
 
@@ -8,6 +9,17 @@ compatibility_date = "2026-07-01"
 name = "SESSION_VAULT"
 class_name = "SessionVault"
 
+[[durable_objects.bindings]]
+name = "PUPPETERR_RUNTIME_AGENT"
+class_name = "PuppeterrRuntimeAgent"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["SessionVault"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["PuppeterrRuntimeAgent"]
+
+[ai]
+binding = "AI"

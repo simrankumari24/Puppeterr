@@ -7,6 +7,8 @@
     "start": "xvfb-run -a node agent.js",
     "start:local": "node agent.js",
     "start:legacy": "node index.js",
+    "dev:worker": "npx wrangler dev",
+    "deploy:worker": "npx wrangler deploy",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -25,6 +27,7 @@
     "@cloudflare/ai": "^1.2.2",
     "@cloudflare/workers-types": "^4.20260629.1",
     "@huggingface/inference": "^4.13.21",
+    "agents": "^0.17.3",
     "base64-js": "^1.5.1",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
