@@ -1,0 +1,98 @@
+{
+  "created_at": "2026-07-13T22:12:07.442Z",
+  "auto_mode_enabled": true,
+  "min_score_for_auto_approval": 800,
+  "max_diff_lines": 150,
+  "decisions": [
+    {
+      "patch_id": "A",
+      "decision": "HUMAN_REVIEW_REQUIRED",
+      "aggregate_score": 470,
+      "changed_lines": 31,
+      "reasons": [
+        "Score below threshold (470)",
+        "Reviewer blocking issues present"
+      ],
+      "constraints": {
+        "score_ok": false,
+        "diff_ok": true,
+        "dependency_ok": true,
+        "license_ok": true,
+        "env_ok": true,
+        "has_blockers": false
+      }
+    },
+    {
+      "patch_id": "B",
+      "decision": "HUMAN_REVIEW_REQUIRED",
+      "aggregate_score": 620,
+      "changed_lines": 14,
+      "reasons": [
+        "Score below threshold (620)",
+        "Reviewer blocking issues present"
+      ],
+      "constraints": {
+        "score_ok": false,
+        "diff_ok": true,
+        "dependency_ok": true,
+        "license_ok": true,
+        "env_ok": true,
+        "has_blockers": false
+      }
+    },
+    {
+      "patch_id": "C",
+      "decision": "HUMAN_REVIEW_REQUIRED",
+      "aggregate_score": 470,
+      "changed_lines": 93,
+      "reasons": [
+        "Score below threshold (470)",
+        "Reviewer blocking issues present"
+      ],
+      "constraints": {
+        "score_ok": false,
+        "diff_ok": true,
+        "dependency_ok": true,
+        "license_ok": true,
+        "env_ok": true,
+        "has_blockers": false
+      }
+    },
+    {
+      "patch_id": "D",
+      "decision": "HUMAN_REVIEW_REQUIRED",
+      "aggregate_score": 545,
+      "changed_lines": 34,
+      "reasons": [
+        "Score below threshold (545)",
+        "Reviewer blocking issues present"
+      ],
+      "constraints": {
+        "score_ok": false,
+        "diff_ok": true,
+        "dependency_ok": true,
+        "license_ok": true,
+        "env_ok": true,
+        "has_blockers": false
+      }
+    },
+    {
+      "patch_id": "E",
+      "decision": "HUMAN_REVIEW_REQUIRED",
+      "aggregate_score": 550,
+      "changed_lines": 118,
+      "reasons": [
+        "Score below threshold (550)",
+        "Reviewer blocking issues present"
+      ],
+      "constraints": {
+        "score_ok": false,
+        "diff_ok": true,
+        "dependency_ok": true,
+        "license_ok": true,
+        "env_ok": true,
+        "has_blockers": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -1,6 +1,16 @@
+ const { chromium } = require('playwright-extra');
+ const config = require('./config');
+ 
++const fs = require('fs');
++const path = require('path');
++const crypto = require('crypto');
++
++function uniqueProfileDir(baseDir) {
++  const suffix = Date.now().toString(36) + '-' + crypto.randomBytes(4).toString('hex');
++  const profile = baseDir + '-' + suffix;
++  fs.rmSync(profile, { recursive: true, force: true });
++  return profile;
++}
++
+ async function main() {
+   // ... existing setup ...
+ }
+@@ -7870,10 +7880,37 @@
+     console.log('🚀 Launching browser...');
+-    const context = await chromium.launchPersistentContext(PROFILE_DIR, launchOptions);
++    let context = null;
++    const profileBase = PROFILE_DIR || path.join(process.cwd(), '.puppeterr-profile');
++    let lastError = null;
++    for (let attempt = 1; attempt <= 3; attempt++) {
++      const profileDir = attempt === 1 ? profileBase : uniqueProfileDir(profileBase);
++      try {
++        context = await chromium.launchPersistentContext(profileDir, launchOptions);
++        lastError = null;
++        break;
++      } catch (err) {
++        lastError = err;
++        console.warn(`⚠️ Browser launch attempt ${attempt}/3 failed: ${err.message}`);
++        if (context) {
++          try { await context.close(); } catch (_) {}
++          context = null;
++        }
++        if (!err.message || !err.message.includes('profile is already in use')) {
++          break;
++        }
++        await new Promise(r => setTimeout(r, 500));
++      }
++    }
++    if (lastError) {
++      console.error('💥 Fatal: Failed to launch browser after multiple attempts.');
++      throw lastError;
++    }
+   
+     // ... remainder of agent logic ...
+   } finally {
+-    if (context) await context.close();
++    if (context) {
++      try {
++        await context.close();
++      } catch (err) {
++        console.warn('Warning: error closing browser context:', err.message);
++      }
++    }
+   }
+ }

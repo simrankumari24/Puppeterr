@@ -1,0 +1,74 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7865,20 +7865,55 @@
+ const fs = require('fs').promises;
+ const path = require('path');
+-const PUPPETEER_PROFILE = path.join(__dirname, '.puppeterr-profile');
++const PUPPETERR_PROFILE_DIR = path.join(__dirname, '.puppeterr-profile');
++const PUPPETERR_LOCK_FILE = path.join(PUPPETERR_PROFILE_DIR, 'SingletonLock');
++
++// Chromium flags for persistent context launches. Stored as a Set-backed
++// array so duplicate flags (e.g. --no-sandbox, --disable-infobars) cannot
++// leak back into Playwright and generate noisy warnings.
++const CHROMIUM_LAUNCH_FLAGS = Array.from(new Set([
++  '--disable-infobars',
++  '--no-sandbox',
++  '--disable-setuid-sandbox',
++  '--window-position=0,0',
++  '--window-size=1366,768',
++  '--disable-blink-features=AutomationControlled'
++]));
++
++/**
++ * Ensure the persistent profile directory is usable.
++ *
++ * Playwright's launchPersistentContext reuses the same user-data-dir. If a
++ * previous run crashed or left Chromium's singleton lock behind, reopening the
++ * same profile fails with "Opening in existing browser session." This helper
++ * removes stale locks without deleting the profile contents.
++ */
++async function preparePersistentProfile(profileDir, lockFile) {
++  await fs.mkdir(profileDir, { recursive: true });
++  try {
++    const linkTarget = await fs.readlink(lockFile);
++    const stalePid = Number(path.basename(linkTarget).split('-').pop());
++    if (Number.isInteger(stalePid)) {
++      try {
++        process.kill(stalePid, 0);
++        throw new Error(`Profile lock held by running Chromium pid=${stalePid}`);
++      } catch (err) {
++        if (err.code === 'ESRCH') {
++          await fs.unlink(lockFile).catch(() => {});
++        } else {
++          throw err;
++        }
++      }
++    } else {
++      await fs.unlink(lockFile).catch(() => {});
++    }
++  } catch (err) {
++    if (err.code !== 'ENOENT') throw err;
++  }
++}
+ 
+ async function startBrowserSession() {
+   console.log('🚀 Launching browser...');
+-  const browser = await chromium.launchPersistentContext(PUPPETEER_PROFILE, {
+-    headless: false,
+-    args: [
+-      '--disable-infobars',
+-      '--no-sandbox',
+-      '--no-sandbox',
+-      '--disable-setuid-sandbox',
+-      '--disable-infobars',
+-      '--window-position=0,0',
+-      '--window-size=1366,768',
+-      '--disable-blink-features=AutomationControlled'
+-    ]
++  await preparePersistentProfile(PUPPETERR_PROFILE_DIR, PUPPETERR_LOCK_FILE);
++  const browser = await chromium.launchPersistentContext(PUPPETERR_PROFILE_DIR, {
++    headless: false,
++    args: CHROMIUM_LAUNCH_FLAGS
+   });
+   return browser;
+ }

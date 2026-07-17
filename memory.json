@@ -24684,5 +24684,2667 @@
     "result": "The task was to analyze the current UI and create an ASCII page map with bounding boxes. The final URL provided was Google's homepage. Here's the ASCII page map with bounding boxes:\n\n```\n+------------",
     "completed": true,
     "steps": 1
+  },
+  {
+    "ts": "2026-07-15T21:03:50.189Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:03:52.106Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice"
+  },
+  {
+    "ts": "2026-07-15T21:04:46.313Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:04:47.416Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:05:37.053Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "page",
+      "crashed",
+      "https",
+      "www"
+    ],
+    "action_done": "waitForTimeout | error=page.waitForTimeout: Page crashed",
+    "successful": false,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "error",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "error": "page.waitForTimeout: Page crashed",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout | error=page.waitForTimeout: Page crashed"
+  },
+  {
+    "ts": "2026-07-15T21:05:37.432Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "page",
+      "evaluate",
+      "target",
+      "crashed"
+    ],
+    "action_done": "getAllText | error=page.evaluate: Target crashed ",
+    "successful": false,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "error",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "error": "page.evaluate: Target crashed ",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | error=page.evaluate: Target crashed "
+  },
+  {
+    "ts": "2026-07-15T21:06:01.055Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "page",
+      "crashed",
+      "https",
+      "www"
+    ],
+    "action_done": "waitForTimeout | error=page.waitForTimeout: Page crashed",
+    "successful": false,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "error",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "error": "page.waitForTimeout: Page crashed",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout | error=page.waitForTimeout: Page crashed"
+  },
+  {
+    "ts": "2026-07-15T21:06:01.636Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "page",
+      "evaluate",
+      "target",
+      "crashed"
+    ],
+    "action_done": "getAllText | error=page.evaluate: Target crashed ",
+    "successful": false,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "error",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "error": "page.evaluate: Target crashed ",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | error=page.evaluate: Target crashed "
+  },
+  {
+    "ts": "2026-07-15T21:06:59.100Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:07:00.343Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:07:42.653Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=W_ZXaoGfAd7X5NoP97iBuQ0&iflsig=ABILxe8AAAAAalgEa2TVLo1Sdb1Q0uSFPsWk5e6y9Xav&ved=0ahUKEwjBuNmWy9WVAxXeK1kFHXdcINcQ4dUDCDM&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESPkJUABYAHAAeACQAQCYAVWgAVWqAQExuAEDyAEA-AEBmAIBoAJ-mAMAkgcDMC4xoAeXBbIHAzAuMbgHfsIHAzQtMcgHH4AIAQ&sclient=gws-wiz&sei=dPZXarHxE5qw5NoPyMG6AQ",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:08:17.899Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=W_ZXaoGfAd7X5NoP97iBuQ0&iflsig=ABILxe8AAAAAalgEa2TVLo1Sdb1Q0uSFPsWk5e6y9Xav&ved=0ahUKEwjBuNmWy9WVAxXeK1kFHXdcINcQ4dUDCDM&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESPkJUABYAHAAeACQAQCYAVWgAVWqAQExuAEDyAEA-AEBmAIBoAJ-mAMAkgcDMC4xoAeXBbIHAzAuMbgHfsIHAzQtMcgHH4AIAQ&sclient=gws-wiz&sei=dPZXarHxE5qw5NoPyMG6AQ",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:08:52.731Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=W_ZXaoGfAd7X5NoP97iBuQ0&iflsig=ABILxe8AAAAAalgEa2TVLo1Sdb1Q0uSFPsWk5e6y9Xav&ved=0ahUKEwjBuNmWy9WVAxXeK1kFHXdcINcQ4dUDCDM&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESPkJUABYAHAAeACQAQCYAVWgAVWqAQExuAEDyAEA-AEBmAIBoAJ-mAMAkgcDMC4xoAeXBbIHAzAuMbgHfsIHAzQtMcgHH4AIAQ&sclient=gws-wiz&sei=dPZXarHxE5qw5NoPyMG6AQ",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:09:55.367Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:09:56.518Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice"
+  },
+  {
+    "ts": "2026-07-15T21:10:30.183Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:11:00.667Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:11:46.806Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:11:48.384Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:12:40.074Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:12:42.146Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:13:38.050Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:13:40.169Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:14:26.507Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:14:56.469Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:15:40.632Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:15:41.742Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "press",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "press | selector=#APjFqb | result=pressed",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "press",
+      "selector": "#APjFqb",
+      "signature": "press|#APjFqb",
+      "details": {
+        "result": "pressed",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "press | selector=#APjFqb | result=pressed"
+  },
+  {
+    "ts": "2026-07-15T21:16:21.766Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:16:23.303Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:17:02.746Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=jvhXasOsEoul5NoPiOzB8AU&iflsig=ABILxe8AAAAAalgGnj4bh27G74Aq7O4N7ByOSoho4jK9&ved=0ahUKEwjDq6WjzdWVAxWLElkFHQh2EF4Q4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESP4LUABYAHAAeACQAQCYARugARuqAQExuAEDyAEA-AEBmAIBoAImmAMAkgcBMaAHlwWyBwExuAcmwgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:17:33.400Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=jvhXasOsEoul5NoPiOzB8AU&iflsig=ABILxe8AAAAAalgGnj4bh27G74Aq7O4N7ByOSoho4jK9&ved=0ahUKEwjDq6WjzdWVAxWLElkFHQh2EF4Q4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESP4LUABYAHAAeACQAQCYARugARuqAQExuAEDyAEA-AEBmAIBoAImmAMAkgcBMaAHlwWyBwExuAcmwgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:18:06.665Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:18:07.964Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:18:46.167Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=-fhXav_vHNmz5NoP3Nb1kQw&iflsig=ABILxe8AAAAAalgHCR2nHomQ4280QDfFxmk9unBhTVc7&ved=0ahUKEwi_0LLWzdWVAxXZGVkFHVxrPcIQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESJ4KUABYAHAAeACQAQCYASGgASGqAQExuAEDyAEA-AEBmAIBoAIrmAMAkgcBMaAHlwWyBwExuAcrwgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:19:25.483Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=-fhXav_vHNmz5NoP3Nb1kQw&iflsig=ABILxe8AAAAAalgHCR2nHomQ4280QDfFxmk9unBhTVc7&ved=0ahUKEwi_0LLWzdWVAxXZGVkFHVxrPcIQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESJ4KUABYAHAAeACQAQCYASGgASGqAQExuAEDyAEA-AEBmAIBoAIrmAMAkgcBMaAHlwWyBwExuAcrwgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:19:27.347Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=-fhXav_vHNmz5NoP3Nb1kQw&iflsig=ABILxe8AAAAAalgHCR2nHomQ4280QDfFxmk9unBhTVc7&ved=0ahUKEwi_0LLWzdWVAxXZGVkFHVxrPcIQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESJ4KUABYAHAAeACQAQCYASGgASGqAQExuAEDyAEA-AEBmAIBoAIrmAMAkgcBMaAHlwWyBwExuAcrwgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:20:07.162Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image"
+  },
+  {
+    "ts": "2026-07-15T21:20:34.305Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:21:24.138Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:21:25.694Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:22:18.699Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:22:19.794Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by voice"
+  },
+  {
+    "ts": "2026-07-15T21:22:58.024Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:23:00.270Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:23:48.075Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=3_lXaq6TLrbZ5NoPxNzwwQg&iflsig=ABILxe8AAAAAalgH7xmbmt2IiLyE34iHtufxfF0zr_9s&ved=0ahUKEwju_pnEztWVAxW2LFkFHUQuPIgQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESMcRUABYAHAAeACQAQCYATugATuqAQExuAEDyAEA-AEBmAIBoAJhmAMAkgcBMaAHlwWyBwExuAdhwgcDNC0xyAccgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:24:32.432Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:25:06.403Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:25:50.920Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings\nSearch by image"
+  },
+  {
+    "ts": "2026-07-15T21:26:55.843Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:26:58.148Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:27:40.907Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=6fpXarX-KtCx5NoPpPKpyQM&iflsig=ABILxe8AAAAAalgI-RjMKLbUpS4un2tgjRylKamPlwIA&ved=0ahUKEwj1loLDz9WVAxXQGFkFHSR5KjkQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESP8RUABYAHAAeACQAQCYASagASaqAQExuAEDyAEA-AEBmAIBoAI-mAMAkgcBMaAHlwWyBwExuAc-wgcDNC0xyAcUgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:28:09.877Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=6fpXarX-KtCx5NoPpPKpyQM&iflsig=ABILxe8AAAAAalgI-RjMKLbUpS4un2tgjRylKamPlwIA&ved=0ahUKEwj1loLDz9WVAxXQGFkFHSR5KjkQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESP8RUABYAHAAeACQAQCYASagASaqAQExuAEDyAEA-AEBmAIBoAI-mAMAkgcBMaAHlwWyBwExuAc-wgcDNC0xyAcUgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:29:00.915Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitfortimeout",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "waitForTimeout",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForTimeout",
+      "selector": "",
+      "signature": "waitForTimeout|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForTimeout"
+  },
+  {
+    "ts": "2026-07-15T21:29:01.949Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=About\nStore\nGmailImages\nSign in\nAI Mode\n \nAdvertising\nBusiness\nHow Search works\nBuild, create, and do more with AI tools from Google\nPrivacy\nTerms\nSettings"
+  },
+  {
+    "ts": "2026-07-15T21:29:34.205Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:29:35.665Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:29:39.475Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "waitforurlchange",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "waitForURLChange | result=url-changed",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=ePtXauu_MNSw5NoP1dywuAk&iflsig=ABILxe8AAAAAalgJiPJ1T2quK1TWgTkbE8Ba-BAO2WVF&ved=0ahUKEwjr25-H0NWVAxVUGFkFHVUuDJcQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESLYLUABYAHAAeACQAQCYASSgASSqAQExuAEDyAEA-AEBmAIBoAI8mAMAkgcBMaAHlwWyBwExuAc8wgcDNC0xyAcTgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "waitForURLChange",
+      "selector": "",
+      "signature": "waitForURLChange|",
+      "details": {
+        "result": "url-changed",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "waitForURLChange | result=url-changed"
+  },
+  {
+    "ts": "2026-07-15T21:30:12.888Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "getalltext",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=ePtXauu_MNSw5NoP1dywuAk&iflsig=ABILxe8AAAAAalgJiPJ1T2quK1TWgTkbE8Ba-BAO2WVF&ved=0ahUKEwjr25-H0NWVAxVUGFkFHVUuDJcQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESLYLUABYAHAAeACQAQCYASSgASSqAQExuAEDyAEA-AEBmAIBoAI8mAMAkgcBMaAHlwWyBwExuAc8wgcDNC0xyAcTgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "getAllText",
+      "selector": "",
+      "signature": "getAllText|",
+      "details": {
+        "result": "Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hats & Headbands\nDiy\nFo",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "getAllText | result=Skip to main content\nAccessibility help\nSign in\nAI Mode\nAll\nImages\nShopping\nVideos\nShort videos\nNews\nMore\nTools\nSearch Results\nMen's\nOrange\nCostumes\nWomen's\nBrown\nKids'\nCostume Hat"
+  },
+  {
+    "ts": "2026-07-15T21:30:54.471Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:30:56.238Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:31:34.132Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "goto",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "goto | result=[object Object]",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=8vtXapTOC7ee5NoPv77IyAI&iflsig=ABILxe8AAAAAalgKAkhYfCy5HDKqoRS1m8PeOEZvpL-l&ved=0ahUKEwiUj5HB0NWVAxU3D1kFHT8fEikQ4dUDCCE&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESOgNUABYAHAAeACQAQCYASigASiqAQExuAEDyAEA-AEBmAIBoAIymAMAkgcBMaAHlwWyBwExuAcywgcDMi0xyAcGgAgB&sclient=gws-wiz",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "goto",
+      "selector": "",
+      "signature": "goto|",
+      "details": {
+        "result": "[object Object]",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "goto | result=[object Object]"
+  },
+  {
+    "ts": "2026-07-15T21:32:07.335Z",
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "The task was completed by first searching \"potato w/ a tophat\" on Google, which required multiple retries due to dynamic content restrictions, and then navigating to the official FIFA website at [http",
+    "completed": true,
+    "steps": 48
+  },
+  {
+    "ts": "2026-07-15T21:46:25.616Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-15T21:46:27.546Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "submitform",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "com"
+    ],
+    "action_done": "submitForm | selector=#APjFqb | result=enter-submit",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "submitForm",
+      "selector": "#APjFqb",
+      "signature": "submitForm|#APjFqb",
+      "details": {
+        "result": "enter-submit",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "submitForm | selector=#APjFqb | result=enter-submit"
+  },
+  {
+    "ts": "2026-07-15T21:46:36.527Z",
+    "task": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "prompt": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "keywords": [
+      "open",
+      "up",
+      "google",
+      "search",
+      "potato",
+      "tophat",
+      "go",
+      "offical",
+      "fifa",
+      "website",
+      "goto",
+      "primary",
+      "https",
+      "www",
+      "com",
+      "2f"
+    ],
+    "action_done": "goto | result=[object Object]",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/search?q=potato+w%2F+a+tophat&sca_esv=f07c4d704701945c&source=hp&ei=Vf9XaofXF57k5NoP29LmwQ4&iflsig=ABILxe8AAAAAalgNZUyLxTpNo0d6TZNOr80x2Uvme3_p&ved=0ahUKEwjH1dLe09WVAxUeMlkFHVupOegQ4dUDCDM&uact=5&oq=potato+w%2F+a+tophat&gs_lp=Egdnd3Mtd2l6IhJwb3RhdG8gdy8gYSB0b3BoYXQyBhAAGBYYHjIGEAAYFhgeMgsQABiABBiKBRiGAzILEAAYgAQYigUYhgMyCBAAGIAEGKIESI8PUABYAHAAeACQAQCYAUqgAUqqAQExuAEDyAEA-AEBmAIBoAJpmAMAkgcDMC4xoAeXBbIHAzAuMbgHacIHAzQtMcgHGYAIAQ&sclient=gws-wiz&sei=s_9XaqG6HubS5NoPjreG8AE",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "goto",
+      "selector": "",
+      "signature": "goto|",
+      "details": {
+        "result": "[object Object]",
+        "path": "primary"
+      }
+    },
+    "goal": "open up google and search up potato w/ a tophat then go to the offical FIFA website",
+    "result": "goto | result=[object Object]"
+  },
+  {
+    "ts": "2026-07-16T19:32:34.346Z",
+    "task": "go search up potato flying in the sky then move your mouse to the center",
+    "prompt": "go search up potato flying in the sky then move your mouse to the center",
+    "keywords": [
+      "go",
+      "search",
+      "up",
+      "potato",
+      "flying",
+      "sky",
+      "move",
+      "your",
+      "mouse",
+      "center",
+      "fill",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "google"
+    ],
+    "action_done": "fill | selector=#APjFqb | result=filled",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "fill",
+      "selector": "#APjFqb",
+      "signature": "fill|#APjFqb",
+      "details": {
+        "result": "filled",
+        "path": "primary"
+      }
+    },
+    "goal": "go search up potato flying in the sky then move your mouse to the center",
+    "result": "fill | selector=#APjFqb | result=filled"
+  },
+  {
+    "ts": "2026-07-16T19:32:38.328Z",
+    "task": "go search up potato flying in the sky then move your mouse to the center",
+    "prompt": "go search up potato flying in the sky then move your mouse to the center",
+    "keywords": [
+      "go",
+      "search",
+      "up",
+      "potato",
+      "flying",
+      "sky",
+      "move",
+      "your",
+      "mouse",
+      "center",
+      "press",
+      "apjfqb",
+      "primary",
+      "https",
+      "www",
+      "google"
+    ],
+    "action_done": "press | selector=#APjFqb | result=pressed",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "press",
+      "selector": "#APjFqb",
+      "signature": "press|#APjFqb",
+      "details": {
+        "result": "pressed",
+        "path": "primary"
+      }
+    },
+    "goal": "go search up potato flying in the sky then move your mouse to the center",
+    "result": "press | selector=#APjFqb | result=pressed"
+  },
+  {
+    "ts": "2026-07-16T19:32:40.801Z",
+    "task": "go search up potato flying in the sky then move your mouse to the center",
+    "prompt": "go search up potato flying in the sky then move your mouse to the center",
+    "keywords": [
+      "go",
+      "search",
+      "up",
+      "potato",
+      "flying",
+      "sky",
+      "move",
+      "your",
+      "mouse",
+      "center",
+      "mousemove",
+      "primary",
+      "https",
+      "www",
+      "google",
+      "com"
+    ],
+    "action_done": "mouseMove",
+    "successful": true,
+    "prompt_successful": false,
+    "url": "https://www.google.com/sorry/index?continue=https://www.google.com/search%3Fq%3Dpotato%2Bflying%2Bin%2Bthe%2Bsky%26sca_esv%3D641454aca0393425%26source%3Dhp%26ei%3DDDFZaoWbN8Sf5NoP-o6m6Ag%26iflsig%3DABILxe8AAAAAalk_HKkBMleLpp7KJ55_e3GbQ-OuE4jk%26ved%3D0ahUKEwiF0cyl99eVAxXED1kFHXqHCY0Q4dUDCCA%26uact%3D5%26oq%3Dpotato%2Bflying%2Bin%2Bthe%2Bsky%26gs_lp%3DEgdnd3Mtd2l6Ihhwb3RhdG8gZmx5aW5nIGluIHRoZSBza3kyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKsCMgUQIRirAjIFECEYqwIyBRAhGJ8FMgUQIRifBTIFECEYnwUyBRAhGJ8FSIAUUABYAHAAeACQAQCYAZsCoAGbAqoBAzItMbgBA8gBAPgBAZgCAaAC2AKYAwCSBwMzLTGgB6cIsgcDMy0xuAfYAsIHAzMtMcgHCYAIAQ%26sclient%3Dgws-wiz%26sei%3D1DFZasKCOLKHptQPjK_PyQg&q=EgSH7YLkGNXj5NIGIjDK_RClLOUPWqwCQ9WviBusmBXLfQmeA6tVc-bRNJijKqg-2NbMG3dqS4pVLurDaEYyAVJaAUM",
+    "other_data": {
+      "status": "ok",
+      "host": "google.com",
+      "action": "mouseMove",
+      "selector": "",
+      "signature": "mouseMove|",
+      "details": {
+        "result": "",
+        "path": "primary"
+      }
+    },
+    "goal": "go search up potato flying in the sky then move your mouse to the center",
+    "result": "mouseMove"
   }
 ]

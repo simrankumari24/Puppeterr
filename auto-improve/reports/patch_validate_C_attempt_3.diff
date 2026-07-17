@@ -1,0 +1,31 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -7862,4 +7862,26 @@
+   const profilePath = path.resolve('.puppeterr-profile');
+ 
++  async function safeLaunchPersistentContext(browserType, userDataDir, options) {
++    const fs = require('fs');
++    const path = require('path');
++    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
++    const maxAttempts = 3;
++    const delay = ms => new Promise(r => setTimeout(r, ms));
++    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
++      try {
++        return await browserType.launchPersistentContext(userDataDir, options);
++      } catch (err) {
++        const isLocked = err && (/Opening in existing browser session/i.test(err.message) ||
++          /profile is already in use/i.test(err.message) ||
++          /user data directory.*already in use/i.test(err.message));
++        if (!isLocked || attempt === maxAttempts) throw err;
++        console.warn(`Browser profile locked (attempt ${attempt}/${maxAttempts}); cleaning Chromium locks and retrying...`);
++        for (const lock of lockFiles) {
++          try { fs.unlinkSync(path.join(userDataDir, lock)); } catch (_) { /* ignore */ }
++        }
++        await delay(250 * attempt);
++      }
++    }
++  }
+   console.log('🚀 Launching browser...');
+-  const context = await chromium.launchPersistentContext(profilePath, launchOptions);
++  const context = await safeLaunchPersistentContext(chromium, profilePath, launchOptions);
