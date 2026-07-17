@@ -1,15 +1,3 @@
-2026/07/11-00:10:39.164 12772 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/07/11-00:10:39.165 12772 Recovering log #7
-2026/07/11-00:10:39.236 12772 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/000007.log 
-2026/07/11-00:10:43.990 12774 Level-0 table #12: started
-2026/07/11-00:10:44.002 12774 Level-0 table #12: 87900 bytes OK
-2026/07/11-00:10:44.007 12774 Delete type=0 #7
-2026/07/11-00:10:44.016 12774 Manual compaction at level-0 from (begin) .. (end); will stop at (end)
-2026/07/11-00:10:44.020 12774 Manual compaction at level-1 from (begin) .. (end); will stop at '\x00\x04\x01\x1f\x04\x03\x01\x03\x00N\x00E\x00W\x03\x00\x00\x00\x00\x00\x00L@\x03\x00\xc0x1\xe8\xf4yB\x00\x03\x00\x00\x00\x00\x00\x009@' @ 1167 : 1
-2026/07/11-00:10:44.021 12774 Compacting 1@1 + 1@2 files
-2026/07/11-00:10:44.028 12774 Generated table #13@1: 104 keys, 24600 bytes
-2026/07/11-00:10:44.028 12774 Compacted 1@1 + 1@2 files => 24600 bytes
-2026/07/11-00:10:44.029 12774 compacted to: files[ 0 0 1 0 0 0 0 ]
-2026/07/11-00:10:44.029 12774 Delete type=2 #9
-2026/07/11-00:10:44.030 12774 Delete type=2 #12
-2026/07/11-00:10:44.030 12774 Manual compaction at level-1 from '\x00\x04\x01\x1f\x04\x03\x01\x03\x00N\x00E\x00W\x03\x00\x00\x00\x00\x00\x00L@\x03\x00\xc0x1\xe8\xf4yB\x00\x03\x00\x00\x00\x00\x00\x009@' @ 1167 : 1 .. (end); will stop at (end)
+2026/07/15-21:30:58.513 9880 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/15-21:30:58.513 9880 Recovering log #3
+2026/07/15-21:30:58.515 9880 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/IndexedDB/https_www.youtube.com_0.indexeddb.leveldb/000003.log 

@@ -1,0 +1,23 @@
+auto_mode_enabled: true
+min_score_for_auto_approval: 800
+max_diff_lines: 150
+allow_dependency_changes: false
+allow_license_changes: false
+apply_env_breaking_changes: false
+open_pr_after_commit: false
+run_command: node agent.js
+test_command: ""
+ai_provider: cloudflare
+ai_model: @cf/moonshotai/kimi-k2.7-code
+paths:
+  repo_root: /workspaces/Puppeterr/auto-improve
+  agent_entry: agent.js
+  reports_dir: auto-improve/reports
+agents:
+  coder_logic: Fix core logic errors with minimal and safe diffs.
+  coder_performance: Improve performance bottlenecks without changing behavior.
+  coder_safety: Improve resilience, retries, and error handling.
+  coder_readability: Improve maintainability and readability with no behavior regressions.
+  coder_environment: Fix Puppeteer/Chromium/xvfb and tunnel stability issues.
+  reviewer_primary: Review strictly for correctness, regressions, and safety. Score 0-1000.
+  reviewer_secondary: Review strictly for maintainability, tests, and deployment risk. Score 0-1000.

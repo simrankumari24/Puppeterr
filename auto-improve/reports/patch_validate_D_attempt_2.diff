@@ -1,0 +1,49 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -7874,25 +7874,37 @@
+ }
+ 
+ /**
+- * Starts browser context.
++ * Starts the persistent browser context.
+  */
+ async function launchBrowser() {
+-  const options = {
++  const profileDir = path.join(__dirname, '.puppeterr-profile');
++  const lockFile = path.join(profileDir, 'SingletonLock');
++  await removeStaleBrowserLock(lockFile);
++  const context = await chromium.launchPersistentContext(profileDir, buildLaunchOptions());
++  return context;
++}
++
++function buildLaunchOptions() {
++  return {
+     headless: false,
+-    args: [
++    args: [...new Set([
+       '--no-sandbox',
+-      '--no-sandbox',
+       '--disable-setuid-sandbox',
+       '--disable-infobars',
+-      '--disable-infobars',
+       '--disable-search-engine-choice-screen',
+-      '--disable-search-engine-choice-screen',
+       '--disable-blink-features=AutomationControlled',
+       '--window-position=0,0',
+       '--window-size=1366,768',
+-    ],
++    ])],
+   };
+-  const profileDir = path.join(__dirname, '.puppeterr-profile');
+-  const context = await chromium.launchPersistentContext(profileDir, options);
+-  return context;
++}
++
++async function removeStaleBrowserLock(lockFile) {
++  try {
++    if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
++  } catch (err) {
++    console.warn('Could not remove stale browser lock:', err.message);
++  }
+ }

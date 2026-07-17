@@ -1,0 +1,24 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7877,6 +7877,21 @@
++const path = require('path');
++const { existsSync, rmSync } = require('fs');
++
++const PUPPETERR_PROFILE_DIR = '/workspaces/Puppeterr/.puppeterr-profile';
++
++function buildUniqueProfileDir(baseDir) {
++  // Launch each agent run in its own profile directory so a lingering Chromium
++  // session cannot block startup, cleaning a stale SingletonLock just in case.
++  const singletonLock = path.join(baseDir, 'SingletonLock');
++  try {
++    if (existsSync(singletonLock)) rmSync(singletonLock);
++  } catch {
++    // Best-effort cleanup; the launch error will still propagate if blocked.
++  }
++  return `${baseDir}-${process.pid}-${Date.now()}`;
++}
++
+ console.log('🚀 Launching browser...');
+-const browser = await chromium.launchPersistentContext('/workspaces/Puppeterr/.puppeterr-profile', {
++const profileDir = buildUniqueProfileDir(PUPPETERR_PROFILE_DIR);
++const browser = await chromium.launchPersistentContext(profileDir, {

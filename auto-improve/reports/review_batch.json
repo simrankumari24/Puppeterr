@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-07-14T15:39:51.685Z",
+  "total": 5,
+  "results": [
+    {
+      "patch_id": "A",
+      "evaluation_path": "/workspaces/Puppeterr/auto-improve/reports/patch_evaluation_A.json",
+      "aggregate_score": 650
+    },
+    {
+      "patch_id": "B",
+      "evaluation_path": "/workspaces/Puppeterr/auto-improve/reports/patch_evaluation_B.json",
+      "aggregate_score": 650
+    },
+    {
+      "patch_id": "C",
+      "evaluation_path": "/workspaces/Puppeterr/auto-improve/reports/patch_evaluation_C.json",
+      "aggregate_score": 650
+    },
+    {
+      "patch_id": "D",
+      "evaluation_path": "/workspaces/Puppeterr/auto-improve/reports/patch_evaluation_D.json",
+      "aggregate_score": 650
+    },
+    {
+      "patch_id": "E",
+      "evaluation_path": "/workspaces/Puppeterr/auto-improve/reports/patch_evaluation_E.json",
+      "aggregate_score": 638
+    }
+  ]
+}

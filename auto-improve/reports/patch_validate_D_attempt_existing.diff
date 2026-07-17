@@ -1,0 +1,46 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7878,10 +7878,10 @@ async function launchAgentBrowser() {
+   console.log('🚀 Launching browser...');
+ 
+-  const context = await chromium.launchPersistentContext(PROFILE_DIR, {
+-    headless: false,
+-    args: [...BROWSER_ARGS, ...BROWSER_ARGS, ...BROWSER_EXTRA],
+-  });
++  ensureProfileLockCleared(PROFILE_DIR);
+ 
+-  return context;
++  return chromium.launchPersistentContext(PROFILE_DIR, {
++    headless: false,
++    args: mergeUniqueArgs(BROWSER_ARGS, BROWSER_EXTRA),
++  });
+ }
+ 
+@@ -7888,3 +7888,27 @@
+ }
+ 
++function mergeUniqueArgs(defaultArgs, extraArgs) {
++  // Remove duplicate flags so the Chromium launch log stays readable.
++  const seen = new Set();
++  return [...defaultArgs, ...(extraArgs || [])].filter(arg => {
++    const flag = arg.startsWith('--') ? arg.split('=')[0] : arg;
++    if (seen.has(flag)) return false;
++    seen.add(flag);
++    return true;
++  });
++}
++
++function ensureProfileLockCleared(profileDir) {
++  const fs = require('fs');
++  const path = require('path');
++  const lockFile = path.join(profileDir, 'SingletonLock');
++  if (fs.existsSync(lockFile)) {
++    try {
++      fs.unlinkSync(lockFile);
++    } catch {
++      // Another live Chromium owns the lock; let launch report it.
++    }
++  }
++}
++
+ async function closeAgentBrowser() {

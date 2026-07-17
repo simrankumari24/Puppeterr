@@ -1,0 +1,46 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -7875,10 +7875,42 @@
+   const launchOptions = buildLaunchOptions();
+-  const browser = await chromium.launchPersistentContext(PROFILE_DIR, launchOptions);
+-  return browser;
++
++  const { profileDir, release } = await prepareUniqueProfile(PROFILE_DIR);
++  try {
++    const browser = await chromium.launchPersistentContext(profileDir, {
++      ...launchOptions,
++      args: [...new Set((launchOptions.args || []).filter(a => !a.startsWith('--user-data-dir')))],
++    });
++    return browser;
++  } catch (err) {
++    await release().catch(() => {});
++    throw err;
++  }
+ }
++
++async function prepareUniqueProfile(baseDir) {
++  const fs = require('fs').promises;
++  const path = require('path');
++  const profileDir = `${baseDir}-${process.pid}-${Date.now()}`;
++  await fs.mkdir(profileDir, { recursive: true });
++  await fs.writeFile(path.join(profileDir, '.lock'), String(process.pid), { flag: 'wx' });
++  await pruneStaleProfiles(baseDir);
++  return {
++    profileDir,
++    release: () => fs.rm(profileDir, { recursive: true, force: true }).catch(() => {}),
++  };
++}
++
++async function pruneStaleProfiles(baseDir) {
++  const fs = require('fs').promises;
++  const path = require('path');
++  const parent = path.dirname(baseDir);
++  const prefix = path.basename(baseDir) + '-';
++  let entries;
++  try { entries = await fs.readdir(parent); } catch { return; }
++  for (const entry of entries) {
++    if (!entry.startsWith(prefix)) continue;
++    await fs.rm(path.join(parent, entry), { recursive: true, force: true }).catch(() => {});
++  }
++}

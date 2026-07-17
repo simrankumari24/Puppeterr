@@ -1,0 +1,63 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7878,4 +7878,6 @@
+   // existing launch options
+ }
+ 
+-const context = await chromium.launchPersistentContext(profilePath, options);
++const { launchPersistentContextWithLockRecovery } = require('./lib/browser-launch-recovery');
++
++const context = await launchPersistentContextWithLockRecovery(chromium, profilePath, options);
+--- /dev/null
++++ b/lib/browser-launch-recovery.js
+@@ -0,0 +1,50 @@
++const fs = require("fs");
++const path = require("path");
++
++function dedupeLaunchArgs(args) {
++  if (!Array.isArray(args)) return args;
++  return [...new Set(args)];
++}
++
++let activeContext = null;
++
++async function closeActiveContext() {
++  if (activeContext) {
++    try { await activeContext.close(); } catch {}
++    activeContext = null;
++  }
++}
++
++["SIGINT", "SIGTERM"].forEach(signal => {
++  process.once(signal, async () => {
++    await closeActiveContext();
++    process.exit(signal === "SIGINT" ? 130 : 143);
++  });
++});
++
++async function launchPersistentContextWithLockRecovery(browserType, profilePath, launchOptions, maxRetries = 2) {
++  launchOptions = { ...launchOptions, args: dedupeLaunchArgs(launchOptions && launchOptions.args) };
++  let lastError;
++  for (let attempt = 1; attempt <= maxRetries; attempt++) {
++    try {
++      const context = await browserType.launchPersistentContext(profilePath, launchOptions);
++      activeContext = context;
++      return context;
++    } catch (err) {
++      lastError = err;
++      const isLocked = err && typeof err.message === "string" &&
++        (err.message.includes("profile is already in use") ||
++         err.message.includes("Opening in existing browser session"));
++      if (!isLocked || attempt === maxRetries) break;
++      console.warn(`⚠️ Chromium profile locked (attempt ${attempt}/${maxRetries}); cleaning lock files and retrying...`);
++      for (const lockFile of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
++        const lockPath = path.join(profilePath, lockFile);
++        try { fs.rmSync(lockPath, { force: true }); } catch {}
++      }
++      await new Promise(resolve => setTimeout(resolve, 500));
++    }
++  }
++  throw lastError || new Error("launchPersistentContextWithLockRecovery exhausted retries");
++}
++
++module.exports = { launchPersistentContextWithLockRecovery };

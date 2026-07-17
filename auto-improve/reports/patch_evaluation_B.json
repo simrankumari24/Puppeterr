@@ -1,0 +1,43 @@
+{
+  "patch_id": "B",
+  "created_at": "2026-07-14T15:39:51.585Z",
+  "changed_lines": 0,
+  "touched_files": [],
+  "policy_flags": {
+    "dependency_changes": false,
+    "license_changes": false,
+    "env_breaking_risk": false
+  },
+  "reviewers": [
+    {
+      "reviewer": "primary",
+      "provider": "cloudflare",
+      "model": "@cf/openai/gpt-5.6-sol",
+      "score": 650,
+      "notes": [
+        "No effective patch content detected.",
+        "Fallback reviewer used deterministic scoring."
+      ],
+      "blocking_issues": []
+    },
+    {
+      "reviewer": "secondary",
+      "provider": "cloudflare",
+      "model": "@cf/openai/gpt-5.6-sol",
+      "score": 650,
+      "notes": [
+        "No effective patch content detected.",
+        "Fallback reviewer used deterministic scoring."
+      ],
+      "blocking_issues": []
+    }
+  ],
+  "aggregate_score": 650,
+  "reviewer_notes": [
+    "No effective patch content detected.",
+    "Fallback reviewer used deterministic scoring.",
+    "No effective patch content detected.",
+    "Fallback reviewer used deterministic scoring."
+  ],
+  "reviewer_blockers": []
+}
