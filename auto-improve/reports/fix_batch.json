@@ -1,0 +1,41 @@
+{
+  "created_at": "2026-07-14T15:39:51.249Z",
+  "total": 5,
+  "patches": [
+    {
+      "patch_id": "A",
+      "patch_path": "/workspaces/Puppeterr/auto-improve/reports/patch_proposal_A.diff",
+      "metadata_path": "/workspaces/Puppeterr/auto-improve/reports/patch_metadata_A.json",
+      "changed_lines": 0,
+      "touched_files": []
+    },
+    {
+      "patch_id": "B",
+      "patch_path": "/workspaces/Puppeterr/auto-improve/reports/patch_proposal_B.diff",
+      "metadata_path": "/workspaces/Puppeterr/auto-improve/reports/patch_metadata_B.json",
+      "changed_lines": 0,
+      "touched_files": []
+    },
+    {
+      "patch_id": "C",
+      "patch_path": "/workspaces/Puppeterr/auto-improve/reports/patch_proposal_C.diff",
+      "metadata_path": "/workspaces/Puppeterr/auto-improve/reports/patch_metadata_C.json",
+      "changed_lines": 0,
+      "touched_files": []
+    },
+    {
+      "patch_id": "D",
+      "patch_path": "/workspaces/Puppeterr/auto-improve/reports/patch_proposal_D.diff",
+      "metadata_path": "/workspaces/Puppeterr/auto-improve/reports/patch_metadata_D.json",
+      "changed_lines": 0,
+      "touched_files": []
+    },
+    {
+      "patch_id": "E",
+      "patch_path": "/workspaces/Puppeterr/auto-improve/reports/patch_proposal_E.diff",
+      "metadata_path": "/workspaces/Puppeterr/auto-improve/reports/patch_metadata_E.json",
+      "changed_lines": 0,
+      "touched_files": []
+    }
+  ]
+}

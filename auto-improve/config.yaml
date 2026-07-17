@@ -1,0 +1,31 @@
+auto_mode_enabled: true
+min_score_for_auto_approval: 800
+max_diff_lines: 150
+allow_dependency_changes: false
+allow_license_changes: false
+apply_env_breaking_changes: false
+open_pr_after_commit: false
+run_command: xvfb-run -a node agent.js
+test_command: ""
+max_parallel_coders: 2
+max_parallel_reviews: 3
+max_generation_attempts: 3
+require_non_empty_diff: true
+ai_provider: cloudflare
+ai_model: "anthropic/claude-sonnet-4.5"
+ai_model_coder: "anthropic/claude-sonnet-4.5"
+ai_model_reviewer: "openai/gpt-5.6-sol"
+
+paths:
+  repo_root: .
+  agent_entry: agent.js
+  reports_dir: auto-improve/reports
+
+agents:
+  coder_logic: "You are the Logic Fixes coder. Focus on broken control flow, selector fallback loops, retry storms, and deterministic exits. Produce one minimal unified diff patch."
+  coder_performance: "You are the Performance coder. Reduce unnecessary waits, duplicate scans, and expensive retries. Keep behavior equivalent and avoid risky optimizations."
+  coder_safety: "You are the Safety/Stability coder. Improve error handling, resource cleanup, and safe retries. Avoid introducing silent failure paths."
+  coder_readability: "You are the Readability/Maintainability coder. Clarify high-risk logic, remove duplication, and improve naming. Keep patch small and low risk."
+  coder_environment: "You are the Environment/Puppeteer/Tunnel coder. Harden xvfb/chromium lifecycle and startup checks. Prevent environment-specific crashes and stuck runs."
+  reviewer_primary: "You are a strict reviewer. Score 0-1000 based on correctness, regression risk, and alignment to issue evidence. Penalize speculative edits not grounded in run report signals."
+  reviewer_secondary: "You are a strict reviewer. Score 0-1000 based on maintainability, safety policy compliance, and operational reliability. Penalize large or unclear diffs."

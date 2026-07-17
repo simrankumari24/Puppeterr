@@ -1,0 +1,19 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7878,7 +7878,17 @@
+   const launchOptions = {
+     // ...
+   };
+-  const context = await browser.launchPersistentContext(profileDir, launchOptions);
++  let context;
++  try {
++    context = await browser.launchPersistentContext(profileDir, launchOptions);
++  } catch (launchErr) {
++    if (launchErr?.message?.includes('Opening in existing browser session')) {
++      console.warn('[browser] profile locked; using fresh fallback profile');
++      const fallbackProfile = `${profileDir}-fallback-${Date.now()}`;
++      context = await browser.launchPersistentContext(fallbackProfile, launchOptions);
++    } else {
++      throw launchErr;
++    }
++  }

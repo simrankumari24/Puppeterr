@@ -1,0 +1,93 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -1,5 +1,92 @@
+ const { chromium } = require('playwright-extra');
+ 
++const fs = require('fs');
++const path = require('path');
++const { execSync, spawn } = require('child_process');
++
++const BASE_PROFILE_DIR = process.env.PUPPETERR_PROFILE_DIR || '/workspaces/Puppeterr/.puppeterr-profile';
++
++// Harden xvfb / display lifecycle: always target a display and verify it.
++if (!process.env.DISPLAY) {
++  process.env.DISPLAY = ':99';
++}
++
++function waitForDisplay(timeoutMs = 10000) {
++  const start = Date.now();
++  while (Date.now() - start < timeoutMs) {
++    try {
++      execSync('xdpyinfo', { stdio: 'ignore', timeout: 1500 });
++      return true;
++    } catch {}
++    try {
++      execSync('sleep 0.2', { stdio: 'ignore' });
++    } catch {}
++  }
++  throw new Error(`No DISPLAY available after ${timeoutMs}ms (DISPLAY=${process.env.DISPLAY})`);
++}
++
++function uniqueProfileDir() {
++  const stamp = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
++  return `${BASE_PROFILE_DIR}-${stamp}`;
++}
++
++function cleanupProfileDir(dir) {
++  try {
++    if (fs.existsSync(dir)) {
++      fs.rmSync(dir, { recursive: true, force: true });
++    }
++  } catch (e) {
++    console.warn('⚠️ Failed to clean profile dir:', e.message);
++  }
++}
++
++async function killStaleChrome(profileDir) {
++  try {
++    execSync(`pkill -9 -f "user-data-dir=${profileDir}" || true`, { stdio: 'ignore' });
++  } catch {}
++  for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
++    try { fs.rmSync(path.join(profileDir, f), { force: true }); } catch {}
++  }
++}
++
++async function launchPersistentBrowser(browserType, options, retries = 3) {
++  const profileDir = uniqueProfileDir();
++  cleanupProfileDir(profileDir);
++  fs.mkdirSync(profileDir, { recursive: true });
++  waitForDisplay();
++
++  for (let attempt = 1; attempt <= retries; attempt++) {
++    try {
++      const context = await browserType.launchPersistentContext(profileDir, options);
++      context.__puppeterrProfileDir = profileDir;
++      return context;
++    } catch (err) {
++      console.warn(`⚠️ Browser launch attempt ${attempt}/${retries} failed: ${err.message}`);
++      if (attempt === retries) throw err;
++      await killStaleChrome(profileDir);
++      await new Promise(r => setTimeout(r, 500 * attempt));
++    }
++  }
++  throw new Error('Unreachable browser launch path');
++}
++
+ // Some existing config
+ 
+@@ -7875,12 +7962,15 @@
+       console.log('🚀 Launching browser...');
+-      const context = await chromium.launchPersistentContext(PROFILE_DIR, launchOptions);
++      const context = await launchPersistentBrowser(chromium, launchOptions);
+       page = context.pages()[0] || (await context.newPage());
+ 
+@@ -7920,6 +8010,10 @@
+   if (context) {
+     await context.close().catch(() => {});
++    const profileDir = context.__puppeterrProfileDir;
++    if (profileDir) {
++      cleanupProfileDir(profileDir);
++    }
+   }
+ }

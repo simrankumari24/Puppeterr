@@ -1,0 +1,108 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7868,6 +7868,84 @@
+ const playwright = require('playwright-extra');
+ const fs = require('fs');
+ const path = require('path');
++const { execSync } = require('child_process');
++
++const PROFILE_DIR = path.resolve(__dirname, '.puppeterr-profile');
++const LOCK_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
++
++/**
++ * Removes Chromium profile lock files left behind by a crashed or lingering
++ * browser instance. This prevents the "Opening in existing browser session"
++ * failure when launching a persistent context.
++ */
++function releaseProfileLocks(profileDir) {
++  if (!fs.existsSync(profileDir)) return;
++  for (const lock of LOCK_FILES) {
++    const lockPath = path.join(profileDir, lock);
++    try {
++      if (fs.existsSync(lockPath)) {
++        fs.rmSync(lockPath, { force: true, recursive: true });
++      }
++    } catch (err) {
++      console.warn(`⚠️  Unable to remove lock file ${lockPath}: ${err.message}`);
++    }
++  }
++}
++
++/**
++ * Safely launches a persistent browser context with retry/cleanup logic.
++ * If a profile-lock conflict is detected, stale locks are removed and the
++ * launch is retried up to maxAttempts times before the error is re-thrown.
++ */
++async function safeLaunchPersistentContext(browserType, profileDir, options, maxAttempts = 3) {
++  let lastError;
++  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
++    if (attempt > 1) {
++      console.log(`🔄  Launch attempt ${attempt}/${maxAttempts}...`);
++      releaseProfileLocks(profileDir);
++      await new Promise((resolve) => { setTimeout(resolve, 500 * attempt); });
++    }
++    let context;
++    try {
++      context = await browserType.launchPersistentContext(profileDir, options);
++      return context;
++    } catch (err) {
++      lastError = err;
++      const message = err?.message || '';
++      const isProfileLockError = /Opening in existing browser session|profile is already in use|SingletonLock/i.test(message);
++      if (!isProfileLockError) {
++        throw err;
++      }
++      console.warn(`⚠️  Browser profile locked (attempt ${attempt}/${maxAttempts}): ${message}`);
++      if (context) {
++        try { await context.close(); } catch (_) { /* ignore */ }
++      }
++      releaseProfileLocks(profileDir);
++      if (attempt === maxAttempts) {
++        throw err;
++      }
++    }
++  }
++  throw lastError;
++}
++
++async function cleanupBrowserContext(context) {
++  if (!context) return;
++  try {
++    await context.close();
++  } catch (err) {
++    console.warn(`⚠️  Error closing browser context: ${err.message}`);
++  }
++}
++
++async function attemptBrowserLaunch() {
++  console.log('🚀 Launching browser...');
++  return safeLaunchPersistentContext(
++    playwright.chromium,
++    PROFILE_DIR,
++    {
++      headless: false,
++      args: ['--no-sandbox', '--disable-setuid-sandbox'],
++    },
++    3
++  );
++}
+ 
+ async function main() {
+   // ... existing setup ...
+@@ -7877,8 +7955,13 @@
+     headless: false,
+     args: ['--no-sandbox', '--disable-setuid-sandbox'],
+   });
+-  console.log('🚀 Launching browser...');
+-  const context = await playwright.chromium.launchPersistentContext(profilePath, launchOptions);
++  let context;
++  try {
++    context = await attemptBrowserLaunch();
++  } catch (err) {
++    console.error('💥 Fatal: browserType.launchPersistentContext:', err.message);
++    await cleanupBrowserContext(context);
++    process.exitCode = 1;
++    throw err;
++  }
+   // ... continue with agent logic ...
+ }

@@ -1,0 +1,63 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -1,5 +1,6 @@
+ const { chromium } = require('playwright-extra');
+ const path = require('path');
++const fs = require('fs/promises');
+ 
+@@ -7868,12 +7869,47 @@ async function startBrowser() {
+   const browser = chromium;
+-  const profilePath = path.resolve(__dirname, '.puppeterr-profile');
++  const baseProfilePath = path.resolve(__dirname, '.puppeterr-profile');
++  const profilePath = `${baseProfilePath}-${Date.now()}-${process.pid}`;
++
+   console.log('🚀 Launching browser...');
+-  const context = await browser.launchPersistentContext(profilePath, {
+-    headless: false,
+-    args: ['--window-position=0,0', '--window-size=1366,768', '--disable-infobars', '--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
+-    viewport: { width: 1366, height: 768 }
+-  });
++
++  // Clean up a stale SingletonLock if we are reusing the base profile.
++  const singletonLock = path.join(baseProfilePath, 'SingletonLock');
++  try {
++    const lockTarget = await fs.readlink(singletonLock).catch(() => null);
++    if (lockTarget && !require('fs').existsSync(lockTarget)) {
++      await fs.unlink(singletonLock).catch(() => {});
++    }
++  } catch {}
++
++  let context;
++  try {
++    context = await browser.launchPersistentContext(profilePath, {
++      headless: false,
++      args: [
++        '--window-position=0,0',
++        '--window-size=1366,768',
++        '--disable-infobars',
++        '--no-sandbox',
++        '--disable-setuid-sandbox',
++        '--disable-blink-features=AutomationControlled'
++      ],
++      viewport: { width: 1366, height: 768 }
++    });
++  } catch (err) {
++    if (/existing browser session|already in use/i.test(err.message)) {
++      console.warn('⚠️ Browser profile locked; falling back to ephemeral profile.');
++      context = await browser.launchPersistentContext(`${profilePath}-fallback`, {
++        headless: false,
++        args: [
++          '--no-sandbox',
++          '--disable-setuid-sandbox',
++          '--disable-blink-features=AutomationControlled'
++        ],
++        viewport: { width: 1366, height: 768 }
++      });
++    } else {
++      throw err;
++    }
++  }
++
+   return context;
+ }

@@ -1,139 +1,108 @@
-/**
- * Hybrid Shape Detector
- * Combines contour analysis + ViT semantic understanding
- */
+const { chromium } = require("playwright");
+const pixelGridReasoner = require("./pixelGridReasoner");
 
-const { HfInference } = require("@huggingface/inference");
-const { spawn } = require("child_process");
-
-// Initialize HF client (uses HF_TOKEN env var)
-const hf = new HfInference(process.env.HF_TOKEN);
-
-/**
- * Analyze image for shapes and semantic content
- * @param {string} imageB64 - Base64-encoded image data
- * @returns {Object} - { shapes, semantic, confidence }
- */
-async function analyzeImageHybrid(imageB64) {
-  try {
-    // Run OpenCV detection and ViT semantic analysis in parallel
-    const [shapes, semantic] = await Promise.all([
-      detectShapesWithOpenCV(imageB64),
-      getSemanticUnderstanding(imageB64)
-    ]);
-
-    return {
-      shapes,
-      semantic,
-      confidence: {
-        shapes: shapes.length > 0 ? Math.min(1, 0.6 + shapes[0].confidence * 0.4) : 0,
-        semantic: semantic.confidence || 0
-      },
-      timestamp: new Date().toISOString()
-    };
-  } catch (error) {
-    console.error("Shape detection error:", error.message);
-    return {
-      shapes: [],
-      semantic: { error: error.message },
-      confidence: { shapes: 0, semantic: 0 }
-    };
-  }
+function inferMimeFromBase64(imageB64) {
+  const buffer = Buffer.from(String(imageB64 || "").slice(0, 128), "base64");
+  const text = buffer.toString("utf8", 0, Math.min(buffer.length, 64)).trim().toLowerCase();
+  if (text.startsWith("<svg") || text.startsWith("<?xml")) return "image/svg+xml";
+  if (buffer.length >= 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "image/jpeg";
+  if (buffer.length >= 4 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  if (buffer.length >= 3 && buffer.toString("ascii", 0, 3) === "GIF") return "image/gif";
+  return "image/png";
 }
 
-/**
- * Get semantic understanding using ViT image classification
- */
-async function getSemanticUnderstanding(imageB64) {
+async function extractPixelGridFromImage(imageB64, columns = 128, rows = 64) {
+  const mimeType = inferMimeFromBase64(imageB64);
+  const dataUrl = `data:${mimeType};base64,${String(imageB64 || "").replace(/\s+/g, "")}`;
+  let browser = null;
   try {
-    // Convert to Buffer for HF API
-    const imageBuffer = Buffer.from(imageB64, "base64");
-
-    // Use HF image classification with ViT
-    const result = await hf.imageClassification({
-      data: imageBuffer,
-      model: "google/vit-base-patch16-224-in21k",
-      top_k: 5
-    });
-
-    if (!Array.isArray(result) || result.length === 0) {
-      return { description: "Unknown content", confidence: 0 };
-    }
-
-    return {
-      description: result[0].label,
-      confidence: result[0].score,
-      alternatives: result.slice(1, 3).map(r => ({ label: r.label, score: r.score })),
-      allScores: result
-    };
-  } catch (error) {
-    console.error("ViT classification error:", error.message);
-    return {
-      description: "Classification unavailable",
-      confidence: 0,
-      error: error.message
-    };
-  }
-}
-
-/**
- * Call OpenCV via Python subprocess for shape detection
- */
-async function detectShapesWithOpenCV(imageB64) {
-  return new Promise((resolve) => {
-    try {
-      const python = spawn("python3", [__dirname + "/shapeDetect.py", imageB64]);
-      let output = "";
-      let errorOutput = "";
-
-      python.stdout.on("data", (data) => {
-        output += data.toString();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: columns, height: rows } });
+    const grid = await page.evaluate(async ({ dataUrlValue, columnsValue, rowsValue }) => {
+      const image = new Image();
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        image.src = dataUrlValue;
       });
 
-      python.stderr.on("data", (data) => {
-        errorOutput += data.toString();
-      });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Number(columnsValue) || 1);
+      canvas.height = Math.max(1, Number(rowsValue) || 1);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const luminances = [];
 
-      python.on("close", (code) => {
-        try {
-          if (code !== 0 && errorOutput) {
-            console.error("Shape detection stderr:", errorOutput);
-            resolve([]);
-            return;
-          }
-
-          const result = JSON.parse(output);
-          if (result.success && Array.isArray(result.shapes)) {
-            resolve(result.shapes);
-          } else {
-            resolve([]);
-          }
-        } catch (parseErr) {
-          console.error("Failed to parse shape detection output:", parseErr.message);
-          resolve([]);
+      for (let row = 0; row < canvas.height; row += 1) {
+        for (let column = 0; column < canvas.width; column += 1) {
+          const index = ((row * canvas.width) + column) * 4;
+          const red = imageData[index] || 0;
+          const green = imageData[index + 1] || 0;
+          const blue = imageData[index + 2] || 0;
+          const alpha = imageData[index + 3] || 0;
+          const luminance = ((0.299 * red) + (0.587 * green) + (0.114 * blue)) * (alpha / 255);
+          luminances.push(luminance);
         }
-      });
+      }
 
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        python.kill();
-        resolve([]);
-      }, 10000);
-    } catch (error) {
-      console.error("Shape detection subprocess error:", error.message);
-      resolve([]);
+      const sorted = [...luminances].sort((a, b) => a - b);
+      const threshold = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 128;
+      const rowsOut = [];
+
+      for (let row = 0; row < canvas.height; row += 1) {
+        let line = "";
+        for (let column = 0; column < canvas.width; column += 1) {
+          const index = ((row * canvas.width) + column) * 4;
+          const red = imageData[index] || 0;
+          const green = imageData[index + 1] || 0;
+          const blue = imageData[index + 2] || 0;
+          const alpha = imageData[index + 3] || 0;
+          const luminance = ((0.299 * red) + (0.587 * green) + (0.114 * blue)) * (alpha / 255);
+          line += luminance >= threshold ? "R" : "G";
+        }
+        rowsOut.push(line);
+      }
+
+      return rowsOut;
+    }, { dataUrlValue: dataUrl, columnsValue: columns, rowsValue: rows });
+    return Array.isArray(grid) ? grid : [];
+  } catch (error) {
+    console.error("Pixel grid extractor error:", error.message);
+    return [];
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
     }
-  });
+  }
 }
 
-/**
- * Hybrid analysis: combine DETR + OpenCV shapes + ViT semantic
- */
-async function analyzeImageFull(imageB64) {
-  const hybrid = await analyzeImageHybrid(imageB64);
+async function analyzeImageHybrid(imageB64) {
+  const grid = await extractPixelGridFromImage(imageB64);
+  const parsed = pixelGridReasoner.parsePixelGrid(grid);
   return {
-    pipeline: "hybrid",
-    analysis: hybrid,
+    grid,
+    ...parsed,
+    shapes: parsed.glyphs,
+    semantic: {
+      description: "pixel_grid_reasoning",
+      confidence: 1,
+      source: "deterministic"
+    },
+    confidence: {
+      shapes: parsed.glyphs.length > 0 ? 1 : 0,
+      semantic: 0
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
+async function analyzeImageFull(imageB64) {
+  const analysis = await analyzeImageHybrid(imageB64);
+  return {
+    pipeline: "pixel-grid",
+    analysis,
     timestamp: new Date().toISOString()
   };
 }
@@ -141,6 +110,7 @@ async function analyzeImageFull(imageB64) {
 module.exports = {
   analyzeImageHybrid,
   analyzeImageFull,
-  getSemanticUnderstanding,
-  detectShapesWithOpenCV
+  extractPixelGridFromImage,
+  getSemanticUnderstanding: async () => ({ description: "pixel_grid_reasoning", confidence: 1, source: "deterministic" }),
+  detectShapesWithOpenCV: async () => []
 };

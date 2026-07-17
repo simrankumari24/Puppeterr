@@ -11,6 +11,7 @@ const nodemailer = require("nodemailer");
 const actions = require("./actions");
 const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
 const pinchApi = require("pinch-api");
+const pixelGridReasoner = require("./pixelGridReasoner");
 async function humanMove(page, x, y, telemetry = {}) {
   const steps = 25 + Math.floor(Math.random() * 10);
   const start = await page.evaluate(() => ({
@@ -104,6 +105,10 @@ if (fs.existsSync(".env")) {
 
 const CF_API_TOKEN  = process.env.CF_API_TOKEN;
 const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CF_GATEWAY_CHAT_COMPLETIONS_URL = String(
+  process.env.CF_GATEWAY_CHAT_COMPLETIONS_URL ||
+  `https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/default/compat/chat/completions`
+).trim();
 const PINCH_API_TOKEN = process.env.PINCH_API_TOKEN || process.env.PINCH_X_API_TOKEN || "";
 const PINCH_API_EMAIL = process.env.PINCH_API_EMAIL || process.env.PINCH_X_API_EMAIL || "";
 const PINCH_BASE_URI = process.env.PINCH_BASE_URI || "";
@@ -200,12 +205,14 @@ const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
 const ROUTER_LOCK_MODEL = String(process.env.ROUTER_LOCK_MODEL || "false").toLowerCase() === "true";
 const ROUTER_THINKING_DEFAULT = String(process.env.ROUTER_THINKING_DEFAULT || "true").toLowerCase() !== "false";
 const DEFAULT_MODELS = {
-  // Internal Cloudflare IDs (for example @alibaba/...) are supported via env
-  // overrides and catalog resolution. These are only generic starting defaults.
-  router: process.env.DEFAULT_ROUTER_MODEL || "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
-  planner: process.env.DEFAULT_PLANNER_MODEL || "@cf/moonshotai/kimi-k2.7-code",
-  reasoner: process.env.DEFAULT_REASONER_MODEL || "@anthropic/claude-sonnet-4.6",
-  vision: process.env.DEFAULT_VISION_MODEL || "@cf/meta/llama-3.2-11b-vision-instruct"
+  // router/reasoner/vision: Cloudflare-hosted (ai/run/) — confirmed working
+  // planner: third-party via ai/v1/chat/completions — requires unified billing credits
+  // image: flux-2-klein-9b confirmed working via multipart on this account (~2s generation)
+  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/qwen/qwen3-30b-a3b-fp8",
+  planner:  process.env.DEFAULT_PLANNER_MODEL  || "anthropic/claude-opus-4.8",
+  reasoner: process.env.DEFAULT_REASONER_MODEL || "@cf/zai-org/glm-5.2",
+  vision:   process.env.DEFAULT_VISION_MODEL   || "@cf/meta/llama-3.2-11b-vision-instruct",
+  image:    process.env.DEFAULT_IMAGE_MODEL    || "@cf/black-forest-labs/flux-2-klein-9b"
 };
 const SUPERVISOR_MODEL = String(process.env.SUPERVISOR_MODEL || process.env.DEFAULT_SUPERVISOR_MODEL || "").trim();
 
@@ -230,8 +237,8 @@ function pickModelId(catalog, preferredIds, wantVision) {
 }
 
 function resolveDefaultModels(catalog) {
-  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"], true) || DEFAULT_MODELS.router;
-  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/moonshotai/kimi-k2.7-code", router], false) || router;
+  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/qwen/qwen3-30b-a3b-fp8"], true) || DEFAULT_MODELS.router;
+  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "anthropic/claude-opus-4.8", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
   return { router, planner, reasoner, vision };
@@ -374,6 +381,13 @@ function scoreModelForTask(model, taskType, baselineModelId) {
 }
 
 function pickBestRouterModelForTask(taskType, baselineModelId, catalog, failedSet) {
+  if (taskType === "image_generation") {
+    return {
+      modelToUse: baselineModelId,
+      reason: "image generation stays pinned to the configured baseline model",
+      swapped: false
+    };
+  }
   if (ROUTER_LOCK_MODEL) {
     return {
       modelToUse: baselineModelId,
@@ -1799,30 +1813,206 @@ function normalizeMessages(messages) {
   });
 }
 
-// ── CF AI wrapper (TEXT models — content is always normalized to string) ────
-async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null) {
-  const safeMessages = normalizeMessages(messages);
-  const requestBody = { messages: safeMessages, max_tokens: maxTokens };
-  if (temperature !== null && temperature !== undefined) {
-    requestBody.temperature = clampTemperature(temperature, 0.3);
+function adaptMessagesForHostedRun(messages) {
+  const input = Array.isArray(messages) ? messages : [];
+  const adapted = [];
+  let pendingSystem = [];
+
+  function flushPendingSystemIntoUser() {
+    if (!pendingSystem.length) return;
+    adapted.push({
+      role: "user",
+      content: `System instructions:\n${pendingSystem.join("\n\n")}`
+    });
+    pendingSystem = [];
   }
+
+  for (const message of input) {
+    const role = String(message?.role || "user").toLowerCase();
+    const content = String(message?.content ?? "");
+
+    if (role === "system") {
+      if (content.trim()) pendingSystem.push(content.trim());
+      continue;
+    }
+
+    if (role === "user") {
+      if (pendingSystem.length) {
+        adapted.push({
+          ...message,
+          role: "user",
+          content: `System instructions:\n${pendingSystem.join("\n\n")}\n\nUser request:\n${content}`.trim()
+        });
+        pendingSystem = [];
+      } else {
+        adapted.push({ ...message, role: "user", content });
+      }
+      continue;
+    }
+
+    flushPendingSystemIntoUser();
+    adapted.push({ ...message, role: role === "assistant" ? "assistant" : "user", content });
+  }
+
+  flushPendingSystemIntoUser();
+  return adapted;
+}
+
+// ── CF AI wrapper (TEXT models — content is always normalized to string) ────
+function buildCloudflareRunUrl(modelName) {
+  return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${String(modelName || "")}`;
+}
+
+function buildCloudflareChatCompletionsUrl() {
+  return CF_GATEWAY_CHAT_COMPLETIONS_URL;
+}
+
+function isCloudflareHostedRunModel(modelName) {
+  return String(modelName || "").startsWith("@");
+}
+
+function describeModelTransport(modelName) {
+  const model = String(modelName || "").trim();
+  if (!model) return { model, kind: "unknown", endpoint: "" };
+  if (isCloudflareHostedRunModel(model)) {
+    return { model, kind: "workers-ai-run", endpoint: buildCloudflareRunUrl(model) };
+  }
+  return { model, kind: "ai-gateway-chat", endpoint: buildCloudflareChatCompletionsUrl() };
+}
+
+function extractChatCompletionText(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+async function runCloudflareStartupPreflight() {
+  const modelMap = {
+    router: DEFAULT_MODELS.router,
+    planner: DEFAULT_MODELS.planner,
+    reasoner: DEFAULT_MODELS.reasoner,
+    vision: DEFAULT_MODELS.vision
+  };
+
+  console.log("🔎 Cloudflare AI preflight");
+  for (const [role, model] of Object.entries(modelMap)) {
+    const transport = describeModelTransport(model);
+    console.log(`   ${role}: ${transport.model} -> ${transport.kind}`);
+  }
+
+  try {
+    const catalogRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/models`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${CF_API_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    });
+    if (!catalogRes.ok) {
+      const text = await catalogRes.text().catch(() => "catalog request failed");
+      console.warn(`   ⚠️  catalog listing unavailable (${catalogRes.status}) — model inference may still work`);
+    } else {
+      console.log("   catalog: ok");
+    }
+  } catch (err) {
+    console.warn(`   ⚠️  catalog check failed: ${err.message} — continuing anyway`);
+  }
+
+  const textProbeModel = [DEFAULT_MODELS.reasoner, DEFAULT_MODELS.router, DEFAULT_MODELS.planner]
+    .map(value => String(value || "").trim())
+    .find(Boolean);
+
+  if (!textProbeModel) return;
+
+  const transport = describeModelTransport(textProbeModel);
+  try {
+    if (transport.kind === "workers-ai-run") {
+      const res = await fetch(transport.endpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${CF_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 8
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        throw new Error(JSON.stringify(data?.errors || data || [{ message: `HTTP ${res.status}` }]));
+      }
+    } else {
+      const res = await fetch(transport.endpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${CF_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: textProbeModel,
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 8
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(JSON.stringify(data?.errors || data || [{ message: `HTTP ${res.status}` }]));
+      }
+    }
+    console.log(`   text model probe: ok (${textProbeModel})`);
+  } catch (err) {
+    console.warn(`   ⚠️  text model probe failed for ${textProbeModel}: ${err.message} — continuing anyway`);
+  }
+}
+
+async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null) {
+  const hostedRunModel = isCloudflareHostedRunModel(modelName);
+  const safeMessages = hostedRunModel
+    ? adaptMessagesForHostedRun(normalizeMessages(messages))
+    : normalizeMessages(messages);
+  const hostedRoleSafeMessages = hostedRunModel
+    ? safeMessages.map((message) => ({
+        ...message,
+        role: String(message?.role || "").toLowerCase() === "assistant" ? "assistant" : "user"
+      }))
+    : safeMessages;
+  const requestBody = hostedRunModel
+    ? { messages: hostedRoleSafeMessages, max_tokens: maxTokens }
+    : { model: String(modelName || ""), messages: safeMessages, max_tokens: maxTokens };
+  if (temperature !== null && temperature !== undefined) requestBody.temperature = clampTemperature(temperature, 0.3);
+
   for (let i = 0; i <= retries; i++) {
     try {
       const ctrl = new AbortController();
       const t    = setTimeout(() => ctrl.abort(), 35000);
-      const res  = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
-        {
-          method:  "POST",
-          headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" },
-          body:    JSON.stringify(requestBody),
-          signal:  ctrl.signal
-        }
-      );
+      const res  = await fetch(hostedRunModel ? buildCloudflareRunUrl(modelName) : buildCloudflareChatCompletionsUrl(), {
+        method:  "POST",
+        headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" },
+        body:    JSON.stringify(requestBody),
+        signal:  ctrl.signal
+      });
       clearTimeout(t);
       const data = await res.json();
-      if (!data.success) throw new Error(JSON.stringify(data.errors));
-      return data.result.response;
+      if (hostedRunModel) {
+        if (!data.success) throw new Error(JSON.stringify(data.errors));
+        const directResponse = typeof data?.result?.response === "string" ? data.result.response : "";
+        const choiceResponse = extractChatCompletionText(data?.result || {});
+        return String(directResponse || choiceResponse || "").trim();
+      }
+      if (!res.ok) throw new Error(JSON.stringify(data?.errors || data || [{ message: `HTTP ${res.status}` }]));
+      return extractChatCompletionText(data);
     } catch (err) {
       if (i === retries) throw err;
       status(`CF retry ${i+1}: ${err.message}`);
@@ -1847,7 +2037,7 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
       const t    = setTimeout(() => ctrl.abort(), 35000);
 
       const res  = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
+        buildCloudflareRunUrl(modelName),
         {
           method:  "POST",
           headers: {
@@ -1888,7 +2078,7 @@ async function callDETR(imageB64) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 25000);
       const res = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/facebook/detr-resnet-50`,
+        buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
         {
           method: "POST",
           headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
@@ -1921,7 +2111,7 @@ function buildDETRContext(detections) {
 }
 
 async function analyzeUploadedImageWithVision(imageB64, detrContext, userQuery, visionModelId) {
-  const prompt = `User query: "${String(userQuery || "").slice(0, 300)}"
+  const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
 
 DETR object detection results:
 ${detrContext}
@@ -2039,8 +2229,9 @@ function normalizePageLayoutElements(rawElements, imageWidth, imageHeight) {
 function renderAsciiPageMap(elements, imageWidth, imageHeight) {
   const width = Math.max(1, Number(imageWidth || 1));
   const height = Math.max(1, Number(imageHeight || 1));
-  const columns = Math.max(48, Math.min(96, Math.round(width / 17)));
-  const rows = Math.max(18, Math.min(40, Math.round(height / 32)));
+  // High-resolution ASCII: up to 128 columns, 56 rows for desktop-scale screenshots
+  const columns = Math.max(64, Math.min(128, Math.round(width / 12)));
+  const rows = Math.max(28, Math.min(56, Math.round(height / 22)));
   const pxPerCol = width / columns;
   const pxPerRow = height / rows;
   const grid = Array.from({ length: rows }, () => Array.from({ length: columns }, () => " "));
@@ -2094,59 +2285,145 @@ function isSparsePageLayout(elements, imageWidth, imageHeight) {
   const largeScreenshot = width >= 900 && height >= 500;
   const interactiveCount = list.filter(item => /button|input|link/.test(String(item?.role || ""))).length;
   const structuralCount = list.filter(item => /panel|region|image|text|separator|scrollbar/.test(String(item?.role || ""))).length;
-  if (!largeScreenshot) return list.length < 3;
-  return list.length < 6 || interactiveCount < 2 || structuralCount < 3;
+  // Require significantly more elements — a typical web page should have 12+
+  if (!largeScreenshot) return list.length < 5;
+  return list.length < 10 || interactiveCount < 3 || structuralCount < 4;
 }
 
 function buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, mode = "primary", priorRaw = "") {
-  const baseIntent = String(userQuery || "Produce an ASCII page map and structured element key.").slice(0, 500);
-  const repairNote = mode === "repair"
-    ? `\nThe previous answer was too sparse or too coarse. Do not return only 2-3 giant boxes like logo/search bar. Decompose the visible UI into all major visible regions and controls.`
+  const baseIntent = String(userQuery || "Produce a complete high-precision ASCII page map and structured element key.").slice(0, 500);
+  const modeNote = mode === "repair"
+    ? `\n\nPREVIOUS ANSWER WAS INCOMPLETE — this is your second attempt:\n- Return AT LEAST 12 distinct elements for a typical UI page.\n- Do NOT collapse into only 2-3 giant boxes.\n- Each visible button, link, input, heading, image block, and panel must appear as its own element.\n- Use tight bounding boxes, not one giant bbox covering half the page.`
     : "";
   const priorSnippet = mode === "repair" && priorRaw
-    ? `\nPrevious weak answer:\n${String(priorRaw).slice(0, 1200)}`
+    ? `\n\nPrevious insufficient answer (do NOT repeat this level of coarseness):\n${String(priorRaw).slice(0, 600)}`
     : "";
-  return `Analyze this webpage screenshot as a UI layout auditor. Use the exact image size ${imageWidth}x${imageHeight} pixels.
+  return `You are a pixel-perfect UI layout auditor. Analyze this ${imageWidth}x${imageHeight} screenshot.
 
-User intent: ${baseIntent}${repairNote}${priorSnippet}
+User intent: ${baseIntent}${modeNote}${priorSnippet}
 
-Your job:
-- Identify the visible UI structure of the page.
-- Enumerate major visible elements, not just the top 1-2 items.
-- Include header bars, nav groups, logos, buttons, links, inputs, prominent text blocks, cards/panels, dividers, hero images, sidebars, and scrollbars when visible.
-- For text-heavy areas, include the major text block as one region rather than one box per word.
-- For navigation, split distinct visible nav items when they are individually visible.
-- Use approximate but image-grounded pixel boxes.
-- If an area is clearly visible but unlabeled, use role=region or role=panel.
+DETECTION RULES — follow every rule exactly:
+1. COMPLETENESS: Return EVERY distinctly visible element. A typical web page yields 12-30+ elements.
+2. GRANULARITY: Split navigation into individual nav links. Split a toolbar into individual buttons. Never group them.
+3. BOUNDING BOXES: Use the element's actual visible boundary in the original pixel space. Tight boxes only.
+4. HIERARCHY: If a card contains a button and text, list the card AND the button AND the text as separate elements.
+5. SMALL ELEMENTS: Include icons, badges, pagination, social buttons, and dismiss/close buttons even if small.
+6. TEXT PRECISION: Put the first 50 characters of actual visible text in the "text" field. Empty string if no text.
+7. ROLES — use ONLY these exact values:
+   button | input | link | image | text | panel | separator | scrollbar | region | heading | badge | icon | nav | form | card | table | list | tab | menu | dialog
+8. CONFIDENCE: 0.9+ = certain. 0.7-0.89 = probable. 0.5-0.69 = approximate. Never guess above 0.9.
+9. PRIORITY: 1=critical interactive, 2=prominent content, 3=structural, 4=secondary, 5=decorative.
+10. IDs: Descriptive kebab-case, unique, e.g. "primary-nav", "search-input", "hero-heading", "add-to-cart-btn".
 
-Minimum coverage expectations for a typical full-page desktop screenshot:
-- top navigation/header regions
-- primary headline or body text block
-- main image/media block if visible
-- any visible sidebar/back rail if present
-- scrollbar if visible
-
-Return ONLY one compact JSON object with this exact shape:
+Return ONLY this JSON — no markdown fences, no commentary, no extra keys:
 {
   "elements": [
-    {
-      "id": "short_unique_name",
-      "role": "button|input|link|image|text|panel|separator|scrollbar|region",
-      "text": "visible text if any",
-      "bbox": { "x": 0, "y": 0, "width": 0, "height": 0 },
-      "confidence": 0.0,
-      "priority": 1
-    }
+    { "id": "unique-kebab-id", "role": "role_value", "text": "visible text", "bbox": { "x": 0, "y": 0, "width": 0, "height": 0 }, "confidence": 0.95, "priority": 1 }
   ]
+}`;
 }
 
-Hard rules:
-- Detect only visible elements.
-- Use pixel coordinates in the original image.
-- Keep ids short and stable.
-- If uncertain, lower confidence instead of guessing.
-- Do not output markdown or commentary.
-- Do not collapse the whole page into a tiny number of oversized boxes unless the page is genuinely empty.`;
+function buildDeterministicUiReport(analysis, state = {}, lastAction = null, goal = "") {
+  const glyphs = Array.isArray(analysis?.glyphs) ? analysis.glyphs : [];
+  const uiElements = Array.isArray(analysis?.uiElements) ? analysis.uiElements : [];
+  return {
+    taskType: "pixel_grid_reasoning",
+    goal: String(goal || ""),
+    lastAction: lastAction || null,
+    state: {
+      url: String(state?.url || ""),
+      title: String(state?.title || "")
+    },
+    grid: {
+      counts: analysis?.counts || {},
+      ink: analysis?.ink || "#",
+      background: analysis?.background || ".",
+      asciiMap: analysis?.asciiMap || []
+    },
+    glyphs: glyphs.map(glyph => ({
+      id: glyph.id,
+      kind: glyph.kind,
+      label: glyph.label,
+      confidence: glyph.confidence,
+      bbox: glyph.bbox,
+      normalized: glyph.normalized,
+      signature: glyph.signature
+    })),
+    uiElements: uiElements.map(element => ({
+      id: element.id,
+      role: element.role,
+      confidence: element.confidence,
+      bbox: element.bbox,
+      glyphIds: element.glyphIds,
+      glyphLabels: element.glyphLabels
+    })),
+    summary: analysis?.summary || {
+      code: "pixel_grid_reasoning",
+      glyphCount: glyphs.length,
+      uiElementCount: uiElements.length,
+      ink: analysis?.ink || "#",
+      background: analysis?.background || "."
+    }
+  };
+}
+
+function buildPageLayoutAnalysisResult(analysis, imageWidth, imageHeight, userQuery = "") {
+  const report = buildDeterministicUiReport(analysis, {
+    url: "about:blank",
+    title: "pixel-grid"
+  }, null, userQuery);
+  const elements = Array.isArray(analysis?.uiElements) ? analysis.uiElements : [];
+  return {
+    taskType: "pixel_grid_reasoning",
+    model: "pixel-grid-deterministic",
+    asciiMap: Array.isArray(analysis?.asciiMap) ? analysis.asciiMap.join("\n") : String(analysis?.asciiMap || ""),
+    key: {
+      image: {
+        width: Math.max(1, Number(imageWidth || 1)),
+        height: Math.max(1, Number(imageHeight || 1))
+      },
+      grid: {
+        columns: Array.isArray(analysis?.normalizedGrid) ? Math.max(1, String(analysis.normalizedGrid[0] || "").length) : 0,
+        rows: Array.isArray(analysis?.normalizedGrid) ? analysis.normalizedGrid.length : 0,
+        ink: analysis?.ink || "#",
+        background: analysis?.background || "."
+      },
+      elements
+    },
+    report,
+    formatted: JSON.stringify(report, null, 2)
+  };
+}
+
+// Downscale a base64 image using the already-running browser canvas so we
+// never exceed the vision model's 128K token context window.
+// LLaMA 3.2-11b-vision tokenises a 1366×768 JPEG to ~500K tokens — well over
+// the limit.  Capping at 800×560 keeps input tokens well under 50K.
+async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560) {
+  if (!page) return imageB64;
+  try {
+    const resized = await page.evaluate(({ b64, maxW, maxH }) => {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const ratio = Math.min(1, maxW / img.width, maxH / img.height);
+          if (ratio >= 1) { resolve(b64); return; }
+          const w = Math.round(img.width * ratio);
+          const h = Math.round(img.height * ratio);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL("image/jpeg", 0.72).split(",")[1] || b64);
+        };
+        img.onerror = () => resolve(b64);
+        img.src = "data:image/jpeg;base64," + b64;
+      });
+    }, { b64: imageB64, maxW: maxWidth, maxH: maxHeight });
+    return typeof resized === "string" && resized ? resized : imageB64;
+  } catch {
+    return imageB64;
+  }
 }
 
 async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAULT_MODELS.vision, mimeType = "") {
@@ -2154,10 +2431,15 @@ async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAU
   const dimensions = readImageDimensions(buffer, mimeType);
   const imageWidth = Math.max(1, Number(dimensions.width || 0) || 1);
   const imageHeight = Math.max(1, Number(dimensions.height || 0) || 1);
+
+  // Downscale to ≤800×560 before calling the vision model.
+  // LLaMA tokenises full-resolution screenshots to 500K+ tokens which
+  // exceeds the 128K context window and causes a 5021 error.
+  const visionB64 = await resizeImageB64ForVision(imageB64, 800, 560);
   const prompt = buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, "primary");
 
   let parsed = null;
-  let raw = await callVisionAI(imageB64, prompt, 1800, visionModelId || DEFAULT_MODELS.vision);
+  let raw = await callVisionAI(visionB64, prompt, 1600, visionModelId || DEFAULT_MODELS.vision);
   parsed = safeParseJSON(raw);
 
   if ((!parsed || !Array.isArray(parsed.elements)) && raw) {
@@ -2167,7 +2449,7 @@ async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAU
         { role: "system", content: "Rewrite the user input as strict JSON only. Return exactly one JSON object with key elements. Preserve ids, roles, text, bbox, confidence, and priority. No markdown." },
         { role: "user", content: String(raw || "") }
       ],
-      1400,
+      1800,
       1,
       0
     );
@@ -2177,7 +2459,7 @@ async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAU
   let elements = normalizePageLayoutElements(parsed?.elements || [], imageWidth, imageHeight);
   if (isSparsePageLayout(elements, imageWidth, imageHeight)) {
     const retryPrompt = buildPageLayoutVisionPrompt(imageWidth, imageHeight, userQuery, "repair", raw);
-    raw = await callVisionAI(imageB64, retryPrompt, 2200, visionModelId || DEFAULT_MODELS.vision);
+    raw = await callVisionAI(visionB64, retryPrompt, 2000, visionModelId || DEFAULT_MODELS.vision);
     let retryParsed = safeParseJSON(raw);
     if ((!retryParsed || !Array.isArray(retryParsed.elements)) && raw) {
       const repairedRetry = await callCFAI(
@@ -2186,24 +2468,21 @@ async function analyzePageLayout(imageB64, userQuery = "", visionModelId = DEFAU
           { role: "system", content: "Rewrite the user input as strict JSON only. Return exactly one JSON object with key elements. Preserve ids, roles, text, bbox, confidence, and priority. No markdown." },
           { role: "user", content: String(raw || "") }
         ],
-        1400,
+        1800,
         1,
         0
       );
       retryParsed = safeParseJSON(repairedRetry);
     }
-    const retriedElements = normalizePageLayoutElements(retryParsed?.elements || [], imageWidth, imageHeight);
-    if (retriedElements.length >= elements.length) {
-      elements = retriedElements;
+    const retryElements = normalizePageLayoutElements(retryParsed?.elements || [], imageWidth, imageHeight);
+    if (retryElements.length > elements.length) {
+      elements = retryElements;
     }
   }
 
   const rendered = renderAsciiPageMap(elements, imageWidth, imageHeight);
   const key = {
-    image: {
-      width: imageWidth,
-      height: imageHeight
-    },
+    image: { width: imageWidth, height: imageHeight },
     grid: rendered.grid,
     elements
   };
@@ -2509,22 +2788,60 @@ async function runMediaAnalysis(mediaItems, models, userQuery = "") {
   }).then(({ result, meta }) => ({ taskType, analysis: result, routerMeta: meta }));
 }
 
+function isMultipartRequiredError(errorText) {
+  const text = String(errorText || "");
+  return /required properties.*multipart|multipart.*required/i.test(text) || /5006/.test(text);
+}
+
 async function callCFImageGeneration(modelName, promptText) {
+  const IMAGE_GEN_TIMEOUT_MS = 60 * 1000; // 60 seconds — flux-2-klein-9b completes in ~2s
   const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 45000);
+  const timeout = setTimeout(() => ctrl.abort(), IMAGE_GEN_TIMEOUT_MS);
+  const prompt = String(promptText || "").trim();
+
+  // Heartbeat so the UI doesn't look frozen during long generation
+  const heartbeat = setInterval(() => {
+    status(`Image generating... (${modelName.split("/").pop() || modelName})`);
+  }, 15000);
+
+  async function attemptRequest(useMultipart) {
+    let body;
+    const headers = { "Authorization": `Bearer ${CF_API_TOKEN}` };
+    if (useMultipart) {
+      const form = new FormData();
+      form.append("prompt", prompt);
+      body = form;
+      // Do NOT set Content-Type manually — fetch will set multipart boundary automatically
+    } else {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify({ prompt });
+    }
+    return fetch(buildCloudflareRunUrl(modelName), {
+      method: "POST",
+      headers,
+      body,
+      signal: ctrl.signal
+    });
+  }
+
   try {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${modelName}`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${CF_API_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ prompt: String(promptText || "").trim() }),
-        signal: ctrl.signal
+    let res = await attemptRequest(false);
+
+    // Cloudflare returns 400 with code 5006 when a model requires multipart.
+    // Detect that and transparently retry with multipart form-data.
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      if (isMultipartRequiredError(errorText)) {
+        status(`Image model ${modelName} requires multipart — retrying with FormData`);
+        res = await attemptRequest(true);
+        if (!res.ok) {
+          const retry = await res.text().catch(() => "Image generation request failed");
+          throw new Error(retry || "Image generation request failed (multipart)");
+        }
+      } else {
+        throw new Error(errorText || "Image generation request failed");
       }
-    );
+    }
 
     const contentType = String(res.headers.get("content-type") || "").toLowerCase();
     if (!res.ok) {
@@ -2576,6 +2893,7 @@ async function callCFImageGeneration(modelName, promptText) {
 
     throw new Error("Selected model did not return image data");
   } finally {
+    clearInterval(heartbeat);
     clearTimeout(timeout);
   }
 }
@@ -2583,7 +2901,7 @@ async function callCFImageGeneration(modelName, promptText) {
 async function generateImageFromPrompt(promptText, models) {
   const prompt = String(promptText || "").trim();
   if (!prompt) throw new Error("Image prompt is required");
-  const baselineModel = String(models?.router || DEFAULT_MODELS.router);
+  const baselineModel = String(models?.image || DEFAULT_MODELS.image || models?.router || DEFAULT_MODELS.router);
   const { result, meta } = await runWithEphemeralCapabilityModel("image_generation", baselineModel, async (modelToUse) => {
     const image = await callCFImageGeneration(modelToUse, prompt);
     return {
@@ -2610,9 +2928,38 @@ function getCasualIdentityReply(models = {}) {
   return `I'm Puppeterr. This chat currently runs on ${active}.`;
 }
 
+function applyChatStyleFormatting(text, options = {}) {
+  const base = String(text || "").trim() || "How can I help?";
+  const wantsBold = !!options.bold;
+  const wantsItalic = !!options.italic;
+  if (wantsBold && wantsItalic) return `***${base}***`;
+  if (wantsBold) return `**${base}**`;
+  if (wantsItalic) return `*${base}*`;
+  return base;
+}
+
+function detectChatStyleRequest(rawMessage) {
+  const msg = String(rawMessage || "");
+  const styleVerb = /\b(talk|speak|say|reply|respond|write|type|answer)\b/i.test(msg);
+  const wantsItalic = /\bitalic(s)?\b/i.test(msg) && styleVerb;
+  const wantsBold = /\bbold\b/i.test(msg) && styleVerb;
+  const retryItalic = /\b(thats|that's|not|isn't|is not)\b[\s\S]{0,40}\bitalic(s)?\b/i.test(msg);
+  return {
+    italic: wantsItalic || retryItalic,
+    bold: wantsBold
+  };
+}
+
 async function answerCasualChat(rawMessage, conversationHistory, models) {
   if (isModelIdentityQuestion(rawMessage)) {
     return getCasualIdentityReply(models);
+  }
+
+  const styleRequest = detectChatStyleRequest(rawMessage);
+  const asksForHello = /\bhello\b/i.test(String(rawMessage || ""))
+    && /\b(say|write|type|reply|respond|can\s+you|please)\b/i.test(String(rawMessage || ""));
+  if (asksForHello && (styleRequest.italic || styleRequest.bold)) {
+    return applyChatStyleFormatting("hello", styleRequest);
   }
 
   const convCtx = (conversationHistory || []).slice(-8)
@@ -2623,17 +2970,18 @@ async function answerCasualChat(rawMessage, conversationHistory, models) {
     const raw = await callCFAI(models.reasoner || models.router, [
       {
         role: "system",
-        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. Keep replies concise. Never claim to be GPT-4 or OpenAI unless the configured runtime model is actually from OpenAI. If asked what model you are, state the configured model id exactly."
+        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. Keep replies concise. Never claim to be GPT-4 or OpenAI unless the configured runtime model is actually from OpenAI. If asked what model you are, state the configured model id exactly.Current normal chat supports this formatting set: Italic: *text* and _text_ Bold: **text** Bold + italic: ***text*** and **_text_** Inline code: code Line breaks: newline becomes <br> Math (KaTeX): $inline$ and $$block$$ Emoji shortcodes: :rocket: :brain: :sparkles: :fire: :check: :x: :warning: :robot: :smile: :party: :idea:. try to be as friendly and helpful as possible. If the user asks for a greeting, respond with something in the requested style."
       },
       {
         role: "user",
         content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}`
       }
     ], 500, 1, getRuntimeTemperature(models));
-    return stripThinking(raw) || "How can I help?";
+    const plain = stripThinking(raw) || "How can I help?";
+    return applyChatStyleFormatting(plain, styleRequest);
   } catch (err) {
     errLog("Casual chat fallback: " + err.message);
-    return "How can I help?";
+    return applyChatStyleFormatting("How can I help?", styleRequest);
   }
 }
 
@@ -3401,7 +3749,7 @@ Rules:
         const raw = await callVisionAI(imageB64, reasonerPrompt, 180, taskVisionState.model);
         const signal = parseVisionReasonerSignal(raw);
         taskVisionState.lastReasonerAt = now;
-        taskVisionState.latestReasonerRaw = String(raw || "").slice(0, 800);
+        taskVisionState.latestReasonerRaw = String(raw || "").slice(0, 99999);
         taskVisionState.latestReasonerSignal = signal;
         taskVisionState.latestSummary = [
           `VisionState=${signal.state || "uncertain"}`,
@@ -3630,7 +3978,7 @@ Rules:
       entry?.action_done,
       entry?.url,
       keywords,
-      entry?.other_data && typeof entry.other_data === "object" ? JSON.stringify(entry.other_data).slice(0, 800) : ""
+      entry?.other_data && typeof entry.other_data === "object" ? JSON.stringify(entry.other_data).slice(0, 99999) : ""
     ].filter(Boolean).join(" ").toLowerCase();
   }
 
@@ -4082,82 +4430,41 @@ function checkVisionHasAnswer(visionFeedback, taskKeywords) {
 }
 
 async function analyzeScreen(screenshotB64, state, lastAction, goal, models) {
-  status("Vision analyzing page...");
-
-  const promptText = `You are reporting to an autonomous Planner model that ONLY accepts exact,
-quotable, machine-usable facts. It cannot interpret vague description. Every
-line of your report must be something the Planner could paste directly into
-a Playwright selector or a coordinate call. Vague answers cause it to loop.
-
-Goal: "${goal}"
-Last action attempted: ${JSON.stringify(lastAction || "(none — this is the first look at the page)")}
-URL: ${state.url}
-Title: ${state.title}
-
-Report using EXACTLY this structure. Do not add prose outside these fields.
-Do not summarize — quote literal text and give literal numbers.
-
-1. ACTION_RESULT: "success" | "failed" | "unclear"
-   - If failed/unclear, state the ONE specific visual fact that proves it
-     (e.g. "URL bar still shows the search results page, no new page loaded"
-     — not "the action did not seem to work").
-
-2. VISIBLE_TEXT_EXACT: List every piece of literal text relevant to the goal,
-   each as its own quoted line, copied character-for-character from the
-   screen. No paraphrasing. Example:
-   - "Sign in to your account"
-   - "$42.99"
-   - "How extra time works in FIFA World Cup"
-   If nothing relevant is visible, write: NONE_VISIBLE
-
-3. CLICKABLE_ELEMENTS: For each interactive element relevant to the goal,
-   give ONE line in this exact format:
-   [TYPE] "EXACT_VISIBLE_TEXT" | approx_position: (x%, y%) | state: enabled|disabled|hidden
-   - TYPE is one of: button, link, input, checkbox, dropdown, tab
-   - approx_position is the element's center as a PERCENTAGE of the visible
-     screenshot width/height (0-100), e.g. (52, 31) — NOT pixel coordinates,
-     since you don't know the real viewport size. The Planner converts this.
-   - Example line:
-     button "Search" | approx_position: (50, 18) | state: enabled
-   If you cannot find any usable elements, write: NO_USABLE_ELEMENTS_FOUND
-
-4. BLOCKER: "none" | "captcha" | "login_wall" | "error_message" | "loading_spinner" | "popup"
-   - If not "none", quote the EXACT text of the blocker (e.g. the literal
-     error message string), not a description of it.
-
-5. DECOY_WARNING: State explicitly whether any element matching
-   [type='submit'] or a generically-named search/submit button is VISIBLE
-   but should NOT be the target (per the Planner's known rule that these are
-   usually hidden/decoy). If you see one, say so explicitly: e.g.
-   "A [type='submit'] button exists in the DOM area near (50,40) but appears
-   visually hidden — do not target it, use submitForm() instead."
-   If no such risk applies, write: NO_DECOY_RISK_DETECTED
-
-6. NEXT_ACTION_SUGGESTION: Exactly ONE suggested action, in this literal
-   JSON shape (the Planner will not use this verbatim, but it must be valid
-   enough to parse — do not write prose here):
-   { "action": "ACTION_NAME", "params": { "key": "value" } }
-   Use only action names the Planner already knows: click, fill, submitForm,
-   press, waitForVisible, mouseClick, scrollIntoView, getText. Base the
-   selector or coordinates STRICTLY on what you reported in section 3 — never
-   invent a selector you didn't already list as visible.
-
-Rules:
-- Every quoted string must be EXACT, copied text — never summarized or guessed.
-- Never invent an element, coordinate, or text string that isn't actually visible.
-- If you are not sure something is present, say so plainly rather than guessing
-  ("UNCERTAIN: cannot confirm whether X is present") — a false "yes" causes the
-  Planner to act on something that isn't there, which is worse than admitting
-  uncertainty.
-- Output ONLY the six numbered fields above. No introduction, no closing summary.`;
-
   try {
-    const raw = await callVisionAI(screenshotB64, promptText, 600, models.vision);
-    think("Vision: " + raw.slice(0, 400) + (raw.length > 400 ? "..." : ""));
+    status("Pixel-grid analyzing page...");
+    const shapeDetector = require("./shapeDetector");
+    const analysis = await shapeDetector.analyzeImageFull(screenshotB64);
+    const report = buildDeterministicUiReport(analysis.analysis || {}, state, lastAction, goal);
+    const raw = JSON.stringify(report, null, 2);
+    think("Pixel-grid: " + raw.slice(0, 400) + (raw.length > 400 ? "..." : ""));
     return raw;
   } catch (err) {
-    errLog("Vision failed: " + err.message);
-    return `ACTION_RESULT: unclear\nVISIBLE_TEXT_EXACT: NONE_VISIBLE (vision call failed: ${err.message})\nCLICKABLE_ELEMENTS: NO_USABLE_ELEMENTS_FOUND\nBLOCKER: none\nDECOY_WARNING: NO_DECOY_RISK_DETECTED\nNEXT_ACTION_SUGGESTION: { "action": "getAllText", "params": {} }`;
+    errLog("Pixel-grid analysis failed: " + err.message);
+    return JSON.stringify({
+      taskType: "pixel_grid_reasoning",
+      error: err.message,
+      goal: String(goal || ""),
+      lastAction: lastAction || null,
+      state: {
+        url: String(state?.url || ""),
+        title: String(state?.title || "")
+      },
+      grid: {
+        counts: {},
+        ink: "#",
+        background: ".",
+        asciiMap: []
+      },
+      glyphs: [],
+      uiElements: [],
+      summary: {
+        code: "pixel_grid_reasoning",
+        glyphCount: 0,
+        uiElementCount: 0,
+        ink: "#",
+        background: "."
+      }
+    }, null, 2);
   }
 }
 
@@ -5214,23 +5521,25 @@ async function executeActionPlan(plan, goal, models, throttle = {}, supervisorCo
     const actionGate = evaluateSupervisorActionGate(action, params, supervisorContext || {}, actionIndex);
     if (actionGate.severity === "warn") {
       broadcast("supervisor", {
-        msg: `Supervisor caution: ${action} (${actionGate.reason}).`,
+        msg: `⚠️ ${actionGate.reason}`,
         decision: "warn",
         action,
         reason: actionGate.reason,
         step: Number(supervisorContext?.step || 0),
-        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null
+        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null,
+        detectionType: actionGate.detectionType
       });
     }
     if (!actionGate.allow) {
-      const blockedMsg = `Supervisor blocked ${action}: ${actionGate.reason}`;
+      const blockedMsg = `🛑 ${actionGate.reason}`;
       broadcast("supervisor", {
         msg: blockedMsg,
         decision: "blocked",
         action,
         reason: actionGate.reason,
         step: Number(supervisorContext?.step || 0),
-        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null
+        score: Number.isFinite(Number(supervisorContext?.score)) ? Number(supervisorContext.score.toFixed(2)) : null,
+        detectionType: actionGate.detectionType
       });
       think(blockedMsg);
       results.push({ action, status: "blocked", error: actionGate.reason });
@@ -6150,6 +6459,80 @@ function planRiskValue(actionsList = []) {
   return clamp01(combined);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SUPERVISOR PERSONALITY LAYER — Generates assertive, conversational messages
+// ─────────────────────────────────────────────────────────────────────────────
+function generateSupervisorMessage(detection = {}) {
+  const type = String(detection.type || "").toLowerCase();
+  const context = detection.context || {};
+
+  const personalities = {
+    repeatedClick: [
+      "Stop clicking the **same button**, you clown.",
+      "Yo, **same button**, same result. This ain't it.",
+      "Click it again, I'll wait. *This is ridiculous.*",
+      "You're a hamster on a **wheel right now**."
+    ],
+    repeatedFailure: [
+      "You already tried that **twice**. It didn't work.",
+      "Tried it. **Failed**. Trying again? That's insanity.",
+      "What exactly are you expecting to *change* this time?",
+      "**Same action**, different outcome? *Narrator: it's not.*"
+    ],
+    dangerousAction: [
+      "Do **NOT** run `evaluate()` right now.",
+      "Bro, `evaluate()` is a **nuclear button**. Not now.",
+      "That's a **high-risk** move. Pump the brakes.",
+      "You're about to trigger something **scary**. Stop."
+    ],
+    hallucinatedPlan: [
+      "Why are you going back to **Google** again.",
+      "You already tried this exact plan. **It's stuck you.**",
+      "Plan feels like you're just **hallucinating** at this point.",
+      "**Third time.** It's not working."
+    ],
+    stuckLoop: [
+      "You're **spinning wheels**. Rethink.",
+      "We're in a **loop**. I'm intervening.",
+      "**Same** place, same actions, same failure. **Break this.**",
+      "You're **trapped**. I'm forcing a detour."
+    ],
+    badVision: [
+      "The screenshot is **garbage**, don't trust it.",
+      "I can't see the page **clearly**. Risky to proceed.",
+      "**Vision is unstable.** You're flying blind.",
+      "Screenshot quality is **too low** for risky actions."
+    ],
+    overconfident: [
+      "You're **way too confident** for a plan this dumb.",
+      "**Confidence** ≠ competence. Plan quality doesn't match.",
+      "You sound sure but your plan looks **shaky**.",
+      "Confidence ≠ competence. *Let's be real here.*"
+    ],
+    reentersMaps: [
+      "You're about to get **stuck in Maps** again.",
+      "Maps is a **black hole**. Don't go back.",
+      "Every time you enter Maps, you **spiral**. Not happening.",
+      "Been there, done that. **Maps is a trap.**"
+    ],
+    mapsBlankLoop: [
+      "**Blank page on Maps.** Classic trap. Stopping you.",
+      "We're about to loop on a blank page. *I see it coming.*",
+      "You're heading into the **void**. Not today.",
+      "**This is how we get stuck.** Blocking it."
+    ],
+    reloadSpam: [
+      "**Stop reloading.** That's not a strategy.",
+      "**Reload-reload-reload.** That's not problem-solving.",
+      "*Spamming reload* won't help. Pick a different move.",
+      "You're reloading too much. **Think** instead."
+    ]
+  };
+
+  const messages = personalities[type] || ["Plan looks risky. Proceeding with caution."];
+  return messages[Math.floor(Math.random() * messages.length)];
+}
+
 function evaluateSupervisorPlanGate(input = {}) {
   if (SUPERVISOR_MODE === "off") {
     return {
@@ -6198,17 +6581,53 @@ function evaluateSupervisorPlanGate(input = {}) {
   if (blankLoopRisk) score -= 0.24;
   score = clamp01(score);
 
+  // Categorize the detection type for personified messaging
+  let detectionType = "ok";
   const reasons = [];
-  if (planRisk >= 0.58) reasons.push(`high plan risk ${planRisk.toFixed(2)}`);
-  if (instinctRisk >= 0.7) reasons.push(`reasoner marked high risk (${String(input.instinct?.risk || "high")})`);
-  if (visionRisk >= 0.3) reasons.push("vision uncertain");
-  if (failures >= 2) reasons.push(`recent failures: ${failures}`);
-  if (stuck) reasons.push("looping pattern detected");
-  if (repeatsFailedSelector) reasons.push("re-attempts previously failed selector");
-  if (repeatsFailedAction) reasons.push("re-attempts previously failed action");
-  if (reentersMaps) reasons.push("plan re-enters Maps flow");
-  if (repeatsSamePlan) reasons.push("plan repeats previous plan");
-  if (blankLoopRisk) reasons.push("blank-page loop risk");
+  
+  if (planRisk >= 0.58) {
+    reasons.push(`high plan risk ${planRisk.toFixed(2)}`);
+    detectionType = "dangerousAction";
+  }
+  if (instinctRisk >= 0.7) {
+    reasons.push(`reasoner marked high risk (${String(input.instinct?.risk || "high")})`);
+    if (detectionType === "ok") detectionType = "badVision";
+  }
+  if (visionRisk >= 0.3) {
+    reasons.push("vision uncertain");
+    if (detectionType === "ok") detectionType = "badVision";
+  }
+  if (failures >= 2) {
+    reasons.push(`recent failures: ${failures}`);
+    if (detectionType === "ok") detectionType = "repeatedFailure";
+  }
+  if (stuck) {
+    reasons.push("looping pattern detected");
+    if (detectionType === "ok") detectionType = "stuckLoop";
+  }
+  if (repeatsFailedSelector) {
+    reasons.push("re-attempts previously failed selector");
+    if (detectionType === "ok") detectionType = "repeatedClick";
+  }
+  if (repeatsFailedAction) {
+    reasons.push("re-attempts previously failed action");
+    if (detectionType === "ok") detectionType = "repeatedClick";
+  }
+  if (reentersMaps) {
+    reasons.push("plan re-enters Maps flow");
+    if (detectionType === "ok") detectionType = "reentersMaps";
+  }
+  if (repeatsSamePlan) {
+    reasons.push("plan repeats previous plan");
+    if (detectionType === "ok") detectionType = "hallucinatedPlan";
+  }
+  if (blankLoopRisk) {
+    reasons.push("blank-page loop risk");
+    if (detectionType === "ok") detectionType = "mapsBlankLoop";
+  }
+  
+  // Add personified supervisor message as primary reason
+  const personalityMsg = generateSupervisorMessage({ type: detectionType });
   if (!reasons.length) reasons.push("signals stable");
 
   let decision = "ok";
@@ -6219,11 +6638,12 @@ function evaluateSupervisorPlanGate(input = {}) {
     score,
     decision,
     allow: SUPERVISOR_MODE === "passive" ? true : decision !== "blocked",
-    reasons,
+    reasons: [personalityMsg, ...reasons],
     mode: SUPERVISOR_MODE,
     planRisk,
     instinctRisk,
-    visionRisk
+    visionRisk,
+    detectionType
   };
 }
 
@@ -6237,18 +6657,22 @@ function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
   const failures = Number(context.failures || 0);
 
   if ((a === "evaluate") && (planRisk >= SUPERVISOR_ACTION_BLOCK_RISK || instinctRisk >= 0.72)) {
+    const msg = generateSupervisorMessage({ type: "dangerousAction" });
     return {
       allow: SUPERVISOR_MODE === "passive",
-      reason: "blocked high-risk evaluate() under unstable conditions",
-      severity: "blocked"
+      reason: msg,
+      severity: "blocked",
+      detectionType: "dangerousAction"
     };
   }
 
   if (a === "reload" && failures >= 2 && index > 0) {
+    const msg = generateSupervisorMessage({ type: "reloadSpam" });
     return {
       allow: SUPERVISOR_MODE === "passive",
-      reason: "blocked repeated reload late in action sequence",
-      severity: "blocked"
+      reason: msg,
+      severity: "blocked",
+      detectionType: "reloadSpam"
     };
   }
 
@@ -6256,14 +6680,16 @@ function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
     return {
       allow: SUPERVISOR_MODE === "passive",
       reason: "blocked goto without target url",
-      severity: "blocked"
+      severity: "blocked",
+      detectionType: "invalidGoto"
     };
   }
 
   return {
     allow: true,
     reason: "action approved",
-    severity: (planRisk >= 0.58 || instinctRisk >= 0.7) ? "warn" : "ok"
+    severity: (planRisk >= 0.58 || instinctRisk >= 0.7) ? "warn" : "ok",
+    detectionType: "approved"
   };
 }
 
@@ -6875,17 +7301,20 @@ async function runTask(goal, models, chatId) {
         escapeContext
       }, models);
       lastAttemptedPlanSignature = planSignature;
-      const gateSummary = `Supervisor ${supervisorGate.decision.toUpperCase()} score=${supervisorGate.score.toFixed(2)} (${supervisorGate.reasons.join("; ")})`;
+      
+      const mainReason = supervisorGate.reasons?.[0] || "";
+      const gateSummary = `Supervisor ${supervisorGate.decision.toUpperCase()}: ${mainReason}`;
       lastSupervisorSignal = {
         decision: supervisorGate.decision,
         score: supervisorGate.score,
-        reason: supervisorGate.reasons?.[0] || ""
+        reason: mainReason
       };
 
       // Emit supervisor telemetry every step so UI shows active supervision,
       // not only warn/blocked states.
+      const decisionEmoji = supervisorGate.decision === "blocked" ? "🛑" : supervisorGate.decision === "warn" ? "⚠️" : "✅";
       broadcast("supervisor", {
-        msg: gateSummary,
+        msg: `${decisionEmoji} ${mainReason}`,
         decision: supervisorGate.decision,
         score: Number(supervisorGate.score.toFixed(2)),
         reasons: supervisorGate.reasons,
@@ -6922,7 +7351,7 @@ async function runTask(goal, models, chatId) {
             plan = supervisorRecovery;
           }
           broadcast("supervisor", {
-            msg: "Supervisor reroute: switching to conservative recovery plan.",
+            msg: "🔄 I'm switching to a safer plan.",
             decision: "reroute",
             score: Number(supervisorGate.score.toFixed(2)),
             step
@@ -7874,6 +8303,8 @@ async function handleRequest(req, res) {
     if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
       console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID"); process.exit(1);
     }
+
+    await runCloudflareStartupPreflight();
 
     console.log("🚀 Launching browser...");
     fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });

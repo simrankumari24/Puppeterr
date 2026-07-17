@@ -9,7 +9,16 @@
     "start:legacy": "node index.js",
     "dev:worker": "npx wrangler dev",
     "deploy:worker": "npx wrangler deploy",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "auto:run": "node auto-improve/pipeline.js",
+    "auto:orchestrate": "node auto-improve/run_orchestrator.js",
+    "auto:issues": "node auto-improve/issue_generator.js",
+    "auto:fix": "node auto-improve/fix_orchestrator.js",
+    "auto:review": "node auto-improve/review_orchestrator.js",
+    "auto:approve": "node auto-improve/auto_approval_engine.js",
+    "auto:apply": "node auto-improve/git_patch_applier.js",
+    "auto:cli": "node auto-improve/human_cli.js",
+    "auto:test": "node auto-improve/test.js",
+    "test": "npm run auto:test"
   },
   "repository": {
     "type": "git",

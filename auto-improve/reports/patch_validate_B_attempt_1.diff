@@ -1,0 +1,14 @@
+--- a/agent.js
++++ b/agent.js
+@@ -7875,10 +7875,17 @@
+-    const browserContext = await browserType.launchPersistentContext('./.puppeterr-profile', {
++    const launchArgs = [...new Set(args)];
++    require('fs').rmSync('./.puppeterr-profile/SingletonLock', { force: true });
++    const browserContext = await browserType.launchPersistentContext('./.puppeterr-profile', {
+       headless: false,
+-      args,
++      args: launchArgs,
+       viewport: { width: 1366, height: 768 },
+       locale: 'en-US',
+       ...launchOptions
+     });

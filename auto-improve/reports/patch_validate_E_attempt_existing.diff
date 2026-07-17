@@ -1,0 +1,132 @@
+--- /dev/null
++++ b/lib/browser-lifecycle.js
+@@ -0,0 +1,130 @@
++const fs = require('fs');
++const path = require('path');
++const { spawn, execSync } = require('child_process');
++
++const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++const sleepSync = (ms) => { const start = Date.now(); while (Date.now() - start < ms) {} };
++
++function findFreeDisplay() {
++  for (let i = 99; i < 200; i++) {
++    try {
++      execSync(`xdpyinfo -display :${i}`, { stdio: 'ignore' });
++    } catch {
++      return `:${i}`;
++    }
++  }
++  throw new Error('No free X11 display found for Xvfb');
++}
++
++function startXvfb(display) {
++  const xvfb = spawn('Xvfb', [
++    display,
++    '-screen', '0', '1366x768x24',
++    '-ac',
++    '+extension', 'RANDR',
++    '-nolisten', 'tcp'
++  ], { detached: true, stdio: 'ignore' });
++  if (!xvfb.pid) throw new Error('Xvfb failed to start');
++  xvfb.unref();
++  process.env.DISPLAY = display;
++  const deadline = Date.now() + 5000;
++  while (Date.now() < deadline) {
++    try { execSync('xdpyinfo', { stdio: 'ignore' }); return; } catch {}
++    sleepSync(50);
++  }
++  throw new Error(`Xvfb did not become ready on ${display}`);
++}
++
++function ensureXvfb() {
++  if (process.env.DISPLAY) {
++    try { execSync('xdpyinfo', { stdio: 'ignore' }); return; } catch {}
++  }
++  startXvfb(findFreeDisplay());
++}
++
++function cleanupProfileLocks(profilePath) {
++  if (!profilePath || !fs.existsSync(profilePath)) return;
++  for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
++    const lockPath = path.join(profilePath, name);
++    try {
++      if (fs.existsSync(lockPath)) fs.rmSync(lockPath, { force: true });
++    } catch {}
++  }
++}
++
++function killStaleChrome(profilePath) {
++  try {
++    const abs = path.resolve(profilePath);
++    const out = execSync(`lsof +D '${abs}' | awk 'NR>1 {print $2}' | sort -u`, {
++      encoding: 'utf8',
++      stdio: ['pipe', 'pipe', 'ignore']
++    });
++    for (const pid of out.split('\n').filter(Boolean)) {
++      try { process.kill(Number(pid), 'SIGTERM'); } catch {}
++    }
++  } catch {}
++}
++
++function dedupeArgs(options) {
++  if (!options || !Array.isArray(options.args)) return options;
++  return { ...options, args: [...new Set(options.args)] };
++}
++
++async function launchPersistentContextWithRetry(launcher, profilePath, options, maxAttempts = 3) {
++  ensureXvfb();
++  let lastErr;
++  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
++    killStaleChrome(profilePath);
++    cleanupProfileLocks(profilePath);
++    try {
++      return await launcher.launchPersistentContext(profilePath, dedupeArgs(options));
++    } catch (err) {
++      lastErr = err;
++      const msg = err.message || '';
++      if (!/existing browser session|already in use|profile/i.test(msg)) throw err;
++      if (attempt === maxAttempts) break;
++      await sleep(500 + attempt * 250);
++    }
++  }
++  throw lastErr;
++}
++
++module.exports = {
++  ensureXvfb,
++  cleanupProfileLocks,
++  launchPersistentContextWithRetry,
++  dedupeArgs
++};
+--- /dev/null
++++ b/test/browser-lifecycle.test.js
+@@ -0,0 +1,22 @@
++const assert = require('assert');
++const fs = require('fs');
++const path = require('path');
++const os = require('os');
++const { cleanupProfileLocks, dedupeArgs } = require('../lib/browser-lifecycle');
++
++const deduped = dedupeArgs({ headless: false, args: ['--no-sandbox', '--no-sandbox', '--disable-infobars'] });
++assert.deepStrictEqual(deduped.args, ['--no-sandbox', '--disable-infobars']);
++
++const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'puppeterr-test-'));
++for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
++  fs.writeFileSync(path.join(profile, name), 'lock');
++}
++cleanupProfileLocks(profile);
++assert.strictEqual(fs.readdirSync(profile).length, 0);
++fs.rmSync(profile, { recursive: true, force: true });
++
++console.log('browser-lifecycle startup checks passed');
+--- a/agent.js
++++ b/agent.js
+@@ -1,5 +1,6 @@
+ const { chromium } = require('playwright-extra');
++const browserLifecycle = require('./lib/browser-lifecycle');
+ 
+ /**
+@@ -7878,7 +7879,7 @@
+   console.log('🚀 Launching browser...');
+-  const context = await chromium.launchPersistentContext(PROFILE_PATH, launchOptions);
++  const context = await browserLifecycle.launchPersistentContextWithRetry(chromium, PROFILE_PATH, launchOptions);

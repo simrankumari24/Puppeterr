@@ -1,0 +1,28 @@
+diff --git a/agent.js b/agent.js
+--- a/agent.js
++++ b/agent.js
+@@ -7868,3 +7868,17 @@
++async function createPersistentContext(browserType, baseOptions) {
++  const fs = require('fs').promises;
++  const path = require('path');
++  // Use a timestamped, per-process profile so the persistent context never collides
++  // with a previous Chromium session that is still holding the profile lock.
++  const userDataDir = `${(baseOptions.userDataDir || path.resolve('.puppeterr-profile'))}-${Date.now()}-${process.pid}`;
++  await fs.mkdir(userDataDir, { recursive: true });
++  // Remove any stale Chromium lock files from earlier crashed sessions.
++  for (const lock of ['SingletonLock', 'SingletonCookie']) {
++    try { await fs.unlink(path.join(userDataDir, lock)); } catch {}
++  }
++  return browserType.launchPersistentContext(userDataDir, baseOptions);
++}
++
+ async function launchBrowser() {
+   const browserType = chromium;
+   const options = {
+@@ -7904,5 +7918,5 @@
+     headless: false
+   };
+-  const context = await browserType.launchPersistentContext('./.puppeterr-profile', options);
++  const context = await createPersistentContext(browserType, { ...options, userDataDir: path.resolve('.puppeterr-profile') });
+   return context;
+ }

@@ -7,6 +7,8 @@ const FRONTEND_HTML = `
     <title>Puppeterr AI</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"><\/script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"><\/script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -351,6 +353,168 @@ const FRONTEND_HTML = `
         color: #ffb4ae;
         border-color: rgba(248,81,73,0.4);
         background: rgba(248,81,73,0.14);
+      }
+
+      /* ── RICH SUPERVISOR MESSAGE BUBBLE ────────────────────────── */
+      .supervisor-msg-container {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        max-width: 420px;
+        max-height: 60vh;
+        z-index: 9999;
+        animation: slideInUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      @keyframes slideInUp {
+        from { transform: translateY(30px); opacity: 0; }
+        to { transform: translateY(0); opacity: 1; }
+      }
+
+      .supervisor-bubble {
+        background: linear-gradient(135deg, #151f2d 0%, #1a2a3a 100%);
+        border: 2px solid rgba(248,81,73,0.5);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 20px rgba(248,81,73,0.2);
+        position: relative;
+        overflow: hidden;
+      }
+      .supervisor-bubble::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: radial-gradient(circle at 100% 0%, rgba(248,81,73,0.1), transparent 70%);
+        pointer-events: none;
+      }
+
+      .supervisor-bubble.ok {
+        border-color: rgba(133,232,157,0.5);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 20px rgba(133,232,157,0.2);
+      }
+      .supervisor-bubble.ok::before {
+        background: radial-gradient(circle at 100% 0%, rgba(133,232,157,0.1), transparent 70%);
+      }
+
+      .supervisor-bubble.warn {
+        border-color: rgba(210,153,34,0.5);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.6), 0 0 20px rgba(210,153,34,0.2);
+      }
+      .supervisor-bubble.warn::before {
+        background: radial-gradient(circle at 100% 0%, rgba(210,153,34,0.1), transparent 70%);
+      }
+
+      .supervisor-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        position: relative;
+        z-index: 1;
+      }
+
+      .supervisor-avatar {
+        font-size: 24px;
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        background: rgba(248,81,73,0.2);
+        border-radius: 8px;
+        border: 1px solid rgba(248,81,73,0.4);
+      }
+      .supervisor-bubble.ok .supervisor-avatar {
+        background: rgba(133,232,157,0.2);
+        border-color: rgba(133,232,157,0.4);
+      }
+      .supervisor-bubble.warn .supervisor-avatar {
+        background: rgba(210,153,34,0.2);
+        border-color: rgba(210,153,34,0.4);
+      }
+
+      .supervisor-title-wrap {
+        flex: 1;
+      }
+
+      .supervisor-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+        margin: 0;
+      }
+
+      .supervisor-score {
+        font-size: 11px;
+        color: var(--muted);
+        margin: 2px 0 0 0;
+      }
+
+      .supervisor-msg-content {
+        position: relative;
+        z-index: 1;
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text);
+        word-wrap: break-word;
+        overflow-y: auto;
+        max-height: 45vh;
+      }
+
+      .supervisor-msg-content strong {
+        color: #ffb4ae;
+        font-weight: 600;
+      }
+      .supervisor-bubble.ok .supervisor-msg-content strong {
+        color: #7ee787;
+      }
+      .supervisor-bubble.warn .supervisor-msg-content strong {
+        color: #ffd700;
+      }
+
+      .supervisor-msg-content em {
+        color: #85c4ff;
+        font-style: italic;
+      }
+
+      .supervisor-msg-content code {
+        background: rgba(0,0,0,0.4);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: #c9d7e6;
+      }
+
+      .supervisor-msg-content a {
+        color: #58a6ff;
+        text-decoration: none;
+        border-bottom: 1px dotted rgba(88,166,255,0.5);
+      }
+      .supervisor-msg-content a:hover {
+        border-bottom-color: #58a6ff;
+      }
+
+      .supervisor-close-btn {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        background: rgba(255,255,255,0.08);
+        border: none;
+        border-radius: 6px;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 14px;
+        z-index: 2;
+        transition: all 0.2s;
+      }
+      .supervisor-close-btn:hover {
+        background: rgba(255,255,255,0.14);
+        color: var(--text);
       }
 
       .tag {
@@ -778,6 +942,17 @@ const FRONTEND_HTML = `
         font-size: 14px; line-height: 1.7;
         color: var(--text);
         white-space: pre-wrap; word-break: break-word;
+      }
+
+      .chat-break-line {
+        display: block;
+        margin: 8px 0;
+        color: rgba(232,239,247,0.65);
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
       }
 
       .message-content .katex-display { margin: 10px 0; overflow-x: auto; }
@@ -1772,6 +1947,8 @@ const FRONTEND_HTML = `
         return String(chatId || "chat") + ":" + String(index) + ":" + String(message && message.ts ? message.ts : "na");
       }
 
+      var TYPING_FX_MAX_AGE_MS = 60 * 1000;
+
       function typingDelayForChar(charValue) {
         const base = randomBetween(24, 88);
         if (/[,.;:!?]/.test(charValue || "")) return base + randomBetween(75, 200);
@@ -1831,6 +2008,24 @@ const FRONTEND_HTML = `
         });
       }
 
+      function renderInlineMarkdownSafe(value) {
+        const dividerMarker = "\uE000";
+        const raw = String(value || "")
+          .replace(/<br\\s*\\/?\\s*>/gi, dividerMarker)
+          .replace(/\[\[CHAT[^\]]*DIVIDE[^\]]*\]\]/gi, dividerMarker);
+        let safe = escapeHtml(raw);
+        safe = safe
+          .replace(/\`([^\`\\n]+)\`/g, "<code>$1</code>")
+          .replace(/\\*\\*_(.+?)_\\*\\*/g, "<strong><em>$1</em></strong>")
+          .replace(/\\*\\*\\*(.+?)\\*\\*\\*/g, "<strong><em>$1</em></strong>")
+          .replace(/\\*\\*(.+?)\\*\\*/g, "<strong>$1</strong>")
+          .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, "$1<em>$2</em>")
+          .replace(/(^|[^_])_([^_\\n]+)_(?!_)/g, "$1<em>$2</em>")
+          .replace(new RegExp(dividerMarker, "g"), "<span class='chat-break-line' aria-hidden='true'>____________________________________________________________________________________________________</span>")
+          .replace(/\\n/g, "<br>");
+        return safe;
+      }
+
       function renderRichText(value) {
         const source = applyEmojiShortcodes(String(value || ""));
         const mathRegex = new RegExp("\\$\\$([\\\\s\\\\S]+?)\\$\\$|\\$([^\\n$]+?)\\$", "g");
@@ -1839,7 +2034,7 @@ const FRONTEND_HTML = `
         let match;
 
         while ((match = mathRegex.exec(source)) !== null) {
-          html += escapeHtml(source.slice(lastIndex, match.index));
+          html += renderInlineMarkdownSafe(source.slice(lastIndex, match.index));
           const expression = match[1] || match[2] || "";
           const isDisplay = !!match[1];
           if (window.katex && expression.trim()) {
@@ -1858,7 +2053,7 @@ const FRONTEND_HTML = `
           lastIndex = mathRegex.lastIndex;
         }
 
-        html += escapeHtml(source.slice(lastIndex));
+        html += renderInlineMarkdownSafe(source.slice(lastIndex));
         return html;
       }
 
@@ -2037,34 +2232,53 @@ const FRONTEND_HTML = `
           const key = messageKey(chat.id, index, message);
           const fullContent = String(message.content || "");
           const isUser = message.role === "user";
+          const parsedMessageTs = message && message.ts ? new Date(message.ts).getTime() : Number.NaN;
+          const messageAgeMs = Number.isFinite(parsedMessageTs) ? (Date.now() - parsedMessageTs) : Number.POSITIVE_INFINITY;
+          const shouldAnimateTyping = !isUser && messageAgeMs <= TYPING_FX_MAX_AGE_MS;
           const generatedImage = message && message.generatedImage ? message.generatedImage : null;
           let renderedContent = fullContent;
           let typingCaret = "";
           let contentHtml = "";
           if (!isUser) {
             if (typeof state.typingFx.lengths[key] !== "number") {
-              state.typingFx.lengths[key] = 0;
+              state.typingFx.lengths[key] = shouldAnimateTyping ? 0 : fullContent.length;
+            }
+            if (!shouldAnimateTyping && state.typingFx.timers[key]) {
+              window.clearTimeout(state.typingFx.timers[key]);
+              delete state.typingFx.timers[key];
             }
             const visibleLength = state.typingFx.lengths[key];
             renderedContent = fullContent.slice(0, visibleLength);
-            if (visibleLength < fullContent.length) {
+            if (shouldAnimateTyping && visibleLength < fullContent.length) {
               typingCaret = '<span class="typing-caret" aria-hidden="true"></span>';
               startTypingAnimation(key, fullContent);
               contentHtml = escapeHtml(applyEmojiShortcodes(renderedContent));
             } else {
+              if (visibleLength < fullContent.length) {
+                state.typingFx.lengths[key] = fullContent.length;
+                renderedContent = fullContent;
+              }
               contentHtml = renderRichText(renderedContent);
             }
           } else {
             contentHtml = renderRichText(renderedContent);
           }
-          const imageHtml = generatedImage
+          var imgSrc = generatedImage
+            ? (generatedImage.b64
+                ? 'data:' + (generatedImage.mimeType || 'image/png') + ';base64,' + generatedImage.b64
+                : (generatedImage.url || ''))
+            : '';
+          var imgId = generatedImage ? 'gen-img-' + message.ts.replace(/\W/g,'') : '';
+          var imageHtml = generatedImage
             ? '<div class="message-attachment">' +
-                (generatedImage.b64
-                  ? '<img alt="Generated image" style="margin-top:10px;max-width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);" src="data:' + escapeHtml(generatedImage.mimeType || 'image/png') + ';base64,' + generatedImage.b64 + '">' 
-                  : (generatedImage.url
-                    ? '<img alt="Generated image" style="margin-top:10px;max-width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);" src="' + escapeHtml(generatedImage.url) + '">' 
-                    : '')) +
-                '<div class="message-meta" style="margin-top:6px;">' + escapeHtml((generatedImage.model || '').split('/').pop() || generatedImage.model || '') + '</div>' +
+                (imgSrc
+                  ? '<img id="' + escapeHtml(imgId) + '" alt="Generated image" style="margin-top:10px;max-width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);cursor:pointer;" src="' + escapeHtml(imgSrc) + '">'
+                  : '') +
+                '<div style="display:flex;align-items:center;gap:8px;margin-top:8px;">' +
+                  '<span class="message-meta">' + escapeHtml((generatedImage.model || '').split('/').pop() || generatedImage.model || '') + '</span>' +
+                  (imgSrc ? '<button data-img-id="' + escapeHtml(imgId) + '" class="puppeterr-img-download" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:#e8eff7;padding:3px 10px;border-radius:6px;cursor:pointer;font-size:12px;" title="Download image">&#8595; Download</button>' : '') +
+                  (generatedImage.b64 ? '<button data-img-id="' + escapeHtml(imgId) + '" class="puppeterr-img-copy" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:#e8eff7;padding:3px 10px;border-radius:6px;cursor:pointer;font-size:12px;" title="Copy image to clipboard">&#10696; Copy</button>' : '') +
+                '</div>' +
               '</div>'
             : '';
           const avatarLabel = isUser ? "Y" : "✦";
@@ -2108,6 +2322,40 @@ const FRONTEND_HTML = `
             '</div></details>'
           : "";
         timeline.innerHTML = messageCards.concat(runtimeCard).join("") || '<div class="empty-state"><div class="empty-state-icon">💬</div>This chat is empty. Send a message to start.</div>';
+
+        // Add event listeners for image download and copy buttons
+        Array.from(timeline.querySelectorAll(".puppeterr-img-download")).forEach(function(btn) {
+          btn.addEventListener("click", function() {
+            var imgId = btn.getAttribute("data-img-id");
+            var img = document.getElementById(imgId);
+            if (!img) return;
+            var a = document.createElement("a");
+            a.href = img.src;
+            a.download = "puppeterr-image.png";
+            a.click();
+          });
+        });
+        Array.from(timeline.querySelectorAll(".puppeterr-img-copy")).forEach(function(btn) {
+          btn.addEventListener("click", function() {
+            var imgId = btn.getAttribute("data-img-id");
+            var img = document.getElementById(imgId);
+            if (!img) return;
+            try {
+              var canvas = document.createElement("canvas");
+              canvas.width = img.naturalWidth;
+              canvas.height = img.naturalHeight;
+              var ctx = canvas.getContext("2d");
+              ctx.drawImage(img, 0, 0);
+              canvas.toBlob(function(blob) {
+                navigator.clipboard.write([new ClipboardItem({"image/png": blob})]).catch(function() {
+                  alert("Copy failed — browser may need HTTPS or permission.");
+                });
+              });
+            } catch (e) {
+              alert("Copy failed: " + e.message);
+            }
+          });
+        });
 
         Array.from(timeline.querySelectorAll("[data-runtime-filter]")).forEach(function(btn) {
           btn.addEventListener("click", function() {
@@ -2276,6 +2524,92 @@ const FRONTEND_HTML = `
         }
         const scoreText = Number.isFinite(score) ? " " + score.toFixed(2) : "";
         supervisorPill.textContent = "Supervisor: " + normalized + scoreText;
+      }
+
+      function renderSupervisorMessage() {
+        const container = document.getElementById("supervisorMsgContainer");
+        if (!container) return;
+        const supervisor = state.supervisor || {};
+        const decision = String(supervisor.decision || "idle").toLowerCase();
+        
+        if (decision === "idle") {
+          container.style.display = "none";
+          return;
+        }
+
+        const msg = String(supervisor.reason || supervisor.msg || "");
+        const score = Number(supervisor.score);
+        const normalized = (decision === "blocked" || decision === "warn" || decision === "ok") ? decision : "idle";
+
+        let htmlContent = msg;
+        try {
+          // Try marked library if available
+          if (typeof marked !== "undefined") {
+            if (typeof marked.parse === "function") {
+              htmlContent = marked.parse(msg, { breaks: true });
+            } else if (typeof marked.marked === "function") {
+              htmlContent = marked.marked(msg, { breaks: true });
+            } else if (typeof marked === "function") {
+              htmlContent = marked(msg, { breaks: true });
+            } else {
+              // Fallback: basic markdown to HTML conversion
+              htmlContent = msg
+                .replace(/\*\*_(.+?)_\*\*/g, "<strong><em>$1</em></strong>")
+                .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                .replace(/_(.+?)_/g, "<em>$1</em>")
+                .replace(/\*(.+?)\*/g, "<em>$1</em>")
+                .replace(/\`(.+?)\`/g, "<code>$1</code>");
+            }
+          } else {
+            // Fallback: basic markdown to HTML conversion
+            htmlContent = msg
+              .replace(/\*\*_(.+?)_\*\*/g, "<strong><em>$1</em></strong>")
+              .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+              .replace(/_(.+?)_/g, "<em>$1</em>")
+              .replace(/\*(.+?)\*/g, "<em>$1</em>")
+              .replace(/\`(.+?)\`/g, "<code>$1</code>");
+          }
+        } catch (e) {
+          // Safe fallback without escaping (for display)
+          htmlContent = msg
+            .replace(/\*\*_(.+?)_\*\*/g, "<strong><em>$1</em></strong>")
+            .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+            .replace(/_(.+?)_/g, "<em>$1</em>")
+            .replace(/\*(.+?)\*/g, "<em>$1</em>")
+            .replace(/\`(.+?)\`/g, "<code>$1</code>");
+        }
+
+        // Sanitize but allow basic formatting tags
+        if (typeof DOMPurify !== "undefined") {
+          htmlContent = DOMPurify.sanitize(htmlContent, { 
+            ALLOWED_TAGS: ["strong", "em", "code", "br", "span"],
+            ALLOWED_ATTR: ["class"]
+          });
+        }
+
+        const avatar = normalized === "blocked" ? "🛑" : normalized === "warn" ? "⚠️" : "✅";
+        const title = normalized === "blocked" ? "SUPERVISOR ALERT" : normalized === "warn" ? "SUPERVISOR WARNING" : "SUPERVISOR OK";
+        const scoreStr = Number.isFinite(score) ? "<span class='supervisor-score'>" + score.toFixed(2) + "</span>" : "";
+
+        container.innerHTML = "<div class='supervisor-bubble " + normalized + "'>" +
+          "<button class='supervisor-close-btn' id='supervisorCloseBtn'>×</button>" +
+          "<div class='supervisor-header'>" +
+          "<div class='supervisor-avatar'>" + avatar + "</div>" +
+          "<div class='supervisor-title-wrap'>" +
+          "<h4 class='supervisor-title'>" + title + "</h4>" +
+          scoreStr +
+          "</div>" +
+          "</div>" +
+          "<div class='supervisor-msg-content'>" + htmlContent + "</div>" +
+          "</div>";
+        
+        var closeBtn = container.querySelector("#supervisorCloseBtn");
+        if (closeBtn) {
+          closeBtn.addEventListener("click", function() {
+            container.style.display = "none";
+          });
+        }
+        container.style.display = "block";
       }
 
       function applyBootstrap(data) {
@@ -2598,6 +2932,7 @@ const FRONTEND_HTML = `
                 ts: new Date().toISOString()
               };
               renderSupervisorPill();
+              renderSupervisorMessage();
             }
             if (payload.type === "task_done") {
               state.sending = false;
@@ -2875,6 +3210,23 @@ const FRONTEND_HTML = `
         }
       });
 
+      // ── Paste-image support: Ctrl+V / right-click paste into the composer ────
+      composerInput.addEventListener("paste", function(event) {
+        const items = event.clipboardData && event.clipboardData.items;
+        if (!items) return;
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].kind === "file" && items[i].type.startsWith("image/")) {
+            event.preventDefault();
+            const file = items[i].getAsFile();
+            if (file) {
+              analyzeUploadedImage(file);
+              addRuntimeEvent("status", "Image pasted — running DETR analysis…");
+            }
+            return;
+          }
+        }
+      });
+
       loadUiPrefs();
       bindGlobalShortcuts();
 
@@ -3030,6 +3382,10 @@ const FRONTEND_HTML = `
 
       boot();
     </script>
+
+    <!-- SUPERVISOR MESSAGE BUBBLE -->
+    <div id="supervisorMsgContainer" class="supervisor-msg-container" style="display:none;"></div>
+
   </body>
   </html>
 `;

@@ -1,0 +1,31 @@
+{
+  "created_at": "2026-07-13T19:46:20.693Z",
+  "auto_mode_enabled": true,
+  "results": [
+    {
+      "patch_id": "A",
+      "status": "deferred",
+      "reason": "HUMAN_REVIEW_REQUIRED"
+    },
+    {
+      "patch_id": "B",
+      "status": "deferred",
+      "reason": "HUMAN_REVIEW_REQUIRED"
+    },
+    {
+      "patch_id": "C",
+      "status": "deferred",
+      "reason": "HUMAN_REVIEW_REQUIRED"
+    },
+    {
+      "patch_id": "D",
+      "status": "deferred",
+      "reason": "HUMAN_REVIEW_REQUIRED"
+    },
+    {
+      "patch_id": "E",
+      "status": "deferred",
+      "reason": "HUMAN_REVIEW_REQUIRED"
+    }
+  ]
+}

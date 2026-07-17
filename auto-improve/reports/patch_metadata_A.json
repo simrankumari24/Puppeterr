@@ -1,0 +1,45 @@
+{
+  "patch_id": "A",
+  "coder_label": "Logic Fixes",
+  "created_at": "2026-07-14T15:39:50.987Z",
+  "provider": "cloudflare",
+  "model": "@anthropic/claude-sonnet-4.5",
+  "title": "Logic Fixes proposal",
+  "rationale": "No valid strict JSON diff after 3 attempts. No valid patch available.",
+  "risk": "high",
+  "test_plan": "Generated automatically.",
+  "changed_lines": 0,
+  "touched_files": [],
+  "attempts_used": 3,
+  "accepted": false,
+  "generated_accepted": false,
+  "retained_previous_patch": false,
+  "require_non_empty_diff": true,
+  "last_failure_reason": "json-shape-invalid",
+  "attempt_artifacts": [
+    {
+      "attempt": 1,
+      "raw_path": "/workspaces/Puppeterr/auto-improve/reports/patch_raw_A_attempt_1.txt",
+      "strict_reason": "json-shape-invalid",
+      "validation_error": null,
+      "changed_lines": 0,
+      "accepted": false
+    },
+    {
+      "attempt": 2,
+      "raw_path": "/workspaces/Puppeterr/auto-improve/reports/patch_raw_A_attempt_2.txt",
+      "strict_reason": "json-shape-invalid",
+      "validation_error": null,
+      "changed_lines": 0,
+      "accepted": false
+    },
+    {
+      "attempt": 3,
+      "raw_path": "/workspaces/Puppeterr/auto-improve/reports/patch_raw_A_attempt_3.txt",
+      "strict_reason": "json-shape-invalid",
+      "validation_error": null,
+      "changed_lines": 0,
+      "accepted": false
+    }
+  ]
+}
