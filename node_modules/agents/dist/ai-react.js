@@ -1,0 +1,6 @@
+//#region src/ai-react.tsx
+throw new Error("All the AI Chat related modules are now in @cloudflare/ai-chat. This module is deprecated and will be removed in the next major version. Please use @cloudflare/ai-chat/ai-react instead.");
+//#endregion
+export {};
+
+//# sourceMappingURL=ai-react.js.map

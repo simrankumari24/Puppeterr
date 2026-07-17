@@ -1,0 +1,1 @@
+{"version":3,"file":"ai.js","names":[],"sources":["../../src/codemode/ai.ts"],"sourcesContent":["// @cloudflare/codemode/ai has been rewritten.\n// Use createCodeTool from @cloudflare/codemode/ai instead.\nthrow new Error(\n  \"This entrypoint has been removed. Use createCodeTool() from @cloudflare/codemode/ai instead.\"\n);\n"],"mappings":";AAEA,MAAM,IAAI,MACR,8FACF"}
