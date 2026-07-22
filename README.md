@@ -54,6 +54,29 @@ Guidance requests require correct JSON formatting.
 Selector mutation may produce syntactically invalid CSS.
 Certain pages (such as Bing’s homepage) cause repeated fill failures.
 
+## Model Catalog Fallback (Text Import)
+
+If Cloudflare model listing (`/ai/models`) returns 404 or fails, Puppeterr can import model IDs from plain text and continue routing/selecting models.
+
+Supported sources:
+
+- `MODEL_CATALOG_FILE` (default: `./model-catalog.txt`)
+- `MODEL_CATALOG_TEXT` (env var string, newline/comma friendly)
+
+Accepted line formats include:
+
+- `@cf/meta/llama-3.2-11b-vision-instruct`
+- `anthropic/claude-opus-4.8`
+- `id: @cf/qwen/qwen3-30b-a3b-fp8`
+
+Quick setup:
+
+1. Copy `model-catalog.txt.example` to `model-catalog.txt`
+2. Paste your full model list (Cloudflare hosted, external, or mixed)
+3. Restart `npm start`
+
+Startup preflight now reports when text-imported models are being used.
+
 FUTURE WORK
 Improve selector sanity checks.
 Add a structured Reasoner live-stream panel.
@@ -61,7 +84,89 @@ Implement a more robust Reality Bonk Gate for Planner.
 Enhance Vision’s DOM interpretation.
 Add better debugging tools and UI overlays.
 
-### every time you REBUILD THE CONTAINER do these steps:
+## Browsing Performance + Quality Tunables
+
+These env vars now control key speed/quality tradeoffs in the browser loop:
+
+- `IDLE_HUMAN_MODE`: `off | auto | always` (default `auto`)
+  - `off`: disable synthetic idle mouse nudges during waits (fastest)
+  - `auto`: only nudge in challenge/handoff contexts
+  - `always`: keep old human-like nudging behavior everywhere
+- `SUPERVISOR_SAMPLE_EVERY_STEPS` (default `2`)
+  - Reuses prior supervisor gate decisions between samples when plan/context is stable
+- `INSTINCT_SAMPLE_EVERY_STEPS` (default `2`)
+  - Reduces per-step instinct model calls while still refreshing on failure/stuck/dynamic UI
+- `VISION_SAMPLE_EVERY_STEPS` (default `2`)
+  - Controls how often fresh screenshot+analysis is forced when live vision is stale
+- `VERIFY_EVERY_STEPS` (default `2`)
+  - Controls completion verification cadence
+- `CONFUSION_RESEARCH_STEP_INTERVAL` (default `6`)
+  - Limits how frequently fallback research can run
+- `CONFUSION_RESEARCH_COOLDOWN_MS` (default `180000`)
+  - Minimum delay before rerunning the same research query
+- `CONFUSION_RESEARCH_BLOCKED_HOSTS` (default `google.com,bing.com,duckduckgo.com,search.yahoo.com`)
+  - Comma-separated host list where confusion research is suppressed
+- `SIMPLE_BROWSING_MODE`: `off | auto | always` (default `auto`)
+  - `off`: keep full layered behavior
+  - `auto`: use direct-path/light-overhead behavior for simple browse/search tasks
+  - `always`: aggressively prefer simple browse behavior for most tasks
+- `SIMPLE_BROWSING_DYNAMIC_UI_FAIL_THRESHOLD` (default `2`)
+  - Number of failures before dynamic-UI vision-only click mode is allowed in simple browsing mode
+
+Supervisor cache safety:
+
+- Cached supervisor decisions are invalidated when the active host changes, reducing stale risk decisions after cross-domain pivots.
+
+Simple browsing behavior:
+
+- For simple goals (known site or straightforward search), the agent now:
+  - attempts direct site navigation first when destination is known
+  - delays heavy recon/research layers until failures justify escalation
+  - reduces early pixel-grid/vision-heavy analysis frequency
+  - avoids dynamic-ui vision-only click mode until repeated failures occur
+
+Related extraction/context limits:
+
+- `STATE_TEXT_LIMIT` (default `6000`)
+- `STATE_LINK_LIMIT` (default `30`)
+- `STATE_INPUT_LIMIT` (default `30`)
+- `STATE_BUTTON_LIMIT` (default `25`)
+
+## Strider + Planner Loop
+
+Strider is wired into planner decisions as bounded reconnaissance:
+
+1. Scout target domain with budgets (`maxRelevantUrls`, `maxDepth`, runtime cap)
+2. Extract text/elements/snapshot metadata
+3. Rank pages by relevance
+4. Feed compact recon memo into planner (`Recon:` section)
+5. Refresh recon mid-task on stuck/failure signals
+
+This keeps planner context useful without dumping full raw crawl payloads into each prompt.
+
+### One-shot live element dump (dynamic DOM)
+
+Use this when you want Strider to extract all currently rendered elements (including JS-rendered/dynamic nodes) from the active browser page.
+
+```bash
+curl -X POST http://localhost:3000/api/strider/extract-elements \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "includeHidden": true,
+    "includeText": false,
+    "includeAttributes": false,
+    "maxElements": 0,
+    "settleMs": 250
+  }'
+```
+
+Notes:
+- `maxElements: 0` means no cap (all elements).
+- For faster dumps, keep `includeText` and `includeAttributes` false.
+- You can pass `url` to navigate first, then extract.
+
+
+### Very helpful manual
 
 use "sudo find / -type f -iname "*chrome*" 2>/dev/null" fr a full nuke search and
 
@@ -83,8 +188,8 @@ sudo apt-get install -y \
 "
 
 to run the program itself you need to run this cmd
-"xvfb-run -a node agent.js"
-if its not INSTALLED do this
+"npm start
+if its not 'INSTALLED' do this
 
 "
 sudo apt-get update
@@ -126,4 +231,12 @@ pkill -f "node agent.js" || true
 pkill -f "xvfb-run -a node agent.js" || true
 xvfb-run -a node agent.js
 "
+if that doesnt work... then your tunnel is corrupted and you will need to 
 
+A: create a orhphan branch
+"
+git checkout *rnd name here*
+"
+then
+B:
+push to that branch then create a new codespaces there and delete your other one which had a corrupted tunnel.

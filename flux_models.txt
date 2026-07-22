@@ -1,2 +1,0 @@
-@cf/black-forest-labs/flux-1-schnell
-@cf/black-forest-labs/flux-1-dev

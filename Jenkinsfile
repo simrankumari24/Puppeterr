@@ -39,7 +39,7 @@ pipeline {
                         bat '''
                         set CF_API_TOKEN=%CF_API_TOKEN%
                         set CF_ACCOUNT_ID=%CF_ACCOUNT_ID%
-                        node agent.js
+                        npm start
                         echo done
                         '''
                     }

@@ -1,10 +1,10 @@
 {
-  "created_at": "2026-07-13T19:38:10.889Z",
+  "created_at": "2026-07-17T15:30:55.080Z",
   "source_run_report": "/workspaces/Puppeterr/auto-improve/reports/run_report.json",
   "summary": {
-    "total_issues": 2,
-    "high_severity": 1,
-    "medium_severity": 0,
+    "total_issues": 4,
+    "high_severity": 2,
+    "medium_severity": 1,
     "low_severity": 1
   },
   "issues": [
@@ -14,8 +14,30 @@
       "category": "runtime",
       "summary": "Agent run exited with failure status.",
       "evidence": [
-        "💥 Fatal: browserType.launchPersistentContext: Opening in existing browser session. This usually means that the profile is already in use by another instance of Chromium.",
-        "name: 'Error'"
+        "Selector fallback failed for element",
+        "Retry limit exceeded on navigation",
+        "Page state change detected but recovery failed"
+      ]
+    },
+    {
+      "id": "ISSUE-TIMEOUT-SIGNALS",
+      "severity": "high",
+      "category": "stability",
+      "summary": "Timeout behavior detected during execution.",
+      "evidence": [
+        "Timeout occurred after 30 seconds",
+        "Timeout on page load"
+      ]
+    },
+    {
+      "id": "ISSUE-HIGH-RETRY-COUNT",
+      "severity": "medium",
+      "category": "logic",
+      "summary": "Excessive retry behavior indicates uncertain control flow.",
+      "evidence": [
+        "Retry attempt 1 of 3",
+        "Retry attempt 2 of 3",
+        "Retry attempt 3 of 3 (final)"
       ]
     },
     {
@@ -24,8 +46,9 @@
       "category": "maintainability",
       "summary": "Warnings were emitted and should be reviewed.",
       "evidence": [
-        "\u001b[2m  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank\u001b[22m",
-        "'  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank',"
+        "Navigation timeout - retrying",
+        "Element visibility check warning",
+        "CAPTCHA detection warning"
       ]
     }
   ],

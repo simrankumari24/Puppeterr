@@ -1,0 +1,16 @@
+# Optional manual model catalog fallback
+#
+# Copy this file to model-catalog.txt (or set MODEL_CATALOG_FILE) and list model IDs.
+# Supports mixed Cloudflare-hosted and external model IDs.
+#
+# Accepted examples:
+# @cf/meta/llama-3.2-11b-vision-instruct
+# @cf/qwen/qwen3-30b-a3b-fp8
+# anthropic/claude-opus-4.8
+# openai/gpt-4o-mini
+# id: @cf/black-forest-labs/flux-2-klein-9b
+
+@cf/qwen/qwen3-30b-a3b-fp8
+@cf/zai-org/glm-5.2
+@cf/meta/llama-3.2-11b-vision-instruct
+anthropic/claude-opus-4.8

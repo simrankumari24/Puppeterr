@@ -1,6 +1,51 @@
 const { chromium } = require("playwright");
 const pixelGridReasoner = require("./pixelGridReasoner");
 
+let sharedBrowser = null;
+let sharedContext = null;
+let sharedPage = null;
+
+async function getSharedPage(columns, rows) {
+  if (!sharedBrowser) {
+    sharedBrowser = await chromium.launch({ headless: true });
+  }
+  if (!sharedContext) {
+    sharedContext = await sharedBrowser.newContext();
+  }
+  if (!sharedPage) {
+    sharedPage = await sharedContext.newPage({ viewport: { width: columns, height: rows } });
+  }
+  await sharedPage.setViewportSize({ width: columns, height: rows }).catch(() => {});
+  return sharedPage;
+}
+
+async function closeSharedResources() {
+  if (sharedPage) {
+    await sharedPage.close().catch(() => {});
+    sharedPage = null;
+  }
+  if (sharedContext) {
+    await sharedContext.close().catch(() => {});
+    sharedContext = null;
+  }
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => {});
+    sharedBrowser = null;
+  }
+}
+
+process.once("exit", () => {
+  if (sharedPage) {
+    try { sharedPage.close(); } catch {}
+  }
+  if (sharedContext) {
+    try { sharedContext.close(); } catch {}
+  }
+  if (sharedBrowser) {
+    try { sharedBrowser.close(); } catch {}
+  }
+});
+
 function inferMimeFromBase64(imageB64) {
   const buffer = Buffer.from(String(imageB64 || "").slice(0, 128), "base64");
   const text = buffer.toString("utf8", 0, Math.min(buffer.length, 64)).trim().toLowerCase();
@@ -15,10 +60,8 @@ function inferMimeFromBase64(imageB64) {
 async function extractPixelGridFromImage(imageB64, columns = 128, rows = 64) {
   const mimeType = inferMimeFromBase64(imageB64);
   const dataUrl = `data:${mimeType};base64,${String(imageB64 || "").replace(/\s+/g, "")}`;
-  let browser = null;
   try {
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ viewport: { width: columns, height: rows } });
+    const page = await getSharedPage(columns, rows);
     const grid = await page.evaluate(async ({ dataUrlValue, columnsValue, rowsValue }) => {
       const image = new Image();
       await new Promise((resolve, reject) => {
@@ -70,11 +113,8 @@ async function extractPixelGridFromImage(imageB64, columns = 128, rows = 64) {
     return Array.isArray(grid) ? grid : [];
   } catch (error) {
     console.error("Pixel grid extractor error:", error.message);
+    await closeSharedResources();
     return [];
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
   }
 }
 

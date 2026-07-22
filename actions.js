@@ -170,13 +170,41 @@ const actions = {
   }, { retries: 2, delayMs: 170 }),
   waitForTimeout: async ({ page, ms }) => page.waitForTimeout(Math.min(Number(ms) || 500, 8000)),
   waitForLoadState: async ({ page, state = "load" }) => page.waitForLoadState(sanitizeLoadState(state), { timeout: 12000 }),
-  waitForURLChange: async ({ page, currentURL, timeout = 8000 }) => {
+  waitForURLChange: async ({ page, currentURL, targetURL, url, timeout = 8000 }) => {
+    const baseline = String(currentURL || page.url() || "");
+    if (!baseline) {
+      throw new Error("waitForURLChange requires a currentURL baseline");
+    }
+
+    const targetRaw = String(targetURL || url || "").trim();
+    const targetHost = (() => {
+      if (!targetRaw) return "";
+      try {
+        const normalized = /^https?:\/\//i.test(targetRaw) ? targetRaw : `https://${targetRaw}`;
+        return new URL(normalized).host.replace(/^www\./i, "").toLowerCase();
+      } catch {
+        return "";
+      }
+    })();
+
     const start = Date.now();
     while (Date.now() - start < timeout) {
-      if (page.url() !== currentURL) return "url-changed";
+      const current = String(page.url() || "");
+      if (current !== baseline) {
+        if (!targetRaw) return "url-changed";
+
+        if (targetHost) {
+          const currentHost = (() => {
+            try { return new URL(current).host.replace(/^www\./i, "").toLowerCase(); } catch { return ""; }
+          })();
+          if (currentHost === targetHost) return `url-changed:${currentHost}`;
+        } else if (current.toLowerCase().includes(targetRaw.toLowerCase())) {
+          return "url-changed:target-match";
+        }
+      }
       await page.waitForTimeout(250);
      }
-   throw new Error(`URL did not change within ${timeout}ms (still at ${currentURL})`);
+   throw new Error(`URL did not change to expected target within ${timeout}ms (baseline ${baseline}, now ${page.url()}, target ${targetRaw || "<any>"})`);
   },
 
   // 🪟 PAGE INFO

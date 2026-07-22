@@ -8,7 +8,7 @@ trap '' HUP      # ignore terminal close
 trap '' QUIT     # ignore Ctrl+\
 trap '' TSTP     # ignore Ctrl+Z
 # Hard-code the branch you care about
-DEFAULT_BRANCH="fresh-brain"
+DEFAULT_BRANCH="Master"
 
 echo "Using remote branch: $DEFAULT_BRANCH"
 

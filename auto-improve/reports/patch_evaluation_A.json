@@ -1,6 +1,6 @@
 {
   "patch_id": "A",
-  "created_at": "2026-07-14T15:39:51.491Z",
+  "created_at": "2026-07-17T15:30:56.309Z",
   "changed_lines": 0,
   "touched_files": [],
   "policy_flags": {
@@ -12,7 +12,7 @@
     {
       "reviewer": "primary",
       "provider": "cloudflare",
-      "model": "@cf/openai/gpt-5.6-sol",
+      "model": "openai/gpt-5.6-sol",
       "score": 650,
       "notes": [
         "No effective patch content detected.",
@@ -23,7 +23,7 @@
     {
       "reviewer": "secondary",
       "provider": "cloudflare",
-      "model": "@cf/openai/gpt-5.6-sol",
+      "model": "openai/gpt-5.6-sol",
       "score": 650,
       "notes": [
         "No effective patch content detected.",

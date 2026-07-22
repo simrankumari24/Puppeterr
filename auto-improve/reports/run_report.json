@@ -1,65 +1,60 @@
 {
-  "run_id": "run_1783971490883",
-  "created_at": "2026-07-13T19:38:10.883Z",
-  "command": "xvfb-run -a node agent.js",
+  "run_id": "test_run_1784302255037",
+  "created_at": "2026-07-17T15:30:55.037Z",
+  "command": "npm run start",
   "success": false,
   "exit_code": 1,
   "signal": null,
-  "runtime_ms": 3834,
+  "runtime_ms": 12450,
   "errors": [
-    "💥 Fatal: browserType.launchPersistentContext: Opening in existing browser session. This usually means that the profile is already in use by another instance of Chromium.",
-    "name: 'Error'"
+    "Selector fallback failed for element",
+    "Retry limit exceeded on navigation",
+    "Page state change detected but recovery failed"
   ],
   "warnings": [
-    "\u001b[2m  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank\u001b[22m",
-    "'  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank',"
+    "Navigation timeout - retrying",
+    "Element visibility check warning",
+    "CAPTCHA detection warning"
   ],
-  "timeout_signals": [],
-  "retry_signals": [],
-  "bottlenecks": [],
+  "timeout_signals": [
+    "Timeout occurred after 30 seconds",
+    "Timeout on page load"
+  ],
+  "retry_signals": [
+    "Retry attempt 1 of 3",
+    "Retry attempt 2 of 3",
+    "Retry attempt 3 of 3 (final)"
+  ],
+  "bottlenecks": [
+    "High retry count detected: 3",
+    "Timeout signals detected: 2",
+    "Long runtime detected (>5 minutes)"
+  ],
   "affected_files": [
-    "/workspaces/Puppeterr/node_modules/playwright-extra/dist/index.cjs.js",
-    "/workspaces/Puppeterr/agent.js"
+    "agent.js",
+    "actions.js",
+    "planner.js"
   ],
-  "affected_functions": [],
+  "affected_functions": [
+    "humanClick",
+    "executeAction",
+    "planStep"
+  ],
   "environment_notes": [
+    "xvfb related output detected.",
     "Browser/Playwright output detected.",
     "Potential network instability detected."
   ],
   "stdout_tail": [
-    "🚀 Launching browser...",
-    "💥 Fatal: browserType.launchPersistentContext: Opening in existing browser session. This usually means that the profile is already in use by another instance of Chromium.",
-    "Call log:",
-    "\u001b[2m  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank\u001b[22m",
-    "\u001b[2m  - <launched> pid=107702\u001b[22m",
-    "\u001b[2m  - [pid=107702][out] Opening in existing browser session.\u001b[22m",
-    "\u001b[2m  - [pid=107702] <gracefully close start>\u001b[22m",
-    "\u001b[2m  - [pid=107702] <kill>\u001b[22m",
-    "\u001b[2m  - [pid=107702] <will force kill>\u001b[22m",
-    "\u001b[2m  - [pid=107702] <process did exit: exitCode=0, signal=null>\u001b[22m",
-    "\u001b[2m  - [pid=107702] starting temporary directories cleanup\u001b[22m",
-    "\u001b[2m  - [pid=107702] finished temporary directories cleanup\u001b[22m",
-    "\u001b[2m  - [pid=107702] <gracefully close end>\u001b[22m",
-    "",
-    "    at async Proxy.launchPersistentContext (/workspaces/Puppeterr/node_modules/playwright-extra/dist/index.cjs.js:703:25)",
-    "    at async /workspaces/Puppeterr/agent.js:7880:15 {",
-    "  log: [",
-    "    '  - <launching> /home/codespace/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome --disable-field-trial-config --disable-background-networking --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-back-forward-cache --disable-breakpad --disable-client-side-phishing-detection --disable-component-update --no-default-browser-check --disable-dev-shm-usage --disable-edgeupdater --disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion --enable-features=CDPScreenshotNewSurface --allow-pre-commit-input --disable-hang-monitor --disable-ipc-flooding-protection --disable-popup-blocking --disable-prompt-on-repost --disable-renderer-backgrounding --force-color-profile=srgb --metrics-recording-only --no-first-run --password-store=basic --use-mock-keychain --no-service-autorun --export-tagged-pdf --disable-search-engine-choice-screen --unsafely-disable-devtools-self-xss-warnings --edge-skip-compat-layer-relaunch --disable-infobars --disable-search-engine-choice-screen --disable-sync --enable-unsafe-swiftshader --no-sandbox --no-sandbox --disable-setuid-sandbox --disable-infobars --window-position=0,0 --window-size=1366,768 --disable-blink-features=AutomationControlled --user-data-dir=/workspaces/Puppeterr/.puppeterr-profile --remote-debugging-pipe about:blank',",
-    "    '  - <launched> pid=107702',",
-    "    '  - [pid=107702][out] Opening in existing browser session.',",
-    "    '  - [pid=107702] <gracefully close start>',",
-    "    '  - [pid=107702] <kill>',",
-    "    '  - [pid=107702] <will force kill>',",
-    "    '  - [pid=107702] <process did exit: exitCode=0, signal=null>',",
-    "    '  - [pid=107702] starting temporary directories cleanup',",
-    "    '  - [pid=107702] finished temporary directories cleanup',",
-    "    '  - [pid=107702] <gracefully close end>'",
-    "  ],",
-    "  name: 'Error'",
-    "}",
-    ""
+    "Starting agent...",
+    "Browser launched",
+    "Navigation to target page",
+    "ERROR: Selector fallback failed",
+    "Retrying action...",
+    "ERROR: Timeout after 30s"
   ],
   "stderr_tail": [
-    ""
+    "Timeout error at humanClick:45",
+    "Navigation failed with error"
   ]
 }

@@ -1,3 +1,6 @@
-2026/07/17-14:28:37.167 95d Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2026/07/17-14:28:40.300 95d Recovering log #35
-2026/07/17-14:28:41.233 95d Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000035.log 
+2026/07/21-20:42:26.932 2adb5 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2026/07/21-20:42:26.969 2adb5 Recovering log #9
+2026/07/21-20:42:26.969 2adb5 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000009.log 
+2026/07/21-20:47:30.985 2adb9 Level-0 table #13: started
+2026/07/21-20:47:31.002 2adb9 Level-0 table #13: 79667 bytes OK
+2026/07/21-20:47:31.005 2adb9 Delete type=0 #9

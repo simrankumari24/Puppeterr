@@ -155,6 +155,10 @@ const FRONTEND_HTML = `
         flex-direction: column;
         overflow: hidden;
         flex-shrink: 0;
+      .sidebar.collapsed {
+        width: 78px;
+        min-width: 78px;
+      }
       }
 
       .sidebar-header {
@@ -190,6 +194,9 @@ const FRONTEND_HTML = `
         font-size: 16px;
       }
       .icon-btn:hover { background: var(--border); color: var(--text); }
+      .sidebar-toggle-btn {
+        font-size: 14px;
+      }
 
       .sidebar-new-chat {
         margin: 10px 10px 6px;
@@ -207,6 +214,18 @@ const FRONTEND_HTML = `
       }
       .sidebar-new-chat:hover { background: var(--border-hover); }
       .sidebar-new-chat-icon { font-size: 15px; opacity: .7; }
+      .sidebar-icon-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .sidebar-label-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
       .sidebar-section-label {
         padding: 14px 14px 6px;
@@ -241,6 +260,21 @@ const FRONTEND_HTML = `
       .chat-item:hover { background: rgba(255,255,255,0.05); }
       .chat-item.active { background: rgba(88,166,255,0.12); }
       .chat-item.active .chat-title { color: #d7e8ff; }
+      .chat-item-icon {
+        display: none;
+        width: 34px;
+        height: 34px;
+        border-radius: 11px;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.07);
+        color: #d9e6f5;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        margin: 0 auto;
+      }
 
       .chat-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .chat-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
@@ -301,6 +335,95 @@ const FRONTEND_HTML = `
         background: var(--accent);
       }
       .status-dot.offline { background: var(--muted); }
+      .sidebar.collapsed .sidebar-header {
+        padding-left: 10px;
+        padding-right: 10px;
+      }
+
+      .sidebar.collapsed .sidebar-brand {
+        gap: 0;
+        justify-content: center;
+        width: 30px;
+        overflow: hidden;
+        color: transparent;
+        font-size: 0;
+      }
+
+      .sidebar.collapsed .sidebar-actions {
+        gap: 2px;
+      }
+
+      .sidebar.collapsed .sidebar-new-chat,
+      .sidebar.collapsed .sidebar-nav-link,
+      .sidebar.collapsed .chat-item,
+      .sidebar.collapsed .memory-item,
+      .sidebar.collapsed .sidebar-footer {
+        justify-content: center;
+      }
+
+      .sidebar.collapsed .sidebar-new-chat,
+      .sidebar.collapsed .sidebar-nav-link {
+        width: calc(100% - 16px);
+        margin-left: 8px;
+        margin-right: 8px;
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      .sidebar.collapsed .sidebar-section-label,
+      .sidebar.collapsed .sidebar-nav-badge,
+      .sidebar.collapsed .sidebar-label-text,
+      .sidebar.collapsed .chat-title-row,
+      .sidebar.collapsed .memory-section-title,
+      .sidebar.collapsed .memory-list,
+      .sidebar.collapsed .user-info {
+        display: none !important;
+      }
+
+      .sidebar.collapsed .sidebar-icon-label {
+        gap: 0;
+        justify-content: center;
+        width: 100%;
+      }
+
+      .sidebar.collapsed .sidebar-scroll {
+        padding-left: 6px;
+        padding-right: 6px;
+      }
+
+      .sidebar.collapsed .chat-item {
+        padding: 8px 0;
+      }
+
+      .sidebar.collapsed .chat-item-icon {
+        display: inline-flex;
+      }
+
+      .sidebar.collapsed .memory-section {
+        padding-left: 8px;
+        padding-right: 8px;
+      }
+
+      .sidebar.collapsed .memory-section-header {
+        justify-content: center;
+        padding-bottom: 0;
+      }
+
+      .sidebar.collapsed #refreshMemoryBtn {
+        width: 30px !important;
+        height: 30px !important;
+        font-size: 14px !important;
+      }
+
+      .sidebar.collapsed .sidebar-user {
+        justify-content: center;
+      }
+
+      .sidebar.collapsed .sidebar-footer {
+        flex-direction: column;
+        padding-left: 8px;
+        padding-right: 8px;
+      }
 
       /* ── CHAT MAIN ─────────────────────────────────────── */
       .chat-main {
@@ -569,13 +692,13 @@ const FRONTEND_HTML = `
       /* messages area */
       .timeline-scroll {
         flex: 1; overflow-y: auto; overflow-x: hidden;
-        padding: 20px 0;
+        padding: 48px 0 80px;
       }
 
       .timeline {
-        display: flex; flex-direction: column; gap: 2px;
-        max-width: 760px; margin: 0 auto;
-        padding: 0 20px;
+        display: flex; flex-direction: column; gap: 16px;
+        max-width: 720px; margin: 0 auto;
+        padding: 0 40px;
       }
 
       .empty-state {
@@ -909,8 +1032,8 @@ const FRONTEND_HTML = `
       }
 
       .message-card {
-        display: flex; gap: 12px; padding: 10px 10px;
-        border-radius: 14px;
+        display: flex; gap: 16px; padding: 6px 0;
+        border-radius: 20px;
         border: 1px solid transparent;
         transition: border-color .16s, background .16s;
       }
@@ -931,8 +1054,8 @@ const FRONTEND_HTML = `
         border: 1px solid rgba(126,231,135,.22); color: var(--accent); font-size: 14px;
       }
 
-      .msg-body { flex: 1; min-width: 0; }
-      .msg-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px; }
+      .msg-body { flex: 1; min-width: 0; max-width: 680px; }
+      .msg-meta { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
       .msg-role { font-size: 13px; font-weight: 600; }
       .msg-role.user { color: var(--accent-2); }
       .msg-role.assistant { color: var(--accent); }
@@ -942,6 +1065,13 @@ const FRONTEND_HTML = `
         font-size: 14px; line-height: 1.7;
         color: var(--text);
         white-space: pre-wrap; word-break: break-word;
+        padding: 20px 26px;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.07);
+        background: rgba(255,255,255,0.03);
+        max-width: min(680px, 100%);
+        overflow-x: hidden;
+        overflow-wrap: anywhere;
       }
 
       .chat-break-line {
@@ -958,12 +1088,14 @@ const FRONTEND_HTML = `
       .message-content .katex-display { margin: 10px 0; overflow-x: auto; }
 
       .typing-caret {
-        display: inline-block; width: 7px; height: 1em;
-        margin-left: 2px; border-radius: 2px;
-        background: var(--accent); vertical-align: text-bottom;
-        animation: blinkCaret 1s steps(1) infinite;
+        display: inline-block; width: 9px; height: 9px;
+        margin-left: 4px; border-radius: 50%;
+        border: 2px solid var(--accent);
+        border-top-color: transparent;
+        vertical-align: middle;
+        animation: spinCaret 0.45s linear infinite;
       }
-      @keyframes blinkCaret { 0%,45%{opacity:1} 46%,100%{opacity:0} }
+      @keyframes spinCaret { to { transform: rotate(360deg); } }
 
       /* runtime dropdown */
       .runtime-dropdown {
@@ -1013,33 +1145,252 @@ const FRONTEND_HTML = `
       .runtime-entry.narrate { border-left-color: #f0a050; background: rgba(240,160,80,.05); }
       .runtime-entry.supervisor { border-left-color: #8b949e; background: rgba(139,148,158,.08); }
 
-      /* guidance panel */
-      .guidance-inner { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
-      .guidance-question { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: #cdd9e5; line-height: 1.5; }
+      /* dead guidance-shell block removed — guidance is handled via .composer-assist */
+      .guidance-shell-unused {
+        position: relative;
+        margin: 12px 20px 20px;
+        border-radius: 16px;
+        border: 1px solid rgba(109,180,255,0.22);
+        background:
+          linear-gradient(180deg, rgba(16,23,35,0.96), rgba(11,16,24,0.98)),
+          radial-gradient(circle at top right, rgba(109,180,255,0.18), transparent 45%);
+        box-shadow: 0 18px 44px rgba(3,8,15,0.34);
+        overflow: hidden;
+      }
+      .guidance-shell::before {
+        content: "";
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 4px;
+        background: linear-gradient(180deg, #6db4ff, #85e89d);
+      }
+      .guidance-shell.critical::before {
+        background: linear-gradient(180deg, #ff7b72, #f85149);
+      }
+      .guidance-inner { padding: 22px 22px 20px; display: flex; flex-direction: column; gap: 18px; }
+      .guidance-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+      .guidance-title-wrap { display: grid; gap: 8px; }
+      .guidance-title { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #dce9f8; }
+      .guidance-subtitle { font-size: 14px; color: #9fb0c3; line-height: 1.65; max-width: 58ch; }
+      .guidance-badge {
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(109,180,255,0.22);
+        background: rgba(109,180,255,0.12);
+        color: #b9d7ff;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .guidance-badge.critical {
+        border-color: rgba(248,81,73,0.35);
+        background: rgba(248,81,73,0.16);
+        color: #ffd1ce;
+      }
+      .guidance-question {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        padding: 16px 17px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255,255,255,0.03);
+        font-size: 14px;
+        color: #d8e4f0;
+        line-height: 1.7;
+      }
       .guidance-q-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
-      .guidance-input-row { display: flex; gap: 8px; }
-      .guidance-input { flex: 1; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; color: #cdd9e5; font-size: 13px; outline: none; }
-      .guidance-input:focus { border-color: #58a6ff; box-shadow: 0 0 0 2px #58a6ff22; }
-      .guidance-send-btn { background: #1f6feb; border: none; border-radius: 6px; color: #fff; padding: 8px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
-      .guidance-send-btn:hover { background: #388bfd; }
+      .guidance-context {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        color: #95a5b7;
+        font-size: 12px;
+      }
+      .guidance-last {
+        display: grid;
+        gap: 8px;
+        padding: 14px 15px;
+        border-radius: 12px;
+        background: rgba(133,232,157,0.08);
+        border: 1px solid rgba(133,232,157,0.14);
+      }
+      .guidance-last.critical {
+        background: rgba(248,81,73,0.1);
+        border-color: rgba(248,81,73,0.24);
+      }
+      .guidance-last-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #99a9bb; }
+      .guidance-last-text { font-size: 13px; color: #ebf3fb; line-height: 1.55; }
+      .guidance-rules { display: flex; flex-wrap: wrap; gap: 10px; }
+      .guidance-rule {
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.07);
+        color: #b8c5d2;
+        font-size: 12px;
+      }
+      .guidance-quick-row { display: flex; flex-wrap: wrap; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+      .guidance-quick-row::-webkit-scrollbar { height: 0; }
+      .guidance-quick-btn {
+        flex-shrink: 0;
+        padding: 8px 11px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.09);
+        background: rgba(255,255,255,0.04);
+        color: #d4dfeb;
+        font-size: 12px;
+        transition: background .12s, border-color .12s, transform .12s;
+      }
+      .guidance-quick-btn:hover {
+        background: rgba(109,180,255,0.12);
+        border-color: rgba(109,180,255,0.24);
+        transform: translateY(-1px);
+      }
+      .guidance-input-row { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+      .guidance-input-wrap { flex: 1; display: grid; gap: 8px; }
+      .guidance-input {
+        width: 100%;
+        min-height: 118px;
+        resize: vertical;
+        background: rgba(5,10,18,0.78);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 14px 15px;
+        color: #dce9f6;
+        font-size: 14px;
+        line-height: 1.65;
+        outline: none;
+      }
+      .guidance-input:focus { border-color: rgba(109,180,255,0.56); box-shadow: 0 0 0 3px rgba(109,180,255,0.12); }
+      .guidance-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #8ea0b2; font-size: 12px; }
+      .guidance-send-btn {
+        min-height: 52px;
+        min-width: 180px;
+        padding: 0 20px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #6db4ff, #85e89d);
+        color: #071019;
+        font-size: 13px;
+        font-weight: 700;
+        box-shadow: 0 12px 26px rgba(109,180,255,0.2);
+        transition: transform .12s, opacity .12s, box-shadow .12s;
+        align-self: flex-end;
+      }
+      .guidance-send-btn:hover { transform: translateY(-1px); opacity: 0.97; box-shadow: 0 16px 32px rgba(109,180,255,0.26); }
+      .guidance-send-btn.critical {
+        background: linear-gradient(135deg, #ff7b72, #f85149);
+        color: #fff7f7;
+      }
 
       .runtime-head {
         display: flex; justify-content: space-between; align-items: center;
         gap: 8px; margin-bottom: 4px;
         font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
       }
-      .runtime-body { font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; line-height: 1.55; }
+      .runtime-body { font-size: 12px; color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; overflow-x: hidden; line-height: 1.55; }
 
       /* composer */
       .composer {
         border-top: 1px solid var(--border);
-        padding: 14px 20px 16px;
+        padding: 28px 32px 40px;
         background: var(--bg);
         flex-shrink: 0;
       }
 
       .composer-wrap {
-        max-width: 760px; margin: 0 auto;
+        max-width: 720px; margin: 28px auto 0;
+      }
+
+      .composer-assist {
+        margin-bottom: 18px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(109,180,255,0.18);
+        background: linear-gradient(180deg, rgba(18,27,40,0.92), rgba(11,17,25,0.96));
+        display: grid;
+        gap: 12px;
+      }
+      .composer-assist.hidden { display: none !important; }
+      .composer-assist.critical {
+        border-color: rgba(248,81,73,0.28);
+        background: linear-gradient(180deg, rgba(38,18,23,0.94), rgba(20,12,15,0.98));
+      }
+      .composer-assist-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .composer-assist-copy {
+        display: grid;
+        gap: 8px;
+      }
+      .composer-assist-title {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #dce9f8;
+      }
+      .composer-assist-text {
+        font-size: 14px;
+        line-height: 1.7;
+        color: #dbe6f2;
+      }
+      .composer-assist-context {
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        color: #93a5b8;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .composer-assist-badge {
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(109,180,255,0.22);
+        background: rgba(109,180,255,0.12);
+        color: #b9d7ff;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      .composer-assist-badge.critical {
+        border-color: rgba(248,81,73,0.35);
+        background: rgba(248,81,73,0.16);
+        color: #ffd1ce;
+      }
+      .composer-assist-last {
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(133,232,157,0.14);
+        background: rgba(133,232,157,0.08);
+        color: #eaf3fb;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .composer-assist-last.critical {
+        border-color: rgba(248,81,73,0.24);
+        background: rgba(248,81,73,0.1);
+      }
+      .composer-assist-last-label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #99a9bb;
+      }
+      .composer-wrap.guidance-mode .composer-box {
+        border-color: rgba(109,180,255,0.22);
+        box-shadow: 0 20px 44px rgba(3,9,16,0.2);
+      }
+      .composer-wrap.guidance-mode .composer-textarea {
+        min-height: 120px;
       }
 
       .composer-box {
@@ -1054,16 +1405,16 @@ const FRONTEND_HTML = `
       .composer-textarea {
         display: block; width: 100%;
         background: transparent; border: none; outline: none;
-        padding: 11px 14px 4px;
-        font-size: 14px; line-height: 1.6;
+        padding: 18px 20px 8px;
+        font-size: 15px; line-height: 1.65;
         resize: none;
-        min-height: 46px; max-height: 220px;
+        min-height: 64px; max-height: 220px;
         overflow-y: auto; color: var(--text);
       }
 
       .composer-footer {
         display: flex; align-items: center; justify-content: space-between;
-        padding: 6px 10px 6px 14px;
+        padding: 10px 16px 14px 18px;
         gap: 10px;
       }
 
@@ -1075,7 +1426,7 @@ const FRONTEND_HTML = `
 
       .quick-chip {
         white-space: nowrap; flex-shrink: 0;
-        padding: 4px 11px; border-radius: 99px;
+        padding: 8px 13px; border-radius: 99px;
         background: rgba(255,255,255,.04); border: 1px solid var(--border);
         font-size: 12px; color: var(--muted);
         transition: background .12s, color .12s, border-color .12s;
@@ -1084,9 +1435,10 @@ const FRONTEND_HTML = `
 
       .composer-send {
         display: flex; align-items: center; justify-content: center;
-        width: 34px; height: 34px; border-radius: 8px;
+        min-width: 52px; height: 44px; border-radius: 12px;
         background: var(--accent); color: #0d1117;
-        font-size: 16px; flex-shrink: 0;
+        font-size: 14px; font-weight: 700; flex-shrink: 0;
+        padding: 0 16px;
         transition: opacity .15s, transform .12s;
       }
       .composer-send:hover { opacity: .88; transform: scale(1.05); }
@@ -1258,6 +1610,7 @@ const FRONTEND_HTML = `
       @media (max-width: 960px)  { .browser-aside { display: none; } }
       @media (max-width: 700px)  {
         .sidebar { width: 220px; min-width: 220px; }
+        .sidebar.collapsed { width: 70px; min-width: 70px; }
         .chat-header-right { display: none; }
         .plan-grid, .upgrade-footnote { grid-template-columns: 1fr; }
         .upgrade-hero, .plan-card, .upgrade-panel { padding: 20px; }
@@ -1273,7 +1626,7 @@ const FRONTEND_HTML = `
       body.upgrade-route .chat-header,
       body.upgrade-route .composer,
       body.upgrade-route #narrationBanner,
-      body.upgrade-route #guidancePanel {
+      body.upgrade-route #composerAssist {
         display: none !important;
       }
 
@@ -1322,24 +1675,24 @@ const FRONTEND_HTML = `
       <div class="app-layout">
 
         <!-- SIDEBAR -->
-        <nav class="sidebar">
+        <nav class="sidebar" id="sidebarNav">
           <div class="sidebar-header">
             <div class="sidebar-brand">
               <div class="sidebar-logo">🤖</div>
               Puppeterr
             </div>
             <div class="sidebar-actions">
+              <button class="icon-btn sidebar-toggle-btn" id="sidebarToggleBtn" title="Collapse sidebar" aria-label="Collapse sidebar">⇤</button>
               <button class="icon-btn" id="refreshAllBtn" title="Refresh">⟳</button>
             </div>
           </div>
 
           <button class="sidebar-new-chat" id="newChatBtn" type="button">
-            <span class="sidebar-new-chat-icon">✎</span>
-            New chat
+            <span class="sidebar-icon-label"><span class="sidebar-new-chat-icon">✎</span><span class="sidebar-label-text">New chat</span></span>
           </button>
 
           <button class="sidebar-nav-link" id="upgradeViewBtn" type="button">
-            <span class="sidebar-nav-icon"><span>⚡</span><span>Upgrade</span></span>
+            <span class="sidebar-nav-icon sidebar-icon-label"><span>⚡</span><span class="sidebar-label-text">Upgrade</span></span>
             <span class="sidebar-nav-badge">Plans</span>
           </button>
 
@@ -1402,9 +1755,8 @@ const FRONTEND_HTML = `
           <!-- NARRATION BANNER: Live agent commentary -->
           <div id="narrationBanner" style="display:none;opacity:0;transition:opacity 0.4s;margin:0 12px 6px;padding:10px 14px;background:linear-gradient(135deg,#1c2433,#1a2e1a);border:1px solid #2ea04380;border-radius:8px;font-size:13px;color:#7ee787;line-height:1.5;"></div>
 
-          <!-- GUIDANCE PANEL: Agent asks / user guides while task runs -->
-          <div id="guidancePanel" style="display:none;flex-direction:column;margin:0 12px 8px;border:1px solid #58a6ff60;border-radius:8px;background:#0d1117;overflow:hidden;"></div>
             <div class="composer-wrap" id="composerArea">
+              <div id="composerAssist" class="composer-assist hidden"></div>
               <div class="composer-box">
                 <textarea id="composerInput" class="composer-textarea" rows="1"
                   placeholder="Ask a question or assign a browsing task…"></textarea>
@@ -1524,6 +1876,7 @@ const FRONTEND_HTML = `
         runtime: {},
         sending: false,
         eventSource: null,
+        sidebarCollapsed: false,
         humanBridgeWindow: null,
         humanBridgeAutoOpened: false,
         browserUrl: "about:blank",
@@ -1556,6 +1909,7 @@ const FRONTEND_HTML = `
         },
         runtimeSearch: "",
         runtimeDropdownOpen: null,
+        latestGuidance: null,
         initialView: "chat",
         supervisor: {
           decision: "idle",
@@ -1647,8 +2001,11 @@ const FRONTEND_HTML = `
       const timelineScroll = document.getElementById("timelineScroll");
       const timelineTitle = document.getElementById("timelineTitle");
       const timelineSubtitle = document.getElementById("timelineSubtitle");
+      const sidebarNav = document.getElementById("sidebarNav");
+      const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
       const messageCountTag = document.getElementById("messageCountTag");
       const composerInput = document.getElementById("composerInput");
+      const composerAssist = document.getElementById("composerAssist");
       const sendBtn = document.getElementById("sendBtn");
       const browserUrl = document.getElementById("browserUrl");
       const screenshot = document.getElementById("screenshot");
@@ -1686,6 +2043,20 @@ const FRONTEND_HTML = `
       const layoutAscii = document.getElementById("layoutAscii");
       const layoutKey = document.getElementById("layoutKey");
 
+      const DEFAULT_QUICK_PROMPTS = [
+        { label: "Wiki Summary", prompt: "Open Wikipedia and search for potatoes. Summarize the first paragraph." },
+        { label: "Britannica", prompt: "Visit Britannica and search for potato agriculture. Extract key points." },
+        { label: "Compare", prompt: "Compare Wikipedia and Britannica articles on potatoes. List 3 similarities." },
+        { label: "FAO Stats", prompt: "Find FAO global potato production statistics and report latest data." }
+      ];
+
+      const GUIDANCE_QUICK_PROMPTS = [
+        { label: "Stop task", prompt: "stop" },
+        { label: "Follow exactly", prompt: "Follow my last guidance exactly. Do not improvise." },
+        { label: "Different path", prompt: "Try a different route. Do not repeat the last failing action." },
+        { label: "Explain next", prompt: "Explain your next move before taking it." }
+      ];
+
       function resolveInitialViewFromUrl() {
         try {
           const path = String(window.location.pathname || "").toLowerCase();
@@ -1721,6 +2092,9 @@ const FRONTEND_HTML = `
           if (parsed && typeof parsed.runtimeDropdownOpen === "boolean") {
             state.runtimeDropdownOpen = parsed.runtimeDropdownOpen;
           }
+          if (parsed && typeof parsed.sidebarCollapsed === "boolean") {
+            state.sidebarCollapsed = parsed.sidebarCollapsed;
+          }
         } catch {}
       }
 
@@ -1729,7 +2103,8 @@ const FRONTEND_HTML = `
           localStorage.setItem(UI_PREFS_KEY, JSON.stringify({
             runtimeFilters: state.runtimeFilters,
             runtimeSearch: state.runtimeSearch,
-            runtimeDropdownOpen: state.runtimeDropdownOpen
+            runtimeDropdownOpen: state.runtimeDropdownOpen,
+            sidebarCollapsed: state.sidebarCollapsed
           }));
         } catch {}
       }
@@ -1950,9 +2325,9 @@ const FRONTEND_HTML = `
       var TYPING_FX_MAX_AGE_MS = 60 * 1000;
 
       function typingDelayForChar(charValue) {
-        const base = randomBetween(24, 88);
-        if (/[,.;:!?]/.test(charValue || "")) return base + randomBetween(75, 200);
-        if (/\s/.test(charValue || "")) return base + randomBetween(25, 110);
+        const base = randomBetween(8, 22);
+        if (/[,.;:!?]/.test(charValue || "")) return base + randomBetween(18, 48);
+        if (/\s/.test(charValue || "")) return base + randomBetween(8, 24);
         return base;
       }
 
@@ -1966,7 +2341,7 @@ const FRONTEND_HTML = `
             delete state.typingFx.timers[key];
             return;
           }
-          const step = Math.max(1, Math.floor(randomBetween(1, 4)));
+          const step = Math.max(1, Math.floor(randomBetween(3, 8)));
           const nextLength = Math.min(fullText.length, lengthNow + step);
           state.typingFx.lengths[key] = nextLength;
           renderTimeline();
@@ -2123,7 +2498,9 @@ const FRONTEND_HTML = `
         }
         chatList.innerHTML = state.chats.map(function(chat) {
           const active = chat.id === state.selectedChatId ? "active" : "";
+          const iconText = escapeHtml(String(chat.title || "Chat").trim().charAt(0) || "•");
           return '<button class="chat-item ' + active + '" data-chat-id="' + escapeHtml(chat.id) + '">' +
+            '<div class="chat-item-icon" aria-hidden="true">' + iconText + '</div>' +
             '<div class="chat-title-row"><div class="chat-title">' + escapeHtml(chat.title) + '</div><div class="chat-time">' + escapeHtml(prettyTime(chat.updatedAt)) + '</div></div>' +
           '</button>';
         }).join("");
@@ -2143,7 +2520,71 @@ const FRONTEND_HTML = `
       }
 
       function renderSidebarViewState() {
+        if (sidebarNav) sidebarNav.classList.toggle("collapsed", !!state.sidebarCollapsed);
+        if (sidebarToggleBtn) {
+          sidebarToggleBtn.textContent = state.sidebarCollapsed ? "⇥" : "⇤";
+          sidebarToggleBtn.title = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+          sidebarToggleBtn.setAttribute("aria-label", state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar");
+        }
         if (upgradeViewBtn) upgradeViewBtn.classList.toggle("active", state.currentView === "upgrade");
+      }
+
+      function isGuidanceModeActive() {
+        // Guidance is active while the agent is running or when it explicitly
+        // asks the operator a question.
+        return !!(state.sending || state.agentQuestion);
+      }
+
+      function bindQuickActionButtons() {
+        if (!quickActions) return;
+        const chips = quickActions.querySelectorAll("[data-quick-prompt]");
+        Array.from(chips).forEach(function(btn) {
+          btn.onclick = function() {
+            const prompt = btn.getAttribute("data-quick-prompt");
+            if (!prompt) return;
+            const current = composerInput.value.trim();
+            composerInput.value = current ? (current + "\\n" + prompt) : prompt;
+            composerInput.focus();
+            const len = composerInput.value.length;
+            composerInput.selectionStart = len;
+            composerInput.selectionEnd = len;
+            saveDraftForChat(state.selectedChatId, composerInput.value);
+            composerInput.dispatchEvent(new Event("input"));
+          };
+        });
+      }
+
+      function renderQuickActions(items) {
+        if (!quickActions) return;
+        const source = Array.isArray(items) ? items : DEFAULT_QUICK_PROMPTS;
+        quickActions.innerHTML = source.map(function(item) {
+          return '<button class="quick-chip" type="button" data-quick-prompt="' + escapeHtml(item.prompt) + '">' + escapeHtml(item.label) + '</button>';
+        }).join("");
+        bindQuickActionButtons();
+      }
+
+      async function sendGuidanceFromComposer() {
+        const text = composerInput ? composerInput.value.trim() : "";
+        if (!text) return;
+        if (sendBtn) sendBtn.disabled = true;
+        try {
+          await request("/api/guidance", { method: "POST", body: { text: text } });
+          state.latestGuidance = {
+            text: text,
+            priority: /^stop$/i.test(text) ? "critical" : "high",
+            stopRequested: /^(stop|end task|abort|cancel task)$/i.test(text),
+            ts: new Date().toISOString()
+          };
+          composerInput.value = "";
+          composerInput.style.height = "auto";
+          saveDraftForChat(state.selectedChatId, "");
+          renderGuidancePanel();
+          addRuntimeEvent("status", 'Guidance sent: "' + text + '"');
+        } catch (e) {
+          addRuntimeEvent("error", "Guidance failed: " + e.message);
+        } finally {
+          if (sendBtn) sendBtn.disabled = false;
+        }
       }
 
       function renderUpgradeView() {
@@ -2529,6 +2970,8 @@ const FRONTEND_HTML = `
       function renderSupervisorMessage() {
         const container = document.getElementById("supervisorMsgContainer");
         if (!container) return;
+        container.style.display = "none";
+        return;
         const supervisor = state.supervisor || {};
         const decision = String(supervisor.decision || "idle").toLowerCase();
         
@@ -2712,10 +3155,16 @@ const FRONTEND_HTML = `
       }
 
       async function sendMessage() {
+        // Route to guidance API when a browser task is actively running
+        // OR when the agent has explicitly asked the user a question.
+        if (state.sending || state.agentQuestion) {
+          await sendGuidanceFromComposer();
+          return;
+        }
         const text = composerInput.value.trim();
         if (!text || state.sending || !state.currentChat) return;
         state.sending = true;
-        sendBtn.disabled = true;
+        sendBtn.disabled = false;
         renderGuidancePanel();
         composerInput.value = "";
         composerInput.style.height = "auto";
@@ -2755,21 +3204,25 @@ const FRONTEND_HTML = `
                 if (newCount > prevCount || !state.sending) {
                   state.sending = false;
                   sendBtn.disabled = false;
+                  renderGuidancePanel();
                 } else if (attempts > 1) {
                   pollForReply(attempts - 1);
                 } else {
                   state.sending = false;
                   sendBtn.disabled = false;
+                  renderGuidancePanel();
                 }
               }).catch(function() {
                 state.sending = false;
                 sendBtn.disabled = false;
+                renderGuidancePanel();
               });
             }, 2000);
           })(15);
         } catch (error) {
           state.sending = false;
           sendBtn.disabled = false;
+          renderGuidancePanel();
           addRuntimeEvent("error", error.message);
           await loadBootstrap(false);
         }
@@ -2937,6 +3390,9 @@ const FRONTEND_HTML = `
             if (payload.type === "task_done") {
               state.sending = false;
               sendBtn.disabled = false;
+              state.agentQuestion = null;
+              state.latestGuidance = null;
+              renderGuidancePanel();
               state.supervisor = {
                 decision: "idle",
                 score: null,
@@ -2973,17 +3429,19 @@ const FRONTEND_HTML = `
             // GUIDANCE RECEIVED: Confirm user guidance was consumed
             if (payload.type === "guidance_received") {
               state.agentQuestion = null;
+              state.latestGuidance = {
+                text: payload.text || "",
+                priority: payload.priority || "normal",
+                stopRequested: !!payload.stopRequested,
+                ts: payload.ts || new Date().toISOString()
+              };
               renderGuidancePanel();
               addRuntimeEvent("status", payload.msg);
               return;
             }
-            // TASK DONE: Clear active question
-            if (payload.type === "task_done") {
-              state.agentQuestion = null;
-              renderGuidancePanel();
-            }
+            // TASK DONE: already handled in first task_done block above
             if (payload.msg) addRuntimeEvent(payload.type || "status", payload.msg);
-            if (payload.answer) addRuntimeEvent(payload.completed ? "agent" : "error", payload.answer);
+            if (payload.answer) addRuntimeEvent(payload.aborted ? "status" : (payload.completed ? "agent" : "error"), payload.answer);
           } catch (error) {
             addRuntimeEvent("error", error.message);
           }
@@ -3034,34 +3492,53 @@ const FRONTEND_HTML = `
 
       // ─── GUIDANCE PANEL ──────────────────────────────────────────────────────
       function renderGuidancePanel() {
-        var panel = document.getElementById("guidancePanel");
-        if (!panel) return;
-        if (!state.agentQuestion && !state.sending) {
-          panel.style.display = "none";
+        if (!composerArea || !composerInput || !sendBtn || !quickActions || !composerAssist) return;
+        const isActive = isGuidanceModeActive();
+        const q = state.agentQuestion;
+        const latest = state.latestGuidance;
+        const isCritical = !!(latest && latest.stopRequested);
+
+        composerArea.classList.toggle("guidance-mode", isActive);
+
+        if (!isActive) {
+          composerAssist.className = "composer-assist hidden";
+          composerAssist.innerHTML = "";
+          composerInput.placeholder = "Ask a question or assign a browsing task…";
+          sendBtn.textContent = "↑";
+          sendBtn.title = "Send message";
+          sendBtn.setAttribute("aria-label", "Send message");
+          renderQuickActions(DEFAULT_QUICK_PROMPTS);
           return;
         }
-        var q = state.agentQuestion;
-        panel.style.display = "flex";
-        panel.innerHTML =
-          '<div class="guidance-inner">' +
-            (q ? '<div class="guidance-question"><span class="guidance-q-icon">\u2753</span><span>' + escapeHtml(q.question) + '</span></div>' : '<div class="guidance-question"><span class="guidance-q-icon">\uD83E\uDD16</span><span>Agent is working... You can send real-time guidance below.</span></div>') +
-            '<div class="guidance-input-row">' +
-              '<input id="guidanceInput" class="guidance-input" placeholder="Type guidance or answer... (e.g. \\\'try Google instead\\\')" />' +
-              '<button id="guidanceSendBtn" class="guidance-send-btn">Send \u27A4</button>' +
+
+        const title = q ? "Operator Guidance Required" : "Guidance Mode";
+        const text = q
+          ? q.question
+          : "The agent is running. Use this composer to steer it directly, correct its path, or stop it.";
+        const subtitle = q && q.context ? q.context : "Commands here are treated as binding while the live task is active.";
+        const badge = isCritical ? "Critical" : (state.sending ? "Live" : "Recent");
+
+        composerAssist.className = "composer-assist" + (isCritical ? " critical" : "");
+        composerAssist.innerHTML =
+          '<div class="composer-assist-top">' +
+            '<div class="composer-assist-copy">' +
+              '<div class="composer-assist-title">' + escapeHtml(title) + '</div>' +
+              '<div class="composer-assist-text">' + escapeHtml(text) + '</div>' +
+              '<div class="composer-assist-context">' + escapeHtml(subtitle) + '</div>' +
             '</div>' +
-          '</div>';
-        var inp = document.getElementById("guidanceInput");
-        var btn = document.getElementById("guidanceSendBtn");
-        function sendGuidance() {
-          var text = inp ? inp.value.trim() : "";
-          if (!text) return;
-          inp.value = "";
-          request("/api/guidance", { method: "POST", body: { text: text } })
-            .then(function() { addRuntimeEvent("status", "Guidance sent: \\\"" + text + "\\\""); })
-            .catch(function(e) { addRuntimeEvent("error", "Guidance failed: " + e.message); });
-        }
-        if (btn) btn.addEventListener("click", sendGuidance);
-        if (inp) inp.addEventListener("keydown", function(e) { if (e.key === "Enter") sendGuidance(); });
+            '<div class="composer-assist-badge' + (isCritical ? ' critical' : '') + '">' + escapeHtml(badge) + '</div>' +
+          '</div>' +
+          (latest && latest.text
+            ? '<div class="composer-assist-last' + (latest.stopRequested ? ' critical' : '') + '"><span class="composer-assist-last-label">Last directive</span>' + escapeHtml(latest.text) + '</div>'
+            : '');
+
+        composerInput.placeholder = q
+          ? "Answer the agent or redirect the task..."
+          : "Type guidance here... for example: stop, use the search bar, avoid Bing, or explain before acting.";
+        sendBtn.textContent = "Guide";
+        sendBtn.title = "Send guidance";
+        sendBtn.setAttribute("aria-label", "Send guidance");
+        renderQuickActions(GUIDANCE_QUICK_PROMPTS);
       }
 
       async function refreshBrowser() {
@@ -3171,6 +3648,13 @@ const FRONTEND_HTML = `
       document.getElementById("refreshAllBtn").addEventListener("click", function() { loadBootstrap(false); refreshBrowser(); });
       document.getElementById("refreshModelsBtn").addEventListener("click", function() { loadBootstrap(true); });
       document.getElementById("refreshMemoryBtn").addEventListener("click", refreshMemory);
+      if (sidebarToggleBtn) {
+        sidebarToggleBtn.addEventListener("click", function() {
+          state.sidebarCollapsed = !state.sidebarCollapsed;
+          saveUiPrefs();
+          renderSidebarViewState();
+        });
+      }
       if (openHumanBridgeBtn) {
         openHumanBridgeBtn.addEventListener("click", function() {
           openHumanBridgeTab("/human-bridge");
@@ -3186,23 +3670,7 @@ const FRONTEND_HTML = `
         composerInput.style.height = "auto";
         composerInput.style.height = Math.min(composerInput.scrollHeight, 220) + "px";
       });
-      if (quickActions) {
-        const chips = quickActions.querySelectorAll("[data-quick-prompt]");
-        Array.from(chips).forEach(function(btn) {
-          btn.addEventListener("click", function() {
-            const prompt = btn.getAttribute("data-quick-prompt");
-            if (!prompt) return;
-            const current = composerInput.value.trim();
-            composerInput.value = current ? (current + "\\n" + prompt) : prompt;
-            composerInput.focus();
-            const len = composerInput.value.length;
-            composerInput.selectionStart = len;
-            composerInput.selectionEnd = len;
-            saveDraftForChat(state.selectedChatId, composerInput.value);
-            composerInput.dispatchEvent(new Event("input"));
-          });
-        });
-      }
+      renderQuickActions(DEFAULT_QUICK_PROMPTS);
       composerInput.addEventListener("keydown", function(event) {
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
