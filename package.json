@@ -39,7 +39,7 @@
     "@cloudflare/ai": "^1.2.2",
     "@cloudflare/workers-types": "^4.20260629.1",
     "@huggingface/inference": "^4.13.21",
-    "agents": "^0.17.3",
+    "agents": "^0.17.4",
     "base64-js": "^1.5.1",
     "bcryptjs": "^3.0.3",
     "cheerio": "^1.2.0",
