@@ -1,3 +1,4 @@
 .env
 # Big generated/runtime folders
 /.puppeterr-profile
+.strider-frontier.json
