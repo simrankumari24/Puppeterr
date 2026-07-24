@@ -1,0 +1,341 @@
+{
+  "generatedAt": "2026-07-23T20:15:27.169Z",
+  "totalRuns": 310,
+  "completedRuns": 20,
+  "incompleteRuns": 290,
+  "successRate": 0.0645,
+  "diagnosticsCoverage": {
+    "structuredSelfDiagnosisRuns": 292,
+    "missingOrUnparsableRuns": 18
+  },
+  "recurringProblems": [
+    {
+      "type": "other",
+      "count": 286
+    },
+    {
+      "type": "uncertainty_or_fallback",
+      "count": 23
+    },
+    {
+      "type": "navigation_failure",
+      "count": 11
+    },
+    {
+      "type": "selector_error",
+      "count": 7
+    },
+    {
+      "type": "retry_loop",
+      "count": 5
+    },
+    {
+      "type": "timing_drift",
+      "count": 4
+    }
+  ],
+  "bugFindings": [
+    {
+      "id": "concurrency_conflict_agent_busy",
+      "title": "Stress cycle started while previous task still running",
+      "whyLikely": "Harness submitted new run before Puppeterr finished active task, producing immediate 409 busy responses.",
+      "category": "other",
+      "count": 159,
+      "sampleRuns": [
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T18:41:27.427Z",
+          "evidence": "Agent is already running a task"
+        },
+        {
+          "cycle": 2,
+          "timestamp": "2026-07-23T18:41:30.439Z",
+          "evidence": "Agent is already running a task"
+        },
+        {
+          "cycle": 3,
+          "timestamp": "2026-07-23T18:41:33.449Z",
+          "evidence": "Agent is already running a task"
+        }
+      ]
+    },
+    {
+      "id": "transport_fetch_failure",
+      "title": "Transport request failure between harness and Puppeterr",
+      "whyLikely": "Likely server restart/network interruption while stress loop was active.",
+      "category": "other",
+      "count": 127,
+      "sampleRuns": [
+        {
+          "cycle": 2,
+          "timestamp": "2026-07-23T18:26:19.835Z",
+          "evidence": "fetch failed"
+        },
+        {
+          "cycle": 3,
+          "timestamp": "2026-07-23T18:26:22.844Z",
+          "evidence": "fetch failed"
+        },
+        {
+          "cycle": 4,
+          "timestamp": "2026-07-23T18:26:25.863Z",
+          "evidence": "fetch failed"
+        }
+      ]
+    },
+    {
+      "id": "issue_uncertainty_or_fallback",
+      "title": "Fallback/uncertainty path triggered",
+      "whyLikely": "Likely primary strategy failed and fallback engaged; quality depends on fallback relevance.",
+      "category": "uncertainty_or_fallback",
+      "count": 23,
+      "sampleRuns": [
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T18:21:57.124Z",
+          "evidence": "Matched pattern /fallback/i in self_diagnosis"
+        },
+        {
+          "cycle": 5,
+          "timestamp": "2026-07-23T18:29:15.052Z",
+          "evidence": "Matched pattern /fallback/i in self_diagnosis"
+        },
+        {
+          "cycle": 6,
+          "timestamp": "2026-07-23T18:31:24.484Z",
+          "evidence": "Matched pattern /fallback/i in self_diagnosis"
+        }
+      ]
+    },
+    {
+      "id": "missing_self_diagnosis_json",
+      "title": "Self-diagnosis block missing or unparsable",
+      "whyLikely": "Prompt requested structured diagnosis markers, but final response did not emit valid JSON in expected tags.",
+      "category": "other",
+      "count": 18,
+      "sampleRuns": [
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T18:21:57.124Z",
+          "evidence": "selfDiagnosis.summary indicates marker/parse failure"
+        },
+        {
+          "cycle": 5,
+          "timestamp": "2026-07-23T18:29:15.052Z",
+          "evidence": "selfDiagnosis.summary indicates marker/parse failure"
+        },
+        {
+          "cycle": 6,
+          "timestamp": "2026-07-23T18:31:24.484Z",
+          "evidence": "selfDiagnosis.summary indicates marker/parse failure"
+        }
+      ]
+    },
+    {
+      "id": "captcha_false_positive_non_challenge_page",
+      "title": "CAPTCHA detector fires on normal content pages",
+      "whyLikely": "Challenge heuristics likely over-weight text/weak signals and trigger solve flow without a real gate.",
+      "category": "navigation_failure",
+      "count": 13,
+      "sampleRuns": [
+        {
+          "cycle": 7,
+          "timestamp": "2026-07-23T18:32:19.586Z",
+          "evidence": "challenge detected on non-challenge host"
+        },
+        {
+          "cycle": 8,
+          "timestamp": "2026-07-23T18:33:40.307Z",
+          "evidence": "challenge detected on non-challenge host"
+        },
+        {
+          "cycle": 10,
+          "timestamp": "2026-07-23T18:35:14.368Z",
+          "evidence": "challenge detected on non-challenge host"
+        }
+      ]
+    },
+    {
+      "id": "issue_navigation_failure",
+      "title": "Navigation path fails or target page unreachable",
+      "whyLikely": "Likely DNS/domain issue, blocked destination, or planner recovery choosing non-progress navigation.",
+      "category": "navigation_failure",
+      "count": 11,
+      "sampleRuns": [
+        {
+          "cycle": 5,
+          "timestamp": "2026-07-23T18:29:15.052Z",
+          "evidence": "Matched pattern /navigation/i in self_diagnosis"
+        },
+        {
+          "cycle": 9,
+          "timestamp": "2026-07-23T18:34:35.113Z",
+          "evidence": "Matched pattern /navigation/i in self_diagnosis"
+        },
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "goto failed: error"
+        }
+      ]
+    },
+    {
+      "id": "issue_selector_error",
+      "title": "Selector resolution errors during actions",
+      "whyLikely": "Likely stale selectors, hidden elements, or page state changed before interaction completed.",
+      "category": "selector_error",
+      "count": 7,
+      "sampleRuns": [
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "fill selector issue: #APjFqb, textarea[name='q'], input[name='q'], input[type='search']"
+        },
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "scrollIntoView selector issue: #abortcontroller"
+        },
+        {
+          "cycle": 12,
+          "timestamp": "2026-07-23T19:05:10.545Z",
+          "evidence": "fill selector issue: #APjFqb, textarea[name='q'], input[name='q'], input[type='search']"
+        }
+      ]
+    },
+    {
+      "id": "issue_retry_loop",
+      "title": "Agent repeats same action without progress",
+      "whyLikely": "Likely loop detection too weak or recovery policy re-issuing equivalent steps.",
+      "category": "retry_loop",
+      "count": 5,
+      "sampleRuns": [
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "Repeated action signature goto| x4"
+        },
+        {
+          "cycle": 5,
+          "timestamp": "2026-07-23T18:51:54.441Z",
+          "evidence": "Matched pattern /loop/i in final_answer"
+        },
+        {
+          "cycle": 11,
+          "timestamp": "2026-07-23T19:02:39.053Z",
+          "evidence": "Repeated action signature goto| x3"
+        }
+      ]
+    },
+    {
+      "id": "issue_timing_drift",
+      "title": "Timeout/wait sequencing mismatch",
+      "whyLikely": "Likely waits tied to wrong condition (e.g., URL change) or async state settling slower than thresholds.",
+      "category": "timing_drift",
+      "count": 4,
+      "sampleRuns": [
+        {
+          "cycle": 11,
+          "timestamp": "2026-07-23T18:41:22.160Z",
+          "evidence": "Matched pattern /timed out/i in final_answer"
+        },
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "Matched pattern /timed out/i in final_answer"
+        },
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T19:40:41.663Z",
+          "evidence": "Matched pattern /timed out/i in final_answer"
+        }
+      ]
+    },
+    {
+      "id": "invalid_timeout_configuration",
+      "title": "Unrealistic timeout configuration masks actionable timing behavior",
+      "whyLikely": "Timeout was set to an extreme value, so runs appear hung instead of expiring at a practical window.",
+      "category": "timing_drift",
+      "count": 2,
+      "sampleRuns": [
+        {
+          "cycle": 11,
+          "timestamp": "2026-07-23T18:41:22.160Z",
+          "evidence": "Stress Tester timed out after 6e+59ms waiting for Puppeterr to finish this run."
+        },
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "Stress Tester timed out after 6e+59ms waiting for Puppeterr to finish this run."
+        }
+      ]
+    },
+    {
+      "id": "url_change_wait_mismatch",
+      "title": "URL-change wait condition fails after click actions",
+      "whyLikely": "Click succeeded but waited on URL transition that did not occur, leading to repeated non-progress loops.",
+      "category": "timing_drift",
+      "count": 2,
+      "sampleRuns": [
+        {
+          "cycle": 11,
+          "timestamp": "2026-07-23T18:41:22.160Z",
+          "evidence": "waitForURLChange errors without navigation"
+        },
+        {
+          "cycle": 5,
+          "timestamp": "2026-07-23T18:51:54.441Z",
+          "evidence": "waitForURLChange errors without navigation"
+        }
+      ]
+    },
+    {
+      "id": "bad_direct_domain_resolution",
+      "title": "Direct navigation uses invalid or non-resolving domain",
+      "whyLikely": "Heuristic direct target selected an incorrect hostname (e.g., node.js) causing DNS failures.",
+      "category": "navigation_failure",
+      "count": 2,
+      "sampleRuns": [
+        {
+          "cycle": 30,
+          "timestamp": "2026-07-23T18:44:40.652Z",
+          "evidence": "net::ERR_NAME_NOT_RESOLVED"
+        },
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T19:40:41.663Z",
+          "evidence": "net::ERR_NAME_NOT_RESOLVED"
+        }
+      ]
+    }
+  ],
+  "insights": {
+    "topBug": {
+      "id": "concurrency_conflict_agent_busy",
+      "title": "Stress cycle started while previous task still running",
+      "whyLikely": "Harness submitted new run before Puppeterr finished active task, producing immediate 409 busy responses.",
+      "category": "other",
+      "count": 159,
+      "sampleRuns": [
+        {
+          "cycle": 1,
+          "timestamp": "2026-07-23T18:41:27.427Z",
+          "evidence": "Agent is already running a task"
+        },
+        {
+          "cycle": 2,
+          "timestamp": "2026-07-23T18:41:30.439Z",
+          "evidence": "Agent is already running a task"
+        },
+        {
+          "cycle": 3,
+          "timestamp": "2026-07-23T18:41:33.449Z",
+          "evidence": "Agent is already running a task"
+        }
+      ]
+    },
+    "infraFailureSignals": 304,
+    "recommendation": "Address top bugFinding entries first; they include likely causes and sample evidence to reproduce."
+  },
+  "latestRunTimestamp": "2026-07-23T20:04:35.837Z"
+}

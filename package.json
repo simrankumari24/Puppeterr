@@ -19,6 +19,7 @@
     "auto:cli": "node auto-improve/human_cli.js",
     "auto:test": "node auto-improve/test.js",
     "test": "npm run auto:test",
+    "stress:test": "node stress-tester.js",
     "strider": "node strider/index.js",
     "strider:bfs": "node strider/index.js --mode bfs",
     "strider:walk": "node strider/index.js --mode random"

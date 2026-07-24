@@ -9,14 +9,27 @@ const cheerio = require('cheerio');
 
 const FETCH_TIMEOUT = 8000;
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Strider/1.0';
+const STEALTH_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 class FetchCrawler {
-  constructor(frontier) {
+  constructor(frontier, runtimeOptions = {}) {
     this.frontier = frontier;
+    this.runtimeOptions = {
+      stealth: false,
+      antiBot: 'off',
+      ...(runtimeOptions || {}),
+    };
     this.stats = {
       fetched: 0,
       failed: 0,
       linksExtracted: 0,
+    };
+  }
+
+  setRuntimeOptions(options = {}) {
+    this.runtimeOptions = {
+      ...this.runtimeOptions,
+      ...(options || {}),
     };
   }
 
@@ -29,7 +42,7 @@ class FetchCrawler {
     try {
       const response = await fetch(url, {
         signal: controller.signal,
-        headers: { 'User-Agent': USER_AGENT },
+        headers: this.buildHeaders(),
         redirect: 'follow',
       });
 
@@ -79,6 +92,22 @@ class FetchCrawler {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  buildHeaders() {
+    const stealthEnabled = Boolean(this.runtimeOptions?.stealth) || String(this.runtimeOptions?.antiBot || 'off') !== 'off';
+    if (!stealthEnabled) {
+      return { 'User-Agent': USER_AGENT };
+    }
+
+    return {
+      'User-Agent': STEALTH_USER_AGENT,
+      'Accept-Language': 'en-US,en;q=0.9',
+      'DNT': '1',
+      'Upgrade-Insecure-Requests': '1',
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache',
+    };
   }
 
   /**

@@ -63,7 +63,7 @@ function normalizeSnapshotOptions(raw = {}) {
 }
 
 class PuppeteerFallback {
-  constructor(frontier, page = null) {
+  constructor(frontier, page = null, runtimeOptions = {}) {
     this.frontier = frontier;
     this.page = page; // Reuse Puppeterr's page instance if available
     this.stats = {
@@ -74,10 +74,21 @@ class PuppeteerFallback {
       elementMapsExtracted: 0,
       screenshotsCaptured: 0,
       escapeHatches: 0,
+      challengeDetected: 0,
+      challengeSolveAttempts: 0,
+      challengeSolved: 0,
+      challengeFailed: 0,
     };
     this.redirectCount = 0;
     this.lastResponse = null;
     this.snapshotOptions = normalizeSnapshotOptions(DEFAULT_SNAPSHOT_OPTIONS);
+    this.runtimeOptions = {
+      stealth: false,
+      antiBot: 'off',
+      challengeHandling: 'observe',
+      ...(runtimeOptions || {}),
+    };
+    this.stealthPrepared = false;
   }
 
   /**
@@ -85,6 +96,15 @@ class PuppeteerFallback {
    */
   setPage(page) {
     this.page = page;
+    this.stealthPrepared = false;
+  }
+
+  setRuntimeOptions(options = {}) {
+    this.runtimeOptions = {
+      ...this.runtimeOptions,
+      ...(options || {}),
+    };
+    this.stealthPrepared = false;
   }
 
   setSnapshotOptions(options = {}) {
@@ -104,6 +124,8 @@ class PuppeteerFallback {
     }
 
     try {
+      await this.prepareStealthProfile();
+
       // Navigate with timeout
       const startUrl = this.page.url();
       this.lastResponse = await this.page.goto(url, {
@@ -115,6 +137,37 @@ class PuppeteerFallback {
 
       // Give the page a moment to settle after JS hydration.
       await this.page.waitForTimeout(300);
+
+      // Detect and optionally attempt challenge bypass before extraction.
+      const challengeState = await this.detectChallengeSignals();
+      if (challengeState.detected) {
+        this.stats.challengeDetected += 1;
+        const attempted = this.runtimeOptions.challengeHandling === 'attempt';
+        let solved = false;
+
+        if (attempted) {
+          this.stats.challengeSolveAttempts += 1;
+          solved = await this.attemptChallengeBypass();
+          if (solved) {
+            this.stats.challengeSolved += 1;
+          } else {
+            this.stats.challengeFailed += 1;
+          }
+        }
+
+        if (!solved) {
+          this.frontier.markFailed(url, 'challenge_wall');
+          return {
+            success: false,
+            reason: 'challenge_wall',
+            challenge: {
+              ...challengeState,
+              attempted,
+              solved,
+            },
+          };
+        }
+      }
 
       // Simulate a light human-style scroll so lazy-loaded content appears.
       await this.simulateScroll();
@@ -170,6 +223,110 @@ class PuppeteerFallback {
       this.frontier.markFailed(url, reason);
       this.stats.failed++;
       return { success: false, reason, error: error.message };
+    }
+  }
+
+  async prepareStealthProfile() {
+    if (!this.page) return;
+    if (!this.runtimeOptions?.stealth || String(this.runtimeOptions?.antiBot || 'off') === 'off') {
+      return;
+    }
+    if (this.stealthPrepared) return;
+
+    try {
+      await this.page.setExtraHTTPHeaders({
+        'accept-language': 'en-US,en;q=0.9',
+        'dnt': '1',
+        'upgrade-insecure-requests': '1',
+      });
+      await this.page.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+      });
+      this.stealthPrepared = true;
+    } catch {
+      this.stealthPrepared = false;
+    }
+  }
+
+  async detectChallengeSignals() {
+    try {
+      return await this.page.evaluate(() => {
+        const pageText = String(document.body?.innerText || '').toLowerCase();
+        const title = String(document.title || '').toLowerCase();
+        const selectors = [
+          'iframe[src*="turnstile"]',
+          'iframe[title*="captcha" i]',
+          '[id*="captcha" i]',
+          '[class*="captcha" i]',
+          'input[name*="captcha" i]',
+          '.cf-challenge-running',
+          '#challenge-running',
+          '[data-testid*="challenge" i]'
+        ];
+        const matchedSelectors = selectors.filter((selector) => {
+          try {
+            return Boolean(document.querySelector(selector));
+          } catch {
+            return false;
+          }
+        });
+
+        const phrases = [
+          'verify you are human',
+          'checking your browser',
+          'are you human',
+          'security check',
+          'just a moment',
+          'cloudflare',
+          'captcha'
+        ];
+        const phraseHits = phrases.filter((phrase) => pageText.includes(phrase) || title.includes(phrase));
+        const detected = matchedSelectors.length > 0 || phraseHits.length > 0;
+
+        return {
+          detected,
+          matchedSelectors,
+          phraseHits,
+          title: document.title || '',
+          url: window.location.href || '',
+        };
+      });
+    } catch {
+      return { detected: false, matchedSelectors: [], phraseHits: [], title: '', url: '' };
+    }
+  }
+
+  async attemptChallengeBypass() {
+    if (!this.page) return false;
+
+    try {
+      await this.page.waitForTimeout(1800);
+      const checkboxPressed = await this.page.evaluate(() => {
+        const candidates = Array.from(document.querySelectorAll('input[type="checkbox"], button, [role="button"]'));
+        for (const el of candidates) {
+          const text = String(el.textContent || '').toLowerCase();
+          const aria = String(el.getAttribute('aria-label') || '').toLowerCase();
+          if (text.includes('verify') || text.includes('human') || aria.includes('verify')) {
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (checkboxPressed) {
+        await this.page.waitForTimeout(2500);
+      } else {
+        await this.page.waitForTimeout(1600);
+      }
+
+      const after = await this.detectChallengeSignals();
+      return !after.detected;
+    } catch {
+      return false;
     }
   }
 
@@ -595,7 +752,19 @@ class PuppeteerFallback {
    * Reset stats
    */
   resetStats() {
-    this.stats = { puppeteered: 0, failed: 0, linksExtracted: 0, textsExtracted: 0, elementMapsExtracted: 0, screenshotsCaptured: 0, escapeHatches: 0 };
+    this.stats = {
+      puppeteered: 0,
+      failed: 0,
+      linksExtracted: 0,
+      textsExtracted: 0,
+      elementMapsExtracted: 0,
+      screenshotsCaptured: 0,
+      escapeHatches: 0,
+      challengeDetected: 0,
+      challengeSolveAttempts: 0,
+      challengeSolved: 0,
+      challengeFailed: 0,
+    };
   }
 }
 

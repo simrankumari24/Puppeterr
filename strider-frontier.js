@@ -24,7 +24,7 @@ class Frontier {
   constructor() {
     this.queue = [];        // [{ url, domain, depth, status, lastVisited, discoveredFrom }]
     this.visited = new Set();
-    this.inProgress = new Set();
+    this.inProgress = new Map(); // url -> startedAtMs
     this.graph = new Map();  // url -> { url, domain, depth, discoveredFrom, status, lastVisited, failedReason }
     this.blockedDomains = new Set([
       // Malware/dangerous domains (common patterns)
@@ -60,7 +60,7 @@ class Frontier {
         const data = JSON.parse(fs.readFileSync(FRONTIER_FILE, 'utf-8'));
         this.queue = data.queue || [];
         this.visited = new Set(data.visited || []);
-        this.inProgress = new Set();
+        this.inProgress = new Map();
         this.graph = new Map(Array.isArray(data.graph) ? data.graph : []);
         console.log(`🔄 Frontier loaded: ${this.queue.length} queued, ${this.visited.size} visited`);
       }
@@ -211,7 +211,7 @@ class Frontier {
     // Simple FIFO for now; can be optimized later for domain diversity
     const item = this.queue.shift();
     if (item) {
-      this.inProgress.add(item.url);
+      this.inProgress.set(item.url, Date.now());
       const node = this.graph.get(item.url);
       if (node) {
         node.status = 'in_progress';
@@ -279,6 +279,60 @@ class Frontier {
     };
   }
 
+  getStalledInProgress(maxAgeMs = 30000) {
+    const limit = Math.max(1000, Number(maxAgeMs) || 30000);
+    const now = Date.now();
+    const stalled = [];
+    for (const [url, startedAt] of this.inProgress.entries()) {
+      const ageMs = now - Number(startedAt || now);
+      if (ageMs >= limit) {
+        stalled.push({ url, ageMs });
+      }
+    }
+    return stalled.sort((a, b) => b.ageMs - a.ageMs);
+  }
+
+  recoverStaleInProgress(maxAgeMs = 30000) {
+    const stalled = this.getStalledInProgress(maxAgeMs);
+    if (stalled.length === 0) {
+      return { recovered: 0, staleCount: 0, urls: [] };
+    }
+
+    const queuedUrls = new Set(this.queue.map(item => String(item?.url || '')));
+    let recovered = 0;
+    const recoveredUrls = [];
+
+    for (const entry of stalled) {
+      const url = String(entry.url || '');
+      const node = this.graph.get(url);
+      this.inProgress.delete(url);
+
+      if (!node) continue;
+      if (this.visited.has(url)) continue;
+      if (queuedUrls.has(url)) continue;
+
+      node.status = 'queued';
+      this.queue.push({
+        url,
+        domain: node.domain || this.getDomain(url),
+        depth: Number(node.depth || DEFAULT_DEPTH),
+        status: 'pending',
+        lastVisited: node.lastVisited || null,
+        discoveredFrom: node.discoveredFrom || null,
+      });
+
+      queuedUrls.add(url);
+      recovered += 1;
+      recoveredUrls.push(url);
+    }
+
+    return {
+      recovered,
+      staleCount: stalled.length,
+      urls: recoveredUrls,
+    };
+  }
+
   /**
    * Get a random URL from the frontier (for random walk mode)
    */
@@ -287,7 +341,7 @@ class Frontier {
     const idx = Math.floor(Math.random() * this.queue.length);
     const item = this.queue.splice(idx, 1)[0];
     if (item) {
-      this.inProgress.add(item.url);
+      this.inProgress.set(item.url, Date.now());
       const node = this.graph.get(item.url);
       if (node) {
         node.status = 'in_progress';

@@ -1097,6 +1097,22 @@ const FRONTEND_HTML = `
       }
       @keyframes spinCaret { to { transform: rotate(360deg); } }
 
+      .typing-fade-in {
+        color: rgba(255, 255, 255, 1);
+        opacity: 0.5;
+        animation: typingFadeIn 0.2s steps(60, end) forwards;
+      }
+      @keyframes typingFadeIn {
+        from {
+          color: rgba(255, 255, 255, 1);
+          opacity: 0.8;
+        }
+        to {
+          color: rgba(255, 255, 255, 1);
+          opacity: 1;
+        }
+      }
+
       /* runtime dropdown */
       .runtime-dropdown {
         background: rgba(0,0,0,.3);
@@ -1886,7 +1902,8 @@ const FRONTEND_HTML = `
         humanBridgeTimer: null,
         typingFx: {
           lengths: {},
-          timers: {}
+          timers: {},
+          revealedAt: {}
         },
         cursorFx: {
           x: 42,
@@ -2305,6 +2322,7 @@ const FRONTEND_HTML = `
           window.clearTimeout(state.typingFx.timers[key]);
           delete state.typingFx.timers[key];
         });
+        state.typingFx.revealedAt = {};
       }
 
       function ensureUiFx() {
@@ -2323,36 +2341,58 @@ const FRONTEND_HTML = `
       }
 
       var TYPING_FX_MAX_AGE_MS = 60 * 1000;
+      var TYPING_FX_CHAR_DELAY_MS = 40;
+      var TYPING_FX_FADE_MS = 500;
 
-      function typingDelayForChar(charValue) {
-        const base = randomBetween(8, 22);
-        if (/[,.;:!?]/.test(charValue || "")) return base + randomBetween(18, 48);
-        if (/\s/.test(charValue || "")) return base + randomBetween(8, 24);
-        return base;
+      function getTypingChunkSize() {
+        return 20;
+      }
+
+      function renderTypingWithFade(key, renderedContent) {
+        const revealMap = state.typingFx.revealedAt[key] || {};
+        const now = Date.now();
+        let fadeCount = 0;
+        for (let index = renderedContent.length - 1; index >= 0; index -= 1) {
+          const revealedAt = revealMap[index];
+          if (!revealedAt || (now - revealedAt) > TYPING_FX_FADE_MS) break;
+          fadeCount += 1;
+        }
+        if (fadeCount <= 0) {
+          return escapeHtml(applyEmojiShortcodes(renderedContent));
+        }
+        const stablePart = renderedContent.slice(0, renderedContent.length - fadeCount);
+        const fadingPart = renderedContent.slice(renderedContent.length - fadeCount);
+        return escapeHtml(applyEmojiShortcodes(stablePart)) +
+          '<span class="typing-fade-in">' + escapeHtml(applyEmojiShortcodes(fadingPart)) + '</span>';
       }
 
       function startTypingAnimation(key, fullText) {
         if (state.typingFx.timers[key]) return;
         const current = state.typingFx.lengths[key] || 0;
         if (current >= fullText.length) return;
+        if (!state.typingFx.revealedAt[key]) {
+          state.typingFx.revealedAt[key] = {};
+        }
         const tick = function() {
           const lengthNow = state.typingFx.lengths[key] || 0;
           if (lengthNow >= fullText.length) {
             delete state.typingFx.timers[key];
             return;
           }
-          const step = Math.max(1, Math.floor(randomBetween(3, 8)));
-          const nextLength = Math.min(fullText.length, lengthNow + step);
+          const nextLength = Math.min(fullText.length, lengthNow + getTypingChunkSize());
+          const revealedAt = Date.now();
+          for (let index = lengthNow; index < nextLength; index += 1) {
+            state.typingFx.revealedAt[key][index] = revealedAt;
+          }
           state.typingFx.lengths[key] = nextLength;
           renderTimeline();
           if (nextLength >= fullText.length) {
             delete state.typingFx.timers[key];
             return;
           }
-          const nextChar = fullText.charAt(nextLength - 1);
-          state.typingFx.timers[key] = window.setTimeout(tick, typingDelayForChar(nextChar));
+          state.typingFx.timers[key] = window.setTimeout(tick, TYPING_FX_CHAR_DELAY_MS);
         };
-        state.typingFx.timers[key] = window.setTimeout(tick, randomBetween(45, 130));
+        state.typingFx.timers[key] = window.setTimeout(tick, TYPING_FX_CHAR_DELAY_MS);
       }
 
       function escapeHtml(value) {
@@ -2665,6 +2705,11 @@ const FRONTEND_HTML = `
           messageCountTag.style.display = "none";
           return;
         }
+        const shouldAutoScroll = (function() {
+          if (!timelineScroll) return false;
+          const distanceFromBottom = timelineScroll.scrollHeight - timelineScroll.scrollTop - timelineScroll.clientHeight;
+          return distanceFromBottom <= 80;
+        })();
         timelineTitle.textContent = chat.title || "Conversation";
         timelineSubtitle.textContent = prettyTime(chat.updatedAt);
         messageCountTag.style.display = "";
@@ -2688,16 +2733,23 @@ const FRONTEND_HTML = `
               window.clearTimeout(state.typingFx.timers[key]);
               delete state.typingFx.timers[key];
             }
+            if (!shouldAnimateTyping && state.typingFx.revealedAt[key]) {
+              delete state.typingFx.revealedAt[key];
+            }
             const visibleLength = state.typingFx.lengths[key];
             renderedContent = fullContent.slice(0, visibleLength);
             if (shouldAnimateTyping && visibleLength < fullContent.length) {
-              typingCaret = '<span class="typing-caret" aria-hidden="true"></span>';
+              const caretPhaseSeconds = ((Date.now() % 450) / 1000).toFixed(3);
+              typingCaret = '<span class="typing-caret" style="animation-delay:-' + caretPhaseSeconds + 's" aria-hidden="true"></span>';
               startTypingAnimation(key, fullContent);
-              contentHtml = escapeHtml(applyEmojiShortcodes(renderedContent));
+              contentHtml = renderTypingWithFade(key, renderedContent);
             } else {
               if (visibleLength < fullContent.length) {
                 state.typingFx.lengths[key] = fullContent.length;
                 renderedContent = fullContent;
+              }
+              if (state.typingFx.revealedAt[key]) {
+                delete state.typingFx.revealedAt[key];
               }
               contentHtml = renderRichText(renderedContent);
             }
@@ -2828,7 +2880,7 @@ const FRONTEND_HTML = `
           updateChevron();
         }
 
-        if (timelineScroll) timelineScroll.scrollTop = timelineScroll.scrollHeight;
+        if (timelineScroll && shouldAutoScroll) timelineScroll.scrollTop = timelineScroll.scrollHeight;
       }
 
       function selectOptionsForCurrent(value) {
@@ -3154,6 +3206,16 @@ const FRONTEND_HTML = `
         }
       }
 
+      function normalizeBrowserFlagBundleMessage(text) {
+        var raw = String(text || "").trim();
+        if (!raw || raw.charAt(0) === "/") return raw;
+        var lines = raw.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(Boolean);
+        if (!lines.length) return raw;
+        var allFlags = lines.every(function(line) { return line.indexOf("--") === 0; });
+        if (!allFlags) return raw;
+        return "/browser run stress scenario " + lines.join(" ");
+      }
+
       async function sendMessage() {
         // Route to guidance API when a browser task is actively running
         // OR when the agent has explicitly asked the user a question.
@@ -3163,6 +3225,7 @@ const FRONTEND_HTML = `
         }
         const text = composerInput.value.trim();
         if (!text || state.sending || !state.currentChat) return;
+        const outboundText = normalizeBrowserFlagBundleMessage(text);
         state.sending = true;
         sendBtn.disabled = false;
         renderGuidancePanel();
@@ -3172,7 +3235,10 @@ const FRONTEND_HTML = `
         state.currentChat.messages.push({ role: "user", content: text, ts: new Date().toISOString() });
         renderTimeline();
         try {
-          const body = { message: text, chatId: state.currentChat.id };
+          const body = { message: outboundText, chatId: state.currentChat.id };
+          if (outboundText !== text) {
+            addRuntimeEvent("status", "Detected flag bundle and routed as /browser command.");
+          }
           if (state.pendingImage) {
             body.imageB64 = state.pendingImage.original;
             body.annotatedImageB64 = state.pendingImage.annotated || state.pendingImage.original;

@@ -13,12 +13,49 @@
  */
 
 const StriderAgent = require('./strider-agent');
+const path = require('path');
+const { loadSessionState, saveSessionState } = require('./sessionStore');
 
 class StriderIntegration {
   constructor(options = {}) {
     this.strider = null;
     this.broadcast = options.broadcast || (() => {});
     this.page = null;
+    this.sessionPath = options.sessionPath || path.join(__dirname, 'session.json');
+  }
+
+  async persistStriderState(status, patch = {}) {
+    try {
+      const now = new Date().toISOString();
+      const state = await loadSessionState({ localPath: this.sessionPath }) || {};
+      const previous = state.strider && typeof state.strider === 'object' ? state.strider : {};
+
+      const next = {
+        ...previous,
+        ...patch,
+        status,
+        updatedAt: now,
+      };
+
+      if (status === 'running') {
+        next.startedAt = previous.startedAt || now;
+        next.stoppedAt = null;
+      }
+
+      if (status === 'stopped') {
+        next.stoppedAt = now;
+      }
+
+      if (status === 'reset') {
+        next.startedAt = null;
+        next.stoppedAt = now;
+      }
+
+      state.strider = next;
+      await saveSessionState({ localPath: this.sessionPath }, state);
+    } catch (error) {
+      console.warn(`⚠️  Failed to persist Strider state: ${error.message}`);
+    }
   }
 
   /**
@@ -43,6 +80,16 @@ class StriderIntegration {
     const seedUrls = Array.isArray(payload.seedUrls) ? payload.seedUrls : [];
     const workerCount = Math.max(1, Number(payload.workerCount) || 3);
     const randomWalk = Boolean(payload.randomWalk);
+    const stealth = Boolean(payload.stealth) || ['balanced', 'evasive', 'strict'].includes(String(payload.antiBot || '').toLowerCase());
+    const antiBot = String(payload.antiBot || (stealth ? 'evasive' : 'off')).toLowerCase();
+    const challengeHandling = String(payload.challengeHandling || (stealth ? 'attempt' : 'observe')).toLowerCase();
+    const runtimeOptions = {
+      stealth,
+      antiBot,
+      challengeHandling,
+      stallThresholdMs: Number(payload.stallThresholdMs) || undefined,
+      staleInProgressMs: Number(payload.staleInProgressMs) || undefined,
+    };
     const reconPlan = payload.reconPlan && typeof payload.reconPlan === 'object' ? payload.reconPlan : null;
     const snapshotMode = String(payload.snapshotMode || '').trim();
     const snapshotOptions = payload.snapshotOptions && typeof payload.snapshotOptions === 'object'
@@ -53,7 +100,7 @@ class StriderIntegration {
     }
 
     try {
-      this.strider = new StriderAgent({ workerCount, randomWalkMode: randomWalk, reconPlan, snapshotOptions });
+      this.strider = new StriderAgent({ workerCount, randomWalkMode: randomWalk, reconPlan, snapshotOptions, runtimeOptions });
 
       if (this.page) {
         this.strider.setPuppeteerPage(this.page);
@@ -71,8 +118,16 @@ class StriderIntegration {
         seedUrls: seedUrls.length,
         randomWalk,
         reconPlan,
+        runtimeOptions,
         snapshotOptions,
         timestamp: new Date().toISOString(),
+      });
+
+      await this.persistStriderState('running', {
+        workerCount,
+        seedUrls,
+        randomWalk,
+        runtimeOptions,
       });
 
       return {
@@ -81,6 +136,7 @@ class StriderIntegration {
         seedUrls: seedUrls.length,
         randomWalk,
         reconPlan,
+        runtimeOptions,
         snapshotOptions,
       };
     } catch (error) {
@@ -110,6 +166,10 @@ class StriderIntegration {
         timestamp: new Date().toISOString(),
       });
 
+      await this.persistStriderState('stopped', {
+        finalStats,
+      });
+
       return {
         ok: true,
         stats: finalStats,
@@ -131,6 +191,19 @@ class StriderIntegration {
       ok: true,
       running: this.strider.isRunning,
       stats: this.strider.getStats(),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  getHealth() {
+    if (!this.strider) {
+      return { error: 'No active crawler', code: 404 };
+    }
+
+    return {
+      ok: true,
+      running: this.strider.isRunning,
+      health: typeof this.strider.getHealth === 'function' ? this.strider.getHealth() : null,
       timestamp: new Date().toISOString(),
     };
   }
@@ -304,6 +377,11 @@ class StriderIntegration {
         timestamp: new Date().toISOString(),
       });
 
+      await this.persistStriderState(this.strider.isRunning ? 'running' : 'stopped', {
+        mode,
+        randomWalk,
+      });
+
       return {
         ok: true,
         mode,
@@ -331,6 +409,10 @@ class StriderIntegration {
 
       this.broadcast('strider_reset', {
         timestamp: new Date().toISOString(),
+      });
+
+      await this.persistStriderState('reset', {
+        resetAt: new Date().toISOString(),
       });
 
       return { ok: true };

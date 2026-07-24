@@ -85,19 +85,80 @@ const actions = {
   },
 
   type: async ({ page, selector, text }) => withTransientRetry(async () => {
-    const locator = page.locator(selector).first();
-    await locator.waitFor({ state: "visible", timeout: 8000 });
-    await locator.scrollIntoViewIfNeeded().catch(() => {});
-    await locator.click({ timeout: 4000 }).catch(() => {});
-    await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
-    return "typed";
+    const selectorCandidates = String(selector || "")
+      .split(",")
+      .map(item => item.trim())
+      .filter(Boolean);
+    if (!selectorCandidates.length) {
+      throw new Error("type requires a selector");
+    }
+
+    let lastErr = null;
+    for (const candidate of selectorCandidates) {
+      try {
+        const locator = page.locator(candidate).first();
+        await locator.waitFor({ state: "visible", timeout: 3500 });
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+        await locator.click({ timeout: 3000 }).catch(() => {});
+        await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
+        return "typed";
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    // Fallback: try attached state in case visibility checks are flaky.
+    for (const candidate of selectorCandidates) {
+      try {
+        const locator = page.locator(candidate).first();
+        await locator.waitFor({ state: "attached", timeout: 2500 });
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+        await locator.click({ timeout: 2500 }).catch(() => {});
+        await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
+        return "typed";
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    throw lastErr || new Error(`type failed for selector ${selector}`);
   }, { retries: 2, delayMs: 220 }),
   fill: async ({ page, selector, text }) => withTransientRetry(async () => {
-    const locator = page.locator(selector).first();
-    await locator.waitFor({ state: "visible", timeout: 8000 });
-    await locator.scrollIntoViewIfNeeded().catch(() => {});
-    await locator.fill(String(text || ""), { timeout: 12000 });
-    return "filled";
+    const selectorCandidates = String(selector || "")
+      .split(",")
+      .map(item => item.trim())
+      .filter(Boolean);
+    if (!selectorCandidates.length) {
+      throw new Error("fill requires a selector");
+    }
+
+    let lastErr = null;
+    for (const candidate of selectorCandidates) {
+      try {
+        const locator = page.locator(candidate).first();
+        await locator.waitFor({ state: "visible", timeout: 3500 });
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+        await locator.fill(String(text || ""), { timeout: 12000 });
+        return "filled";
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    // Fallback: if visibility is unstable, try attached candidates.
+    for (const candidate of selectorCandidates) {
+      try {
+        const locator = page.locator(candidate).first();
+        await locator.waitFor({ state: "attached", timeout: 2500 });
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+        await locator.fill(String(text || ""), { timeout: 12000 });
+        return "filled";
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    throw lastErr || new Error(`fill failed for selector ${selector}`);
   }, { retries: 2, delayMs: 220 }),
   press: async ({ page, selector, key }) => withTransientRetry(async () => {
     if (!selector) return page.keyboard.press(key);
@@ -152,8 +213,34 @@ const actions = {
   fullPageScreenshot: async ({ page, path }) => page.screenshot({ path, fullPage: true }),
 
   // 📄 CONTENT EXTRACTION
-  getText: async ({ page, selector }) => await page.$eval(selector, el => el.innerText),
-  getHTML: async ({ page, selector }) => await page.$eval(selector, el => el.innerHTML),
+  getText: async ({ page, selector }) => {
+    const fallbackSelector = String(selector || "").trim() || "main, article, [role='main'], body";
+    try {
+      const locator = page.locator(fallbackSelector).first();
+      await locator.waitFor({ state: "attached", timeout: 6000 }).catch(() => {});
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      return await locator.innerText({ timeout: 6000 });
+    } catch {
+      return page.evaluate((sel) => {
+        const node = document.querySelector(sel) || document.querySelector("main") || document.querySelector("article") || document.body;
+        return String(node?.innerText || "");
+      }, fallbackSelector);
+    }
+  },
+  getHTML: async ({ page, selector }) => {
+    const fallbackSelector = String(selector || "").trim() || "main, article, [role='main'], body";
+    try {
+      const locator = page.locator(fallbackSelector).first();
+      await locator.waitFor({ state: "attached", timeout: 6000 }).catch(() => {});
+      await locator.scrollIntoViewIfNeeded().catch(() => {});
+      return await locator.innerHTML({ timeout: 6000 });
+    } catch {
+      return page.evaluate((sel) => {
+        const node = document.querySelector(sel) || document.querySelector("main") || document.querySelector("article") || document.body;
+        return String(node?.innerHTML || "");
+      }, fallbackSelector);
+    }
+  },
   getAttribute: async ({ page, selector, name }) => await page.getAttribute(selector, name),
   getAllText: async ({ page }) => await page.evaluate(() => document.body.innerText),
 
