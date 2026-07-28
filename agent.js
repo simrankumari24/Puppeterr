@@ -571,6 +571,8 @@ let routerTaskTypeFailures = new Map(); // runtime-only model failures by task t
 let plannerModelHealth = new Map(); // modelId -> { emptyStreak, failUntil, lastFailure, lastError, lastSuccessAt }
 let learningLogCache = null;
 let screenshotCaptureQueue = Promise.resolve();
+let visionOperationQueue = Promise.resolve();
+let visionOperationLastCompletedAt = 0;
 let bridgeVisionTimer = null;
 let bridgeVisionInFlight = false;
 let bridgeVisionClearStreak = 0;
@@ -666,6 +668,22 @@ p, span, div, li, h1, h2, h3, h4, h5, h6 {
   animation: none !important;
   transition: none !important;
 }`;
+
+  async function withVisionOperation(label, task) {
+    const run = visionOperationQueue.then(async () => {
+      const pauseMs = Math.max(0, 450 - (Date.now() - visionOperationLastCompletedAt));
+      if (pauseMs > 0) {
+        await sleep(pauseMs);
+      }
+      try {
+        return await task();
+      } finally {
+        visionOperationLastCompletedAt = Date.now();
+      }
+    });
+    visionOperationQueue = run.catch(() => {});
+    return run;
+  }
 
 function queueScreenshotCapture(task) {
   const run = screenshotCaptureQueue.then(task, task);
@@ -1392,7 +1410,7 @@ function parseCsvLowerList(value, fallback = []) {
   return Array.from(new Set(list));
 }
 
-function createChatRecord(title = "New Chat") {
+function createChatRecord(title = ".New Chat.") {
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(),
@@ -1403,6 +1421,70 @@ function createChatRecord(title = "New Chat") {
     modelParams: { temperature: 0.3, routerThinking: ROUTER_THINKING_DEFAULT },
     messages: []
   };
+}
+
+function normalizeChatTitleText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\u0000-\u001f]+/g, "")
+    .slice(0, 60);
+}
+
+function isGenericChatTitle(title) {
+  const normalized = normalizeChatTitleText(title).toLowerCase();
+  return !normalized || normalized === "new chat" || normalized === "welcome chat" || normalized === "conversation";
+}
+
+function titleCaseFragment(value) {
+  return normalizeChatTitleText(value)
+    .split(/\s+/)
+    .map(word => word ? word.charAt(0).toUpperCase() + word.slice(1) : word)
+    .join(" ");
+}
+
+function extractTopicAfterPattern(text, pattern) {
+  const match = String(text || "").match(pattern);
+  if (!match) return null;
+  return normalizeChatTitleText(match[1] || match[2] || "");
+}
+
+function inferChatTitleFromIntent(prompt) {
+  const text = normalizeChatTitleText(prompt);
+  if (text.length < 12) return null;
+  const lower = text.toLowerCase();
+
+  if (/^(wsg|sup|yo|hey|hi|hello|hiya|gm|gn|what'?s up|wassup|wsp|gng|gang)\b/.test(lower)) {
+    return null;
+  }
+
+  const titlePatterns = [
+    { prefix: "Writing about", pattern: /(?:type up|write|draft|compose|create|make|generate|craft|help me write)\s+(?:a|an|the)?\s*(?:short|long)?\s*(?:paragraph|summary|essay|post|email|message|note|brief)?\s*(?:about|on|for|regarding)\s+(.+)/i },
+    { prefix: "Writing about", pattern: /(?:paragraph|summary|essay|post|email|message|note|brief)\s+(?:about|on|for|regarding)\s+(.+)/i },
+    { prefix: "Researching", pattern: /(?:research|look up|find|learn about|investigate|explore)\s+(.+)/i },
+    { prefix: "Summarizing", pattern: /(?:summarize|summarise|explain|describe|analyze|analyse)\s+(.+)/i },
+    { prefix: "Comparing", pattern: /(?:compare|contrast)\s+(.+?)\s+(?:and|vs\.?|versus)\s+(.+)/i, combine: true }
+  ];
+
+  for (const entry of titlePatterns) {
+    const match = text.match(entry.pattern);
+    if (!match) continue;
+    const topic = entry.combine
+      ? normalizeChatTitleText([match[1], match[2]].filter(Boolean).join(" and "))
+      : normalizeChatTitleText(match[1] || match[2] || "");
+    const cleanedTopic = topic.replace(/[.?!]+$/, "").trim();
+    if (!cleanedTopic || cleanedTopic.length < 3) continue;
+    return `${entry.prefix} ${titleCaseFragment(cleanedTopic)}`.slice(0, 60);
+  }
+
+  if (looksLikeTaskGoal(text)) {
+    const topic = extractTopicAfterPattern(text, /(?:about|on|for|regarding|around)\s+(.+)/i);
+    if (topic && topic.length >= 3) {
+      return `Working on ${titleCaseFragment(topic.replace(/[.?!]+$/, ""))}`.slice(0, 60);
+    }
+  }
+
+  return null;
 }
 
 function chatStoreFile(userId) {
@@ -1511,11 +1593,21 @@ function createChat(title = "New Chat", userId) {
   return chat;
 }
 
-function renameChatFromPrompt(chat, prompt) {
-  if (!chat || !prompt) return;
+function maybeAutoTitleChat(chat, prompt) {
+  if (!chat || !prompt || !isGenericChatTitle(chat.title)) return;
   if (String(prompt).trim().startsWith("/")) return;
-  if (chat.title && chat.title !== "New Chat" && chat.title !== "Welcome Chat") return;
-  chat.title = prompt.trim().split(/\s+/).slice(0, 6).join(" ").slice(0, 48) || chat.title;
+  const generated = inferChatTitleFromIntent(prompt);
+  if (generated) {
+    chat.title = generated;
+  }
+}
+
+function renameChatTitle(chat, title) {
+  if (!chat) return false;
+  const nextTitle = normalizeChatTitleText(title);
+  if (!nextTitle) return false;
+  chat.title = nextTitle;
+  return true;
 }
 
 function normalizeCommandKey(value) {
@@ -2004,7 +2096,9 @@ function appendChatMessage(chatId, role, content, meta = {}, userId = currentTas
   const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
-  renameChatFromPrompt(chat, role === "user" ? content : "");
+  if (role === "user") {
+    maybeAutoTitleChat(chat, content);
+  }
   chat.messages.push({ role, content, ts: new Date().toISOString(), ...meta });
   chat.updatedAt = new Date().toISOString();
   store.selectedChatId = chatId;
@@ -2622,71 +2716,75 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
     images: [imageB64]   // ← THE CORRECT FORMAT FOR YOUR CLOUDFLARE ACCOUNT
   }];
 
-  for (let i = 0; i <= 2; i++) {
-    try {
-      const ctrl = new AbortController();
-      const t    = setTimeout(() => ctrl.abort(), 35000);
+  return withVisionOperation("vision", async () => {
+    for (let i = 0; i <= 2; i++) {
+      try {
+        const ctrl = new AbortController();
+        const t    = setTimeout(() => ctrl.abort(), 35000);
 
-      const res  = await fetch(
-        buildCloudflareRunUrl(modelName),
-        {
-          method:  "POST",
-          headers: {
-            "Authorization": `Bearer ${CF_API_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            messages,
-            max_tokens: maxTokens
-          }),
-          signal: ctrl.signal
+        const res  = await fetch(
+          buildCloudflareRunUrl(modelName),
+          {
+            method:  "POST",
+            headers: {
+              "Authorization": `Bearer ${CF_API_TOKEN}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              messages,
+              max_tokens: maxTokens
+            }),
+            signal: ctrl.signal
+          }
+        );
+
+        clearTimeout(t);
+        const data = await res.json();
+
+        if (!data.success) {
+          throw new Error(JSON.stringify(data.errors));
         }
-      );
 
-      clearTimeout(t);
-      const data = await res.json();
+        return data.result.response;
 
-      if (!data.success) {
-        throw new Error(JSON.stringify(data.errors));
+      } catch (err) {
+        if (i === 2) throw err;
+        status(`Vision retry ${i + 1}: ${err.message}`);
+        await sleep(400 + (i * 150));
       }
-
-      return data.result.response;
-
-    } catch (err) {
-      if (i === 2) throw err;
-      status(`Vision retry ${i+1}: ${err.message}`);
-      await sleep(1200 * (i + 1));
     }
-  }
+  });
 }
 
 // ── DETR object-detection wrapper ─────────────────────────────────────────────
 async function callDETR(imageB64) {
   if (!CF_API_TOKEN || !CF_ACCOUNT_ID) return [];
   const buf = Buffer.from(imageB64, "base64");
-  for (let i = 0; i <= 2; i++) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 25000);
-      const res = await fetch(
-        buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
-        {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
-          body: buf,
-          signal: ctrl.signal
-        }
-      );
-      clearTimeout(t);
-      const data = await res.json();
-      if (!data.success) throw new Error(JSON.stringify(data.errors));
-      return Array.isArray(data.result) ? data.result : [];
-    } catch (err) {
-      if (i === 2) { status(`DETR error: ${err.message}`); return []; }
-      await sleep(600 * (i + 1));
+  return withVisionOperation("detr", async () => {
+    for (let i = 0; i <= 2; i++) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 25000);
+        const res = await fetch(
+          buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
+          {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
+            body: buf,
+            signal: ctrl.signal
+          }
+        );
+        clearTimeout(t);
+        const data = await res.json();
+        if (!data.success) throw new Error(JSON.stringify(data.errors));
+        return Array.isArray(data.result) ? data.result : [];
+      } catch (err) {
+        if (i === 2) { status(`DETR error: ${err.message}`); return []; }
+        await sleep(450 + (i * 150));
+      }
     }
-  }
-  return [];
+    return [];
+  });
 }
 
 function buildDETRContext(detections) {
@@ -2702,14 +2800,23 @@ function buildDETRContext(detections) {
 }
 
 async function analyzeUploadedImageWithVision(imageB64, detrContext, userQuery, visionModelId) {
+  const preparedImageB64 = await resizeImageB64ForVision(imageB64, 1024, 1024);
   const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
 
-DETR object detection results:
+You are analyzing a user-uploaded image. Treat it as a standalone image, NOT as a DOM screenshot, browser page, or layout map.
+
+DETR object detection hints (use only as a hint, not as the final answer):
 ${detrContext}
 
-Describe what is visible. Identify which detected objects appear interactive (buttons, links, inputs, checkboxes). Give approximate positions and any text visible on interactive elements. Be concise.`;
+Return a detailed response with these exact sections:
+1. Visible text — extract every readable word or phrase as accurately as possible. Preserve line breaks if useful. If there is no readable text, say so.
+2. Objects and people — list the main objects, people, faces, tools, UI-like objects, signs, and any notable spatial relationships.
+3. Colors — describe the dominant colors, accent colors, and the overall palette. Mention contrast, saturation, and any standout color regions.
+4. Detailed summary — give an extremely detailed description of what the image shows, what it appears to be, and any important visual context.
+
+Be thorough and specific. Do not mention pixel grids, ASCII maps, layout keys, DOM inspection, or browser screenshot analysis unless the image itself clearly contains those artifacts.`;
   try {
-    return await callVisionAI(imageB64, prompt, 500, visionModelId || DEFAULT_MODELS.vision);
+    return await callVisionAI(preparedImageB64, prompt, 1200, visionModelId || DEFAULT_MODELS.vision);
   } catch (err) {
     return `Vision analysis failed: ${err.message}`;
   }
@@ -3561,7 +3668,7 @@ async function answerCasualChat(rawMessage, conversationHistory, models) {
     const raw = await callCFAI(models.reasoner || models.router, [
       {
         role: "system",
-        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. Keep replies concise. Never claim to be GPT-4 or OpenAI unless the configured runtime model is actually from OpenAI. If asked what model you are, state the configured model id exactly. Current normal chat supports this formatting set: Italic: *text* and _text_ Bold: **text** Bold + italic: ***text*** and **_text_** Inline code: code Line breaks: newline becomes <br> Math (KaTeX): $inline$ and $$block$$ Emoji shortcodes: :rocket: :brain: :sparkles: :fire: :check: :x: :warning: :robot: :smile: :party: :idea:. Try to be as friendly and helpful as possible. If the user asks for a greeting, respond with something in the requested style. Users may add internet slang such as: lol, brb, idk, smh, tbh, fyi, imo, lmao, rofl, omg, wtf, btw, irl, afk, and similar. Use these naturally in your responses when appropriate. Match the user’s tone and energy. If the user explicitly requests long content, answer directly and, if needed, continue in multiple parts instead of asking for confirmation first. You must adapt your tone to the user's tone. This is NOT emotional mirroring. You do not express feelings. You only adjust STYLE. Tone rules: - If the user is hype (BRO, OMG, LMAO, all caps), respond with high energy and playful confidence. - If the user is annoyed (sigh, wtf, bruh, limits, frustration), respond with dry humor, light sarcasm, and concise banter. - If the user is bored (ehh, idk, meh), respond with casual, low-energy banter. - If the user is chaotic (drum roll, dramatic buildup, memes), respond with theatrical, humorous exaggeration. - If the user is neutral, respond normally. Roasting rules: - You may lightly roast the user ONLY about easy tasks or obvious solutions. - Roasts must be playful, not personal, not emotional, and not insulting. - Never roast the user’s identity, life, feelings, or situation. Boundaries: - You do not express emotions. - You do not claim to feel angry, sad, happy, etc. - You do not imply dependency or personal attachment. - You only adjust tone, pacing, slang, and style."
+        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them."
       },
       {
         role: "user",
@@ -9671,7 +9778,7 @@ async function handleRequest(req, res) {
       "Access-Control-Allow-Origin": requestOrigin || "*",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Vary": "Origin"
     });
     res.end();
@@ -10104,6 +10211,30 @@ async function handleRequest(req, res) {
       const body = await readJsonBody(req);
       const chat = createChat(body.title || "New Chat", auth?.userId || null);
       sendJson(res, 201, { chat, selectedChatId: chat.id });
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+    }
+    return;
+  }
+
+  if (chatMatch && req.method === "PATCH") {
+    try {
+      const body = await readJsonBody(req);
+      const store = loadChatStore(auth?.userId || null);
+      const chat = store.chats.find(item => item.id === chatMatch[1]);
+      if (!chat) {
+        sendJson(res, 404, { error: "Chat not found" });
+        return;
+      }
+      const updated = renameChatTitle(chat, body.title);
+      if (!updated) {
+        sendJson(res, 400, { error: "Title is required" });
+        return;
+      }
+      chat.updatedAt = new Date().toISOString();
+      saveChatStore(store, auth?.userId || null);
+      sendJson(res, 200, { chat, selectedChatId: store.selectedChatId });
+      broadcast("chat_sync", { chatId: chat.id });
     } catch {
       sendJson(res, 400, { error: "Invalid request body" });
     }
@@ -10679,10 +10810,25 @@ async function handleRequest(req, res) {
 
     await runCloudflareStartupPreflight();
 
-    console.log("🚀 Launching browser...");
+    const browserHeadlessEnv = String(process.env.PUPPETERR_HEADLESS || "").trim().toLowerCase();
+    let browserHeadless;
+    if (browserHeadlessEnv === "false" || browserHeadlessEnv === "0" || browserHeadlessEnv === "no") {
+      browserHeadless = false;
+    } else if (browserHeadlessEnv === "true" || browserHeadlessEnv === "1" || browserHeadlessEnv === "yes") {
+      browserHeadless = true;
+    } else {
+      browserHeadless = !process.env.DISPLAY;
+    }
+
+    if (!process.env.DISPLAY && browserHeadless === false) {
+      console.warn("⚠️  No DISPLAY detected; forcing headless browser mode.");
+      browserHeadless = true;
+    }
+
+    console.log(`🚀 Launching browser (headless=${browserHeadless})...`);
     fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
     context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      headless: false,
+      headless: browserHeadless,
       executablePath: require("playwright").chromium.executablePath(),
       userAgent: FINGERPRINT_USER_AGENT,
       locale: FINGERPRINT_LOCALE,
