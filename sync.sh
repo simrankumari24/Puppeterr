@@ -7,10 +7,10 @@ trap '' TERM     # ignore kill
 trap '' HUP      # ignore terminal close
 trap '' QUIT     # ignore Ctrl+\
 trap '' TSTP     # ignore Ctrl+Z
-# Hard-code the branch you care about
-DEFAULT_BRANCH="Master"
+# Hard-code the branch you want to sync with
+DEFAULT_BRANCH="MAIN"
 
-echo "Using remote branch: $DEFAULT_BRANCH"
+echo "Using remote branch: $DEFAULT_BRANCH, if you want to change it, edit the script, at line 10-12."
 
 # Safe fetch (never kills script)
 git fetch origin >/dev/null 2>&1 || echo "[warn] fetch failed, continuing..."
@@ -115,7 +115,7 @@ while true; do
         view)      view_file "$arg" ;;
         pull)      pull_file "$arg" ;;
         pull-all)  pull_all ;;
-        exit)      echo "Goodbye."; break ;;
+        exit)      echo "Goodbye, $USER"; break ;;
         *)         echo "[error] Unknown command." ;;
     esac
 done

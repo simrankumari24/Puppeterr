@@ -19,6 +19,7 @@
     "auto:cli": "node auto-improve/human_cli.js",
     "auto:test": "node auto-improve/test.js",
     "test": "npm run auto:test",
+    "stress:test": "node stress-tester.js",
     "strider": "node strider/index.js",
     "strider:bfs": "node strider/index.js --mode bfs",
     "strider:walk": "node strider/index.js --mode random"
@@ -37,7 +38,7 @@
   "homepage": "https://github.com/simrankumari24/Puppeterr#readme",
   "dependencies": {
     "@cloudflare/ai": "^1.2.2",
-    "@cloudflare/workers-types": "^4.20260629.1",
+    "@cloudflare/workers-types": "^5.20260724.1",
     "@huggingface/inference": "^4.13.21",
     "agents": "^0.17.3",
     "base64-js": "^1.5.1",
@@ -48,9 +49,9 @@
     "mustache": "^4.2.0",
     "nodemailer": "^9.0.3",
     "pinch-api": "^0.1.0",
-    "playwright": "^1.61.0",
+    "playwright": "^1.62.0",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "undici": "^8.5.0"
+    "undici": "^8.9.0"
   }
 }

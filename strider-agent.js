@@ -13,6 +13,9 @@ const DEFAULT_WORKER_COUNT = 3;
 const LOOP_INTERVAL = 100; // ms between dequeue attempts
 const STATS_INTERVAL = 30000; // ms between stat reports
 const SAVE_INTERVAL = 5000; // ms between frontier autosaves
+const STALL_CHECK_INTERVAL = 3000;
+const DEFAULT_STALL_THRESHOLD_MS = 30000;
+const DEFAULT_STALE_INPROGRESS_MS = 25000;
 const SNAPSHOT_HISTORY_LIMIT = 25;
 const DEFAULT_RECON_LIMIT = 500;
 const DEFAULT_RECON_DISCOVERY_LIMIT = 750;
@@ -23,8 +26,9 @@ const DEFAULT_RECON_MIN_RELEVANT = 8;
 class StriderAgent {
   constructor(options = {}) {
     this.frontier = new Frontier();
-    this.fetchCrawler = new FetchCrawler(this.frontier);
-    this.puppeteerFallback = new PuppeteerFallback(this.frontier);
+    this.runtimeOptions = this.normalizeRuntimeOptions(options.runtimeOptions || options);
+    this.fetchCrawler = new FetchCrawler(this.frontier, this.runtimeOptions);
+    this.puppeteerFallback = new PuppeteerFallback(this.frontier, null, this.runtimeOptions);
     this.puppeteerFallback.setSnapshotOptions(options.snapshotOptions || {});
 
     this.workerCount = options.workerCount || DEFAULT_WORKER_COUNT;
@@ -33,6 +37,7 @@ class StriderAgent {
     this.randomWalkMode = options.randomWalkMode || false;
     this.sharedPageMode = false;
     this.saveInterval = null;
+    this.stallInterval = null;
     this.latestSnapshots = [];
     this.reconPlan = this.normalizeReconPlan(options.reconPlan || null);
 
@@ -41,6 +46,27 @@ class StriderAgent {
       totalUrls: 0,
       totalAttempts: 0,
       totalTime: 0,
+      lastProgressAt: null,
+      lastAttemptAt: null,
+      stallEvents: 0,
+      recoveries: 0,
+      lastStallAt: null,
+      lastStallReason: null,
+      workers: {},
+    };
+  }
+
+  normalizeRuntimeOptions(raw = {}) {
+    const stealthEnabled = Boolean(raw.stealth) || ['evasive', 'strict'].includes(String(raw.antiBot || '').toLowerCase());
+    const antiBot = String(raw.antiBot || (stealthEnabled ? 'evasive' : 'off')).toLowerCase();
+    return {
+      stealth: stealthEnabled,
+      antiBot: ['off', 'balanced', 'evasive', 'strict'].includes(antiBot) ? antiBot : 'off',
+      challengeHandling: String(raw.challengeHandling || (stealthEnabled ? 'attempt' : 'observe')).toLowerCase() === 'disabled'
+        ? 'disabled'
+        : (String(raw.challengeHandling || (stealthEnabled ? 'attempt' : 'observe')).toLowerCase() === 'attempt' ? 'attempt' : 'observe'),
+      stallThresholdMs: Math.max(5000, Number(raw.stallThresholdMs) || DEFAULT_STALL_THRESHOLD_MS),
+      staleInProgressMs: Math.max(5000, Number(raw.staleInProgressMs) || DEFAULT_STALE_INPROGRESS_MS),
     };
   }
 
@@ -50,6 +76,16 @@ class StriderAgent {
   setPuppeteerPage(page) {
     this.sharedPageMode = !!page;
     this.puppeteerFallback.setPage(page);
+  }
+
+  setRuntimeOptions(options = {}) {
+    this.runtimeOptions = this.normalizeRuntimeOptions(options);
+    if (typeof this.fetchCrawler.setRuntimeOptions === 'function') {
+      this.fetchCrawler.setRuntimeOptions(this.runtimeOptions);
+    }
+    if (typeof this.puppeteerFallback.setRuntimeOptions === 'function') {
+      this.puppeteerFallback.setRuntimeOptions(this.runtimeOptions);
+    }
   }
 
   setSnapshotOptions(options = {}) {
@@ -123,6 +159,8 @@ class StriderAgent {
 
     this.isRunning = true;
     this.globalStats.startTime = Date.now();
+    this.globalStats.lastProgressAt = Date.now();
+    this.globalStats.lastAttemptAt = Date.now();
     this.applyReconPlan(seedUrls);
 
     // Enqueue seed URLs
@@ -157,6 +195,11 @@ class StriderAgent {
       this.frontier.save();
     }, SAVE_INTERVAL);
 
+    // Watchdog: recover stale in-progress URLs and surface stalls.
+    this.stallInterval = setInterval(() => {
+      this.checkForStallAndRecover();
+    }, STALL_CHECK_INTERVAL);
+
     // Wait for workers (they run indefinitely)
     await Promise.all(this.workers);
   }
@@ -166,6 +209,14 @@ class StriderAgent {
    */
   async runWorker(workerId) {
     console.log(`👷 Worker ${workerId} started`);
+    this.globalStats.workers[workerId] = {
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      lastUrl: '',
+      lastResult: 'idle',
+      processed: 0,
+      errors: 0,
+    };
 
     while (this.isRunning) {
       try {
@@ -180,12 +231,18 @@ class StriderAgent {
           : this.frontier.dequeue();
 
         if (!item) {
+          this.updateWorkerHeartbeat(workerId, { lastResult: 'idle' });
           // Queue is empty, wait a bit then try again
           await this.sleep(LOOP_INTERVAL);
           continue;
         }
 
         this.globalStats.totalAttempts++;
+        this.globalStats.lastAttemptAt = Date.now();
+        this.updateWorkerHeartbeat(workerId, {
+          lastUrl: item.url,
+          lastResult: 'processing',
+        });
         const shouldLogBatch = this.globalStats.totalAttempts % 500 === 0;
 
         if (shouldLogBatch) {
@@ -224,7 +281,9 @@ class StriderAgent {
             console.log(`  ✅ Success: ${result.linksFound} links (${result.linksEnqueued} enqueued), text ${textLength} chars, elements ${elementCount}, screenshot ${screenshotState}`);
           }
           this.globalStats.totalUrls++;
+          this.markProgress(workerId, 'success');
         } else {
+          this.markProgress(workerId, result.reason || 'failed');
           if (shouldLogBatch) {
             console.log(`  ❌ Failed: ${result.reason}`);
           }
@@ -233,12 +292,79 @@ class StriderAgent {
         // Brief pause to avoid hammering
         await this.sleep(LOOP_INTERVAL);
       } catch (error) {
+        this.updateWorkerHeartbeat(workerId, { lastResult: 'error' });
+        if (this.globalStats.workers[workerId]) {
+          this.globalStats.workers[workerId].errors = Number(this.globalStats.workers[workerId].errors || 0) + 1;
+        }
         console.error(`  ⚠️  Worker ${workerId} error: ${error.message}`);
         await this.sleep(LOOP_INTERVAL);
       }
     }
 
+    this.updateWorkerHeartbeat(workerId, { lastResult: 'stopped' });
     console.log(`👷 Worker ${workerId} stopped`);
+  }
+
+  updateWorkerHeartbeat(workerId, patch = {}) {
+    const existing = this.globalStats.workers[workerId] || {
+      startedAt: new Date().toISOString(),
+      lastHeartbeatAt: new Date().toISOString(),
+      lastUrl: '',
+      lastResult: 'idle',
+      processed: 0,
+      errors: 0,
+    };
+
+    this.globalStats.workers[workerId] = {
+      ...existing,
+      ...patch,
+      lastHeartbeatAt: new Date().toISOString(),
+    };
+  }
+
+  markProgress(workerId, result = 'unknown') {
+    this.globalStats.lastProgressAt = Date.now();
+    const worker = this.globalStats.workers[workerId];
+    if (!worker) return;
+    worker.processed = Number(worker.processed || 0) + 1;
+    worker.lastResult = String(result || 'unknown');
+    worker.lastHeartbeatAt = new Date().toISOString();
+  }
+
+  checkForStallAndRecover() {
+    if (!this.isRunning) return;
+
+    const now = Date.now();
+    const noProgressMs = now - Number(this.globalStats.lastProgressAt || this.globalStats.startTime || now);
+    const frontierStats = this.frontier.getStats();
+    const stalled = typeof this.frontier.getStalledInProgress === 'function'
+      ? this.frontier.getStalledInProgress(this.runtimeOptions.staleInProgressMs)
+      : [];
+
+    const shouldRecoverInProgress = stalled.length > 0;
+    const shouldFlagNoProgress = frontierStats.queueSize > 0 && noProgressMs >= this.runtimeOptions.stallThresholdMs;
+
+    if (!shouldRecoverInProgress && !shouldFlagNoProgress) {
+      return;
+    }
+
+    this.globalStats.stallEvents += 1;
+    this.globalStats.lastStallAt = new Date().toISOString();
+
+    if (shouldRecoverInProgress && typeof this.frontier.recoverStaleInProgress === 'function') {
+      const recovery = this.frontier.recoverStaleInProgress(this.runtimeOptions.staleInProgressMs);
+      if (recovery.recovered > 0) {
+        this.globalStats.recoveries += recovery.recovered;
+        this.globalStats.lastStallReason = `Recovered ${recovery.recovered} stale in-progress URLs`;
+        console.warn(`🧯 Stall recovery: requeued ${recovery.recovered}/${recovery.staleCount} stale URLs`);
+        return;
+      }
+    }
+
+    if (shouldFlagNoProgress) {
+      this.globalStats.lastStallReason = `No progress for ${Math.round(noProgressMs / 1000)}s with ${frontierStats.queueSize} queued`;
+      console.warn(`⚠️  Stall watchdog: ${this.globalStats.lastStallReason}`);
+    }
   }
 
   /**
@@ -256,6 +382,11 @@ class StriderAgent {
     if (this.saveInterval) {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
+    }
+
+    if (this.stallInterval) {
+      clearInterval(this.stallInterval);
+      this.stallInterval = null;
     }
 
     if (this.workers.length) {
@@ -276,6 +407,7 @@ class StriderAgent {
     const crawlerStats = this.fetchCrawler.getStats();
     const fallbackStats = this.puppeteerFallback.getStats();
     const elapsed = ((Date.now() - this.globalStats.startTime) / 1000).toFixed(1);
+    const noProgressSeconds = Math.round((Date.now() - Number(this.globalStats.lastProgressAt || this.globalStats.startTime || Date.now())) / 1000);
 
     console.log(
       `\n📊 Strider Stats (${elapsed}s)\n` +
@@ -288,8 +420,45 @@ class StriderAgent {
       `${fallbackStats.escapeHatches} escapes\n` +
       `  Snapshots: ${this.latestSnapshots.length} recent (latest metadata in stats)\n` +
       `  Recon: ${this.reconPlan ? `${this.getRelevantNodeCount()} relevant / ${frontierStats.totalDiscovered} discovered` : 'disabled'}\n` +
-      `  Links extracted: ${crawlerStats.linksExtracted + fallbackStats.linksExtracted}\n`
+      `  Links extracted: ${crawlerStats.linksExtracted + fallbackStats.linksExtracted}\n` +
+      `  Watchdog: ${this.globalStats.stallEvents} stalls, ${this.globalStats.recoveries} recoveries, ${noProgressSeconds}s since progress\n`
     );
+  }
+
+  getHealth() {
+    const now = Date.now();
+    const startedAt = Number(this.globalStats.startTime || now);
+    const lastProgressAtMs = Number(this.globalStats.lastProgressAt || startedAt);
+    const lastAttemptAtMs = Number(this.globalStats.lastAttemptAt || startedAt);
+    const stalled = typeof this.frontier.getStalledInProgress === 'function'
+      ? this.frontier.getStalledInProgress(this.runtimeOptions.staleInProgressMs)
+      : [];
+
+    const workers = Object.entries(this.globalStats.workers || {}).map(([id, state]) => {
+      const heartbeatMs = state?.lastHeartbeatAt ? Date.parse(state.lastHeartbeatAt) : startedAt;
+      const heartbeatAgeMs = Number.isFinite(heartbeatMs) ? (now - heartbeatMs) : null;
+      return {
+        workerId: Number(id),
+        ...state,
+        heartbeatAgeMs,
+      };
+    }).sort((a, b) => a.workerId - b.workerId);
+
+    return {
+      running: this.isRunning,
+      runtime: this.runtimeOptions,
+      elapsedMs: Math.max(0, now - startedAt),
+      lastProgressAt: new Date(lastProgressAtMs).toISOString(),
+      lastAttemptAt: new Date(lastAttemptAtMs).toISOString(),
+      noProgressMs: Math.max(0, now - lastProgressAtMs),
+      stallEvents: Number(this.globalStats.stallEvents || 0),
+      recoveries: Number(this.globalStats.recoveries || 0),
+      lastStallAt: this.globalStats.lastStallAt,
+      lastStallReason: this.globalStats.lastStallReason,
+      staleInProgress: stalled,
+      workers,
+      frontier: this.frontier.getStats(),
+    };
   }
 
   computeRelevance(url, metadata = {}) {
@@ -509,12 +678,16 @@ class StriderAgent {
         : null,
       latestSnapshot,
       recentSnapshots: this.latestSnapshots.slice(0, 5),
+      runtime: this.runtimeOptions,
+      health: this.getHealth(),
       global: {
         running: this.isRunning,
         elapsed: this.globalStats.startTime
           ? (Date.now() - this.globalStats.startTime) / 1000
           : 0,
         totalUrlsProcessed: this.globalStats.totalUrls,
+        stallEvents: Number(this.globalStats.stallEvents || 0),
+        recoveries: Number(this.globalStats.recoveries || 0),
       },
     };
   }

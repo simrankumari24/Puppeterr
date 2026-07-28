@@ -81,6 +81,33 @@ function createStriderPanel() {
         </label>
       </div>
 
+      <!-- Runtime Controls -->
+      <div style="margin-bottom: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; color: #aaa; cursor: pointer; font-size: 12px;">
+          <input id="striderStealth" type="checkbox" />
+          <span>🕶 Stealth</span>
+        </label>
+        <label style="display: flex; flex-direction: column; gap: 4px; color: #aaa; font-size: 12px;">
+          <span>Anti-bot profile</span>
+          <select id="striderAntiBot" style="background: #0f1419; color: #ddd; border: 1px solid #333; border-radius: 4px; padding: 5px;">
+            <option value="off">off</option>
+            <option value="balanced">balanced</option>
+            <option value="evasive" selected>evasive</option>
+            <option value="strict">strict</option>
+          </select>
+        </label>
+      </div>
+      <div style="margin-bottom: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+        <label style="display: flex; flex-direction: column; gap: 4px; color: #aaa; font-size: 12px;">
+          <span>Stall threshold (ms)</span>
+          <input id="striderStallThreshold" type="number" min="5000" step="1000" value="30000" style="background: #0f1419; color: #ddd; border: 1px solid #333; border-radius: 4px; padding: 5px;" />
+        </label>
+        <label style="display: flex; flex-direction: column; gap: 4px; color: #aaa; font-size: 12px;">
+          <span>Stale in-progress (ms)</span>
+          <input id="striderStaleInProgress" type="number" min="5000" step="1000" value="25000" style="background: #0f1419; color: #ddd; border: 1px solid #333; border-radius: 4px; padding: 5px;" />
+        </label>
+      </div>
+
       <!-- Control Buttons -->
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px;">
         <button 
@@ -144,6 +171,13 @@ function createStriderPanel() {
         <div style="margin-top: 8px; border-top: 1px solid #333; padding-top: 8px;">
           <div>Puppeteered: <span id="statPuppeteered">0</span></div>
           <div>Escapes: <span id="statEscapes">0</span></div>
+          <div>Challenges: <span id="statChallenges">0</span></div>
+          <div>Solved: <span id="statChallengesSolved">0</span></div>
+        </div>
+        <div style="margin-top: 8px; border-top: 1px solid #333; padding-top: 8px;">
+          <div>No Progress: <span id="statNoProgress">0</span>s</div>
+          <div>Stall Events: <span id="statStalls">0</span></div>
+          <div>Recoveries: <span id="statRecoveries">0</span></div>
         </div>
       </div>
     </div>
@@ -158,6 +192,10 @@ function initStriderUI() {
   const workerCountInput = document.getElementById('striderWorkerCount');
   const workerCountDisplay = document.getElementById('workerCountDisplay');
   const randomWalkCheckbox = document.getElementById('striderRandomWalk');
+  const stealthCheckbox = document.getElementById('striderStealth');
+  const antiBotSelect = document.getElementById('striderAntiBot');
+  const stallThresholdInput = document.getElementById('striderStallThreshold');
+  const staleInProgressInput = document.getElementById('striderStaleInProgress');
 
   let isRunning = false;
   let statsInterval = null;
@@ -181,12 +219,25 @@ function initStriderUI() {
 
     const workerCount = parseInt(workerCountInput.value);
     const randomWalk = randomWalkCheckbox.checked;
+    const stealth = stealthCheckbox.checked;
+    const antiBot = String(antiBotSelect.value || 'off');
+    const stallThresholdMs = parseInt(stallThresholdInput.value, 10) || 30000;
+    const staleInProgressMs = parseInt(staleInProgressInput.value, 10) || 25000;
 
     try {
       const response = await fetch('/api/strider/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seedUrls, workerCount, randomWalk }),
+        body: JSON.stringify({
+          seedUrls,
+          workerCount,
+          randomWalk,
+          stealth,
+          antiBot,
+          challengeHandling: stealth ? 'attempt' : 'observe',
+          stallThresholdMs,
+          staleInProgressMs,
+        }),
       });
 
       const result = await response.json();
@@ -238,7 +289,7 @@ function initStriderUI() {
       const result = await response.json();
 
       if (result.ok && result.running) {
-        const { frontier, fetch: fetchStats, puppeteer } = result.stats;
+        const { frontier, fetch: fetchStats, puppeteer, global, health } = result.stats;
 
         document.getElementById('statQueued').textContent = frontier.queueSize;
         document.getElementById('statVisited').textContent = frontier.visitedCount;
@@ -248,6 +299,11 @@ function initStriderUI() {
         document.getElementById('statLinks').textContent = fetchStats.linksExtracted;
         document.getElementById('statPuppeteered').textContent = puppeteer.puppeteered;
         document.getElementById('statEscapes').textContent = puppeteer.escapeHatches;
+        document.getElementById('statChallenges').textContent = puppeteer.challengeDetected || 0;
+        document.getElementById('statChallengesSolved').textContent = puppeteer.challengeSolved || 0;
+        document.getElementById('statNoProgress').textContent = Math.round((health?.noProgressMs || 0) / 1000);
+        document.getElementById('statStalls').textContent = global?.stallEvents || 0;
+        document.getElementById('statRecoveries').textContent = global?.recoveries || 0;
       } else {
         // Crawler stopped
         isRunning = false;

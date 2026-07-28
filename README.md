@@ -165,6 +165,39 @@ Notes:
 - For faster dumps, keep `includeText` and `includeAttributes` false.
 - You can pass `url` to navigate first, then extract.
 
+## Stress Tester
+
+`stress-tester.js` is an autonomous harness that continuously evaluates Puppeterr by generating randomized multi-step browser tasks, sending them through the real `/api/chat` path, waiting for completion, and logging both Puppeterr's final answer and its self-diagnosis.
+
+Run it with:
+
+```PUPPETERR_EMAIL=admin PUPPETERR_PASSWORD=puppeterr npm run stress:test
+```
+
+Optional environment variables:
+
+- `PUPPETERR_BASE_URL` default `http://127.0.0.1:3000`
+- `PUPPETERR_AUTH_COOKIE` optional session cookie value for authenticated instances
+- `PUPPETERR_BEARER_TOKEN` optional bearer token if your deployment accepts it
+- `PUPPETERR_EMAIL` and `PUPPETERR_PASSWORD` optional login credentials for `/auth/login`
+- `CF_API_TOKEN` and `CF_ACCOUNT_ID` to generate unpredictable prompts via the current reasoner model in Cloudflare
+- `STRESS_TESTER_MAX_RUNS` default infinite
+- `STRESS_TESTER_TIMEOUT_MS` default `480000`
+- `STRESS_TESTER_BETWEEN_RUN_MS` default `3000`
+- `STRESS_TESTER_LOG_FILE` default `./stress-tester-runs.jsonl`
+- `STRESS_TESTER_SUMMARY_FILE` default `./stress-tester-summary.json`
+- `PUPPETERR_LOG_FILE` default `./log.json`
+
+Each run records:
+
+- Puppeterr's final answer
+- Puppeterr's self-diagnosis JSON
+- detected issue categories
+- timestamp
+- cumulative recurring-problem summary
+
+Stop it manually with `Ctrl+C`.
+
 
 ### Very helpful manual
 
@@ -188,7 +221,7 @@ sudo apt-get install -y \
 "
 
 to run the program itself you need to run this cmd
-"npm start
+"npm start"
 if its not 'INSTALLED' do this
 
 "
@@ -199,6 +232,9 @@ sudo apt-get install -y xvfb
 if you have leftover processes from the agent... do this
 
 "
+echo ":INFO: Clearing leftover processes"
+sleep 2 && echo "..."
+echo '...' && sleep 2 && echo '...'
 pkill -9 node       || true
 pkill -9 chrome     || true
 pkill -9 chromium   || true
@@ -210,6 +246,8 @@ pkill -f vite       || true
 pkill -f webpack    || true
 rm -f .puppeterr-profile/SingletonLock \
       .puppeterr-profile/SingletonSocket 2>/dev/null || true
+echo '...' && sleep 0.5
+echo ':INFO: Leftover processes have been cleared'
 "
 
 if you see this error 

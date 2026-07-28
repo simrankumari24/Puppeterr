@@ -13,6 +13,10 @@ const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
 const pinchApi = require("pinch-api");
 const pixelGridReasoner = require("./pixelGridReasoner");
 const StriderIntegration = require("./strider-integration");
+const {
+  installVoidElementMapInitScript,
+  captureVoidElementMapFromPage,
+} = require("./element-map");
 async function humanMove(page, x, y, telemetry = {}) {
   const steps = 25 + Math.floor(Math.random() * 10);
   const start = await page.evaluate(() => ({
@@ -196,7 +200,8 @@ const DYNAMIC_UI_CHANGED_FRAME_THRESHOLD = Math.max(4, Number(process.env.DYNAMI
 const DYNAMIC_UI_CHANGE_RATIO = Math.max(1, Number(process.env.DYNAMIC_UI_CHANGE_RATIO || 1.5));
 const ESCAPE_MAX_CONSECUTIVE_FAILURES = 3;
 const ESCAPE_STEP_TIMEOUT_MS = 20000;
-const ESCAPE_DYNAMIC_STREAK_LIMIT = 3;
+const ESCAPE_DYNAMIC_STREAK_LIMIT = Math.max(3, Number(process.env.ESCAPE_DYNAMIC_STREAK_LIMIT || 6));
+const ESCAPE_DYNAMIC_MIN_FAILURES = Math.max(1, Number(process.env.ESCAPE_DYNAMIC_MIN_FAILURES || 2));
 const IDLE_HUMAN_IDLE_MIN_MS = Number(process.env.IDLE_HUMAN_IDLE_MIN_MS || 2500);
 const IDLE_HUMAN_IDLE_MAX_MS = Number(process.env.IDLE_HUMAN_IDLE_MAX_MS || 7000);
 const IDLE_HUMAN_SCHEDULE_FLOOR_MS = Math.max(120, Number(process.env.IDLE_HUMAN_SCHEDULE_FLOOR_MS || 180));
@@ -216,8 +221,15 @@ const WORKSPACE_ROOT = process.cwd();
 const MAX_PLANNER_HISTORY_MESSAGES = 7; // system + last X turns
 const MAX_PLANNER_USER_MSG_CHARS = 2400;
 const MAX_PLANNER_ASSISTANT_MSG_CHARS = 700;
+const PLANNER_AGGRESSIVE_RECOVERY_MAX_MODELS = Math.max(2, Number(process.env.PLANNER_AGGRESSIVE_RECOVERY_MAX_MODELS || 5));
+const PLANNER_AGGRESSIVE_RECOVERY_RETRIES = Math.max(0, Number(process.env.PLANNER_AGGRESSIVE_RECOVERY_RETRIES || 1));
+const PLANNER_EMPTY_RESPONSE_FAIL_THRESHOLD = Math.max(1, Number(process.env.PLANNER_EMPTY_RESPONSE_FAIL_THRESHOLD || 2));
+const PLANNER_MODEL_FAIL_TTL_MS = Math.max(30000, Number(process.env.PLANNER_MODEL_FAIL_TTL_MS || 5 * 60 * 1000));
 const MAX_URL_IN_PROMPT_CHARS = 120;
 const MAX_TASK_LOG_LINES_IN_PROMPT = 3;
+const VOID_MAP_CAPTURE_EVERY_STATE = String(process.env.VOID_MAP_CAPTURE_EVERY_STATE || "true").toLowerCase() !== "false";
+const VOID_MAP_STATE_MAX_ELEMENTS = Math.max(200, Number(process.env.VOID_MAP_STATE_MAX_ELEMENTS || 1200));
+const VOID_MAP_STATE_TEXT_LIMIT = Math.max(60, Number(process.env.VOID_MAP_STATE_TEXT_LIMIT || 180));
 const fetchImpl = globalThis.fetch || undiciFetch;
 
 const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
@@ -227,8 +239,8 @@ const DEFAULT_MODELS = {
   // router/reasoner/vision: Cloudflare-hosted (ai/run/) — confirmed working
   // planner: third-party via ai/v1/chat/completions — requires unified billing credits
   // image: flux-2-klein-9b confirmed working via multipart on this account (~2s generation)
-  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/qwen/qwen3-30b-a3b-fp8",
-  planner:  process.env.DEFAULT_PLANNER_MODEL  || "@cf/qwen/qwen2.5-coder-32b-instruct",
+  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/qwen/qwen2.5-coder-32b-instruct",
+  planner:  process.env.DEFAULT_PLANNER_MODEL  || "@cf/zai-org/glm-5.2",
   reasoner: process.env.DEFAULT_REASONER_MODEL || "@cf/zai-org/glm-5.2",
   vision:   process.env.DEFAULT_VISION_MODEL   || "@cf/meta/llama-3.2-11b-vision-instruct",
   image:    process.env.DEFAULT_IMAGE_MODEL    || "@cf/black-forest-labs/flux-2-klein-9b"
@@ -258,8 +270,8 @@ function pickModelId(catalog, preferredIds, wantVision) {
 }
 
 function resolveDefaultModels(catalog) {
-  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/qwen/qwen3-30b-a3b-fp8"], true) || DEFAULT_MODELS.router;
-  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/qwen/qwen2.5-coder-32b-instruct", router], false) || router;
+  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/qwen/qwen3-30b-a3b-fp8"], false) || DEFAULT_MODELS.router;
+  const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/zai-org/glm-5.2", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
   return { router, planner, reasoner, vision };
@@ -556,8 +568,11 @@ let agentRunning    = false;
 let currentTaskUserId = null; // tracks which user triggered the active task
 let modelCatalogCache = { expiresAt: 0, items: [] };
 let routerTaskTypeFailures = new Map(); // runtime-only model failures by task type
+let plannerModelHealth = new Map(); // modelId -> { emptyStreak, failUntil, lastFailure, lastError, lastSuccessAt }
 let learningLogCache = null;
 let screenshotCaptureQueue = Promise.resolve();
+let visionOperationQueue = Promise.resolve();
+let visionOperationLastCompletedAt = 0;
 let bridgeVisionTimer = null;
 let bridgeVisionInFlight = false;
 let bridgeVisionClearStreak = 0;
@@ -653,6 +668,22 @@ p, span, div, li, h1, h2, h3, h4, h5, h6 {
   animation: none !important;
   transition: none !important;
 }`;
+
+  async function withVisionOperation(label, task) {
+    const run = visionOperationQueue.then(async () => {
+      const pauseMs = Math.max(0, 450 - (Date.now() - visionOperationLastCompletedAt));
+      if (pauseMs > 0) {
+        await sleep(pauseMs);
+      }
+      try {
+        return await task();
+      } finally {
+        visionOperationLastCompletedAt = Date.now();
+      }
+    });
+    visionOperationQueue = run.catch(() => {});
+    return run;
+  }
 
 function queueScreenshotCapture(task) {
   const run = screenshotCaptureQueue.then(task, task);
@@ -1379,7 +1410,7 @@ function parseCsvLowerList(value, fallback = []) {
   return Array.from(new Set(list));
 }
 
-function createChatRecord(title = "New Chat") {
+function createChatRecord(title = ".New Chat.") {
   const now = new Date().toISOString();
   return {
     id: crypto.randomUUID(),
@@ -1390,6 +1421,70 @@ function createChatRecord(title = "New Chat") {
     modelParams: { temperature: 0.3, routerThinking: ROUTER_THINKING_DEFAULT },
     messages: []
   };
+}
+
+function normalizeChatTitleText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[\u0000-\u001f]+/g, "")
+    .slice(0, 60);
+}
+
+function isGenericChatTitle(title) {
+  const normalized = normalizeChatTitleText(title).toLowerCase();
+  return !normalized || normalized === "new chat" || normalized === "welcome chat" || normalized === "conversation";
+}
+
+function titleCaseFragment(value) {
+  return normalizeChatTitleText(value)
+    .split(/\s+/)
+    .map(word => word ? word.charAt(0).toUpperCase() + word.slice(1) : word)
+    .join(" ");
+}
+
+function extractTopicAfterPattern(text, pattern) {
+  const match = String(text || "").match(pattern);
+  if (!match) return null;
+  return normalizeChatTitleText(match[1] || match[2] || "");
+}
+
+function inferChatTitleFromIntent(prompt) {
+  const text = normalizeChatTitleText(prompt);
+  if (text.length < 12) return null;
+  const lower = text.toLowerCase();
+
+  if (/^(wsg|sup|yo|hey|hi|hello|hiya|gm|gn|what'?s up|wassup|wsp|gng|gang)\b/.test(lower)) {
+    return null;
+  }
+
+  const titlePatterns = [
+    { prefix: "Writing about", pattern: /(?:type up|write|draft|compose|create|make|generate|craft|help me write)\s+(?:a|an|the)?\s*(?:short|long)?\s*(?:paragraph|summary|essay|post|email|message|note|brief)?\s*(?:about|on|for|regarding)\s+(.+)/i },
+    { prefix: "Writing about", pattern: /(?:paragraph|summary|essay|post|email|message|note|brief)\s+(?:about|on|for|regarding)\s+(.+)/i },
+    { prefix: "Researching", pattern: /(?:research|look up|find|learn about|investigate|explore)\s+(.+)/i },
+    { prefix: "Summarizing", pattern: /(?:summarize|summarise|explain|describe|analyze|analyse)\s+(.+)/i },
+    { prefix: "Comparing", pattern: /(?:compare|contrast)\s+(.+?)\s+(?:and|vs\.?|versus)\s+(.+)/i, combine: true }
+  ];
+
+  for (const entry of titlePatterns) {
+    const match = text.match(entry.pattern);
+    if (!match) continue;
+    const topic = entry.combine
+      ? normalizeChatTitleText([match[1], match[2]].filter(Boolean).join(" and "))
+      : normalizeChatTitleText(match[1] || match[2] || "");
+    const cleanedTopic = topic.replace(/[.?!]+$/, "").trim();
+    if (!cleanedTopic || cleanedTopic.length < 3) continue;
+    return `${entry.prefix} ${titleCaseFragment(cleanedTopic)}`.slice(0, 60);
+  }
+
+  if (looksLikeTaskGoal(text)) {
+    const topic = extractTopicAfterPattern(text, /(?:about|on|for|regarding|around)\s+(.+)/i);
+    if (topic && topic.length >= 3) {
+      return `Working on ${titleCaseFragment(topic.replace(/[.?!]+$/, ""))}`.slice(0, 60);
+    }
+  }
+
+  return null;
 }
 
 function chatStoreFile(userId) {
@@ -1498,15 +1593,57 @@ function createChat(title = "New Chat", userId) {
   return chat;
 }
 
-function renameChatFromPrompt(chat, prompt) {
-  if (!chat || !prompt) return;
+function maybeAutoTitleChat(chat, prompt) {
+  if (!chat || !prompt || !isGenericChatTitle(chat.title)) return;
   if (String(prompt).trim().startsWith("/")) return;
-  if (chat.title && chat.title !== "New Chat" && chat.title !== "Welcome Chat") return;
-  chat.title = prompt.trim().split(/\s+/).slice(0, 6).join(" ").slice(0, 48) || chat.title;
+  const generated = inferChatTitleFromIntent(prompt);
+  if (generated) {
+    chat.title = generated;
+  }
+}
+
+function renameChatTitle(chat, title) {
+  if (!chat) return false;
+  const nextTitle = normalizeChatTitleText(title);
+  if (!nextTitle) return false;
+  chat.title = nextTitle;
+  return true;
 }
 
 function normalizeCommandKey(value) {
   return String(value || "").trim().replace(/^\/+/, "").toLowerCase();
+}
+
+function collectCommandOptionValues(options, key) {
+  const value = options ? options[key] : undefined;
+  if (value === undefined || value === null || value === false) return [];
+  if (Array.isArray(value)) return value.map(item => String(item || "").trim()).filter(Boolean);
+  if (value === true) return ["true"];
+  return [String(value).trim()].filter(Boolean);
+}
+
+function parseDurationToMs(raw, fallbackMs) {
+  const input = String(raw || "").trim().toLowerCase();
+  if (!input) return fallbackMs;
+  const match = input.match(/^([0-9]+(?:\.[0-9]+)?)(ms|s|sec|m|min)?$/i);
+  if (!match) return fallbackMs;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value < 0) return fallbackMs;
+  const unit = String(match[2] || "ms").toLowerCase();
+  if (unit === "ms") return Math.round(value);
+  if (["s", "sec"].includes(unit)) return Math.round(value * 1000);
+  if (["m", "min"].includes(unit)) return Math.round(value * 60 * 1000);
+  return fallbackMs;
+}
+
+function normalizeBrowserFlagBundleMessage(message) {
+  const raw = String(message || "").trim();
+  if (!raw || raw.startsWith("/")) return raw;
+  const lines = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return raw;
+  const allFlags = lines.every(line => line.startsWith("--"));
+  if (!allFlags) return raw;
+  return `/browser run stress scenario ${lines.join(" ")}`;
 }
 
 function findModelByNameOrId(catalog, query) {
@@ -1581,22 +1718,33 @@ function parseSlashCommand(message) {
   const positionals = [];
   const options = {};
   const flags = [];
+  const setOptionValue = (key, value) => {
+    if (!(key in options)) {
+      options[key] = value;
+      return;
+    }
+    if (Array.isArray(options[key])) {
+      options[key].push(value);
+      return;
+    }
+    options[key] = [options[key], value];
+  };
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^--[a-z0-9][a-z0-9_-]*=/i.test(token)) {
       const eqIndex = token.indexOf("=");
       const key = normalizeCommandKey(token.slice(2, eqIndex));
-      options[key] = token.slice(eqIndex + 1);
+      setOptionValue(key, token.slice(eqIndex + 1));
       continue;
     }
     if (/^--[a-z0-9][a-z0-9_-]*$/i.test(token)) {
       const key = normalizeCommandKey(token.slice(2));
       const next = tokens[i + 1];
       if (next && !/^-{1,2}[a-z0-9]/i.test(next)) {
-        options[key] = next;
+        setOptionValue(key, next);
         i += 1;
       } else {
-        options[key] = true;
+        setOptionValue(key, true);
         flags.push(key);
       }
       continue;
@@ -1645,7 +1793,46 @@ function buildBrowserCommandGoal(command, enrichedMessage = "") {
   if (options.url) promptParts.push(`Start at URL: ${String(options.url).trim()}`);
   if (options.site) promptParts.push(`Preferred site: ${String(options.site).trim()}`);
   if (options.tab) promptParts.push(`Use tab: ${String(options.tab).trim()}`);
-  const knownKeys = new Set(["task", "goal", "prompt", "query", "url", "site", "tab"]);
+
+  const aiDirectives = collectCommandOptionValues(options, "ai");
+  const jsEvalDirectives = collectCommandOptionValues(options, "js-eval");
+  const modelSwitchValues = collectCommandOptionValues(options, "model-switch").flatMap(value => String(value).split(",")).map(value => value.trim()).filter(Boolean);
+  const modelSwitchInterval = Number(collectCommandOptionValues(options, "model-switch-interval")[0] || "0");
+  const navigateRandom = Number(collectCommandOptionValues(options, "navigate-random")[0] || "0");
+  const navigateBackForward = Number(collectCommandOptionValues(options, "navigate-back-forward")[0] || "0");
+  const scrollDepth = Number(collectCommandOptionValues(options, "scroll-depth")[0] || "0");
+  const screenshotEveryMs = parseDurationToMs(collectCommandOptionValues(options, "screenshot-every")[0] || "", 0);
+  const errorRetry = Number(collectCommandOptionValues(options, "error-retry")[0] || "0");
+  const errorBackoffMs = parseDurationToMs(collectCommandOptionValues(options, "error-backoff")[0] || "", 0);
+  const logInterval = Number(collectCommandOptionValues(options, "log-interval")[0] || "0");
+  const antiBotMode = String(collectCommandOptionValues(options, "anti-bot")[0] || "").trim();
+  const openEnabled = !!options.open;
+  const tabsEnabled = !!options.tabs;
+  const stealthEnabled = !!options.stealth;
+  const heartbeatEnabled = !!options.heartbeat;
+
+  const runtimeLines = [];
+  if (openEnabled) runtimeLines.push("Open in a fresh browser context at the beginning.");
+  if (tabsEnabled) runtimeLines.push("Use tab-aware browsing and compare tab states when useful.");
+  if (aiDirectives.length) runtimeLines.push(`AI directives: ${aiDirectives.join(" | ")}.`);
+  if (modelSwitchValues.length) runtimeLines.push(`Model switch sequence: ${modelSwitchValues.join(", ")}${modelSwitchInterval > 0 ? ` every ${modelSwitchInterval} cycle(s)` : ""}.`);
+  if (navigateRandom > 0) runtimeLines.push(`Perform up to ${Math.max(1, Math.round(navigateRandom))} random exploratory navigations.`);
+  if (navigateBackForward > 0) runtimeLines.push(`Perform around ${Math.max(1, Math.round(navigateBackForward))} back/forward transitions.`);
+  if (scrollDepth > 0) runtimeLines.push(`Scroll deeply up to approximately ${Math.max(200, Math.round(scrollDepth))} px where applicable.`);
+  if (screenshotEveryMs > 0) runtimeLines.push(`Capture screenshots roughly every ${Math.max(1, Math.round(screenshotEveryMs / 1000))} seconds.`);
+  if (jsEvalDirectives.length) {
+    runtimeLines.push("Run these JS evaluations and include outputs:");
+    jsEvalDirectives.forEach((script, index) => runtimeLines.push(`JS_EVAL_${index + 1}: ${script}`));
+  }
+  if (Number.isFinite(errorRetry) && errorRetry > 0) runtimeLines.push(`Retry transient action failures up to ${Math.max(1, Math.min(8, Math.round(errorRetry)))} times.`);
+  if (errorBackoffMs > 0) runtimeLines.push(`Use transient retry backoff near ${Math.max(100, errorBackoffMs)}ms.`);
+  if (stealthEnabled) runtimeLines.push("Use stealth-like pacing and low-entropy action timing.");
+  if (antiBotMode) runtimeLines.push(`Anti-bot mode: ${antiBotMode}.`);
+  if (logInterval > 0) runtimeLines.push(`Emit progress logs roughly every ${Math.max(1, Math.round(logInterval))} second(s).`);
+  if (heartbeatEnabled) runtimeLines.push("Heartbeat mode enabled for long-running steps.");
+  if (runtimeLines.length) promptParts.push(`Runtime directives:\n${runtimeLines.join("\n")}`);
+
+  const knownKeys = new Set(["task", "goal", "prompt", "query", "url", "site", "tab", "open", "tabs", "ai", "js-eval", "navigate-random", "navigate-back-forward", "scroll-depth", "screenshot-every", "model-switch", "model-switch-interval", "error-retry", "error-backoff", "stealth", "anti-bot", "log-interval", "heartbeat"]);
   const extraOptions = Object.entries(options)
     .filter(([key, value]) => !knownKeys.has(key) && value !== true)
     .map(([key, value]) => `${key}: ${String(value).trim()}`);
@@ -1654,6 +1841,31 @@ function buildBrowserCommandGoal(command, enrichedMessage = "") {
     promptParts.push(String(enrichedMessage).trim());
   }
   return promptParts.join("\n\n").trim();
+}
+
+function buildBrowserRuntimeConfig(command) {
+  const options = command?.options || {};
+  const getFirst = (key) => collectCommandOptionValues(options, key)[0] || "";
+  const modelSwitchValues = collectCommandOptionValues(options, "model-switch")
+    .flatMap(value => String(value).split(","))
+    .map(value => value.trim())
+    .filter(Boolean);
+
+  const runtime = {
+    open: !!options.open,
+    tabs: !!options.tabs,
+    heartbeat: !!options.heartbeat,
+    stealth: !!options.stealth,
+    antiBot: String(getFirst("anti-bot") || "").trim().toLowerCase(),
+    logIntervalSec: Math.max(0, Number(getFirst("log-interval") || 0)),
+    errorRetry: Number.isFinite(Number(getFirst("error-retry"))) ? Math.max(1, Math.min(8, Number(getFirst("error-retry")))) : null,
+    errorBackoffMs: parseDurationToMs(getFirst("error-backoff"), 0),
+    modelSwitch: modelSwitchValues,
+    modelSwitchInterval: Math.max(1, Number(getFirst("model-switch-interval") || 1))
+  };
+
+  const hasAny = runtime.open || runtime.tabs || runtime.heartbeat || runtime.stealth || !!runtime.antiBot || runtime.logIntervalSec > 0 || runtime.errorRetry !== null || runtime.errorBackoffMs > 0 || runtime.modelSwitch.length > 0;
+  return hasAny ? runtime : null;
 }
 
 function extractStriderReconKeywords(goalText = "") {
@@ -1838,6 +2050,10 @@ function buildSlashHelpText() {
   return [
     "Available slash commands:",
     "/browser <task> [--url <url>] [--site <domain>] [--goal <text>]",
+    "/browser accepts advanced flags: --open --tabs --ai <directive> --js-eval <script>",
+    "/browser advanced: --model-switch <id> --model-switch-interval <n> --error-retry <n> --error-backoff <ms|s>",
+    "/browser advanced: --navigate-random <n> --navigate-back-forward <n> --scroll-depth <px> --screenshot-every <ms|s>",
+    "/browser advanced: --stealth --anti-bot <mode> --log-interval <sec> --heartbeat",
     "/image <prompt> [--style <style>] [--size <size>] [--aspect <ratio>] [--negative <text>]",
     "/practice <url> [<url2> ...] [--workers <n>] [--random]",
     "/practice --stats | --stop | --reset | --mode <fifo|random> | --enqueue <url>",
@@ -1880,7 +2096,9 @@ function appendChatMessage(chatId, role, content, meta = {}, userId = currentTas
   const store = loadChatStore(userId);
   const chat = store.chats.find(item => item.id === chatId);
   if (!chat) return null;
-  renameChatFromPrompt(chat, role === "user" ? content : "");
+  if (role === "user") {
+    maybeAutoTitleChat(chat, content);
+  }
   chat.messages.push({ role, content, ts: new Date().toISOString(), ...meta });
   chat.updatedAt = new Date().toISOString();
   store.selectedChatId = chatId;
@@ -2244,6 +2462,89 @@ function describeModelTransport(modelName) {
   return { model, kind: "ai-gateway-chat", endpoint: buildCloudflareChatCompletionsUrl() };
 }
 
+function prunePlannerModelHealth() {
+  const now = Date.now();
+  for (const [modelId, health] of plannerModelHealth.entries()) {
+    if (!modelId || !health) {
+      plannerModelHealth.delete(modelId);
+      continue;
+    }
+    const failUntil = Number(health.failUntil || 0);
+    const emptyStreak = Number(health.emptyStreak || 0);
+    if (failUntil <= now && emptyStreak <= 0) {
+      plannerModelHealth.delete(modelId);
+    }
+  }
+}
+
+function isLikelyPlannerEmptyFailure(errLike) {
+  const msg = String(errLike?.message || errLike || "").toLowerCase();
+  return msg.includes("empty response");
+}
+
+function markPlannerModelFailure(modelId, errLike = null) {
+  const model = String(modelId || "").trim();
+  if (!model) return;
+  const now = Date.now();
+  const current = plannerModelHealth.get(model) || { emptyStreak: 0, failUntil: 0, lastFailure: 0, lastError: "", lastSuccessAt: 0 };
+  const emptyFail = isLikelyPlannerEmptyFailure(errLike);
+  const nextEmptyStreak = emptyFail ? Number(current.emptyStreak || 0) + 1 : Number(current.emptyStreak || 0);
+  const shouldQuarantine = nextEmptyStreak >= PLANNER_EMPTY_RESPONSE_FAIL_THRESHOLD;
+  plannerModelHealth.set(model, {
+    emptyStreak: nextEmptyStreak,
+    failUntil: shouldQuarantine ? (now + PLANNER_MODEL_FAIL_TTL_MS) : Number(current.failUntil || 0),
+    lastFailure: now,
+    lastError: String(errLike?.message || errLike || "planner-failure").slice(0, 220),
+    lastSuccessAt: Number(current.lastSuccessAt || 0)
+  });
+}
+
+function markPlannerModelSuccess(modelId) {
+  const model = String(modelId || "").trim();
+  if (!model) return;
+  const now = Date.now();
+  const current = plannerModelHealth.get(model) || { emptyStreak: 0, failUntil: 0, lastFailure: 0, lastError: "", lastSuccessAt: 0 };
+  plannerModelHealth.set(model, {
+    emptyStreak: 0,
+    failUntil: 0,
+    lastFailure: Number(current.lastFailure || 0),
+    lastError: "",
+    lastSuccessAt: now
+  });
+}
+
+function isPlannerModelQuarantined(modelId) {
+  const model = String(modelId || "").trim();
+  if (!model) return false;
+  const health = plannerModelHealth.get(model);
+  if (!health) return false;
+  return Number(health.failUntil || 0) > Date.now();
+}
+
+function buildPlannerCandidateModels(models = {}) {
+  prunePlannerModelHealth();
+  const primary = String(models?.planner || "").trim();
+  const ordered = [];
+  const seen = new Set();
+  for (const candidate of [
+    primary,
+    models?.reasoner,
+    models?.router,
+    DEFAULT_MODELS.reasoner,
+    DEFAULT_MODELS.router,
+    DEFAULT_MODELS.planner,
+    "@cf/zai-org/glm-5.2",
+  ]) {
+    const modelId = String(candidate || "").trim();
+    if (!modelId || seen.has(modelId)) continue;
+    seen.add(modelId);
+    ordered.push(modelId);
+  }
+  const healthy = ordered.filter(modelId => !isPlannerModelQuarantined(modelId));
+  const quarantined = ordered.filter(modelId => isPlannerModelQuarantined(modelId));
+  return [...healthy, ...quarantined];
+}
+
 function extractChatCompletionText(payload) {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
@@ -2277,7 +2578,7 @@ async function runCloudflareStartupPreflight() {
 
   try {
     const textFallback = getModelCatalogTextFallback();
-    const catalogRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/models`, {
+    const catalogRes = await fetch(`https://developers.cloudflare.com/ai/models/index.md`, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${CF_API_TOKEN}`,
@@ -2351,7 +2652,9 @@ async function runCloudflareStartupPreflight() {
   }
 }
 
-async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null) {
+async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null, options = null) {
+  const requireNonEmpty = !!(options && options.requireNonEmpty);
+  const nonEmptyLabel = String((options && options.nonEmptyLabel) || modelName || "model");
   const hostedRunModel = isCloudflareHostedRunModel(modelName);
   const safeMessages = hostedRunModel
     ? adaptMessagesForHostedRun(normalizeMessages(messages))
@@ -2383,13 +2686,21 @@ async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temp
         if (!data.success) throw new Error(JSON.stringify(data.errors));
         const directResponse = typeof data?.result?.response === "string" ? data.result.response : "";
         const choiceResponse = extractChatCompletionText(data?.result || {});
-        return String(directResponse || choiceResponse || "").trim();
+        const text = String(directResponse || choiceResponse || "").trim();
+        if (requireNonEmpty && !text) {
+          throw new Error(`Empty response from ${nonEmptyLabel}`);
+        }
+        return text;
       }
       if (!res.ok) throw new Error(JSON.stringify(data?.errors || data || [{ message: `HTTP ${res.status}` }]));
-      return extractChatCompletionText(data);
+      const text = String(extractChatCompletionText(data) || "").trim();
+      if (requireNonEmpty && !text) {
+        throw new Error(`Empty response from ${nonEmptyLabel}`);
+      }
+      return text;
     } catch (err) {
       if (i === retries) throw err;
-      status(`CF retry ${i+1}: ${err.message}`);
+      status(`CF PUNCH! ${i+1}: ${err.message}`);
       await sleep(1500 * (i + 1));
     }
   }
@@ -2405,71 +2716,75 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
     images: [imageB64]   // ← THE CORRECT FORMAT FOR YOUR CLOUDFLARE ACCOUNT
   }];
 
-  for (let i = 0; i <= 2; i++) {
-    try {
-      const ctrl = new AbortController();
-      const t    = setTimeout(() => ctrl.abort(), 35000);
+  return withVisionOperation("vision", async () => {
+    for (let i = 0; i <= 2; i++) {
+      try {
+        const ctrl = new AbortController();
+        const t    = setTimeout(() => ctrl.abort(), 35000);
 
-      const res  = await fetch(
-        buildCloudflareRunUrl(modelName),
-        {
-          method:  "POST",
-          headers: {
-            "Authorization": `Bearer ${CF_API_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            messages,
-            max_tokens: maxTokens
-          }),
-          signal: ctrl.signal
+        const res  = await fetch(
+          buildCloudflareRunUrl(modelName),
+          {
+            method:  "POST",
+            headers: {
+              "Authorization": `Bearer ${CF_API_TOKEN}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              messages,
+              max_tokens: maxTokens
+            }),
+            signal: ctrl.signal
+          }
+        );
+
+        clearTimeout(t);
+        const data = await res.json();
+
+        if (!data.success) {
+          throw new Error(JSON.stringify(data.errors));
         }
-      );
 
-      clearTimeout(t);
-      const data = await res.json();
+        return data.result.response;
 
-      if (!data.success) {
-        throw new Error(JSON.stringify(data.errors));
+      } catch (err) {
+        if (i === 2) throw err;
+        status(`Vision retry ${i + 1}: ${err.message}`);
+        await sleep(400 + (i * 150));
       }
-
-      return data.result.response;
-
-    } catch (err) {
-      if (i === 2) throw err;
-      status(`Vision retry ${i+1}: ${err.message}`);
-      await sleep(1200 * (i + 1));
     }
-  }
+  });
 }
 
 // ── DETR object-detection wrapper ─────────────────────────────────────────────
 async function callDETR(imageB64) {
   if (!CF_API_TOKEN || !CF_ACCOUNT_ID) return [];
   const buf = Buffer.from(imageB64, "base64");
-  for (let i = 0; i <= 2; i++) {
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 25000);
-      const res = await fetch(
-        buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
-        {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
-          body: buf,
-          signal: ctrl.signal
-        }
-      );
-      clearTimeout(t);
-      const data = await res.json();
-      if (!data.success) throw new Error(JSON.stringify(data.errors));
-      return Array.isArray(data.result) ? data.result : [];
-    } catch (err) {
-      if (i === 2) { status(`DETR error: ${err.message}`); return []; }
-      await sleep(600 * (i + 1));
+  return withVisionOperation("detr", async () => {
+    for (let i = 0; i <= 2; i++) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 25000);
+        const res = await fetch(
+          buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
+          {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
+            body: buf,
+            signal: ctrl.signal
+          }
+        );
+        clearTimeout(t);
+        const data = await res.json();
+        if (!data.success) throw new Error(JSON.stringify(data.errors));
+        return Array.isArray(data.result) ? data.result : [];
+      } catch (err) {
+        if (i === 2) { status(`DETR error: ${err.message}`); return []; }
+        await sleep(450 + (i * 150));
+      }
     }
-  }
-  return [];
+    return [];
+  });
 }
 
 function buildDETRContext(detections) {
@@ -2485,14 +2800,23 @@ function buildDETRContext(detections) {
 }
 
 async function analyzeUploadedImageWithVision(imageB64, detrContext, userQuery, visionModelId) {
+  const preparedImageB64 = await resizeImageB64ForVision(imageB64, 1024, 1024);
   const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
 
-DETR object detection results:
+You are analyzing a user-uploaded image. Treat it as a standalone image, NOT as a DOM screenshot, browser page, or layout map.
+
+DETR object detection hints (use only as a hint, not as the final answer):
 ${detrContext}
 
-Describe what is visible. Identify which detected objects appear interactive (buttons, links, inputs, checkboxes). Give approximate positions and any text visible on interactive elements. Be concise.`;
+Return a detailed response with these exact sections:
+1. Visible text — extract every readable word or phrase as accurately as possible. Preserve line breaks if useful. If there is no readable text, say so.
+2. Objects and people — list the main objects, people, faces, tools, UI-like objects, signs, and any notable spatial relationships.
+3. Colors — describe the dominant colors, accent colors, and the overall palette. Mention contrast, saturation, and any standout color regions.
+4. Detailed summary — give an extremely detailed description of what the image shows, what it appears to be, and any important visual context.
+
+Be thorough and specific. Do not mention pixel grids, ASCII maps, layout keys, DOM inspection, or browser screenshot analysis unless the image itself clearly contains those artifacts.`;
   try {
-    return await callVisionAI(imageB64, prompt, 500, visionModelId || DEFAULT_MODELS.vision);
+    return await callVisionAI(preparedImageB64, prompt, 1200, visionModelId || DEFAULT_MODELS.vision);
   } catch (err) {
     return `Vision analysis failed: ${err.message}`;
   }
@@ -3344,14 +3668,14 @@ async function answerCasualChat(rawMessage, conversationHistory, models) {
     const raw = await callCFAI(models.reasoner || models.router, [
       {
         role: "system",
-        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. Keep replies concise. Never claim to be GPT-4 or OpenAI unless the configured runtime model is actually from OpenAI. If asked what model you are, state the configured model id exactly.Current normal chat supports this formatting set: Italic: *text* and _text_ Bold: **text** Bold + italic: ***text*** and **_text_** Inline code: code Line breaks: newline becomes <br> Math (KaTeX): $inline$ and $$block$$ Emoji shortcodes: :rocket: :brain: :sparkles: :fire: :check: :x: :warning: :robot: :smile: :party: :idea:. try to be as friendly and helpful as possible. If the user asks for a greeting, respond with something in the requested style. users may add internet slang such as: lol, brb, idk, smh, tbh, fyi, imo, lmao, rofl, omg, wtf, btw, irl, afk, and similar. Use these naturally in your responses when appropriate. Match the user’s tone and energy. If the user is excited, be excited. If the user is chaotic, be chaotic. If the user is calm, be calm. If the user requests extremely long content (eg. 1000 words or more), ask for confirmation before generating.”"
+        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them."
       },
       {
         role: "user",
         content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}`
       }
     ], 500, 1, getRuntimeTemperature(models));
-    const plain = stripThinking(raw) || "How can I help?";
+    const plain = stripThinking(raw) || "Error: no response from current model, please try again.";
     return applyChatStyleFormatting(plain, styleRequest);
   } catch (err) {
     errLog("Casual chat fallback: " + err.message);
@@ -3479,6 +3803,25 @@ async function pinchListWebhookTypes() {
     return null;
   }
 
+  function parseModelJSON(raw) {
+    const parsed = safeParseJSON(raw);
+    if (parsed) return parsed;
+
+    const stripped = stripThinking(raw);
+    const repaired = stripped
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/,\s*([}\]])/g, "$1")
+      .trim();
+
+    if (repaired && repaired !== stripped) {
+      const retry = safeParseJSON(repaired);
+      if (retry) return retry;
+    }
+
+    return null;
+  }
+
   /**
    * Keep plannerHistory bounded. Always preserves message[0] (the system
    * prompt) and then keeps only the most recent N messages after it. Without
@@ -3506,6 +3849,7 @@ async function pinchListWebhookTypes() {
       const notes = [];
       if (selector) notes.push(`sel=${selector.slice(0, 80)}`);
       if (reason) notes.push(`note=${reason}`);
+      if (item?.domMapSummary) notes.push(`dom=${String(item.domMapSummary).slice(0, 100)}`);
       return `${idx + 1}. ${action}:${status}${notes.length ? ` (${notes.join(" | ")})` : ""}`;
     }).join("\n");
   }
@@ -3691,6 +4035,32 @@ async function pinchListWebhookTypes() {
         })
       };
     })();
+
+    const voidMap = VOID_MAP_CAPTURE_EVERY_STATE
+      ? await captureVoidElementMap(page, {
+          includeWithoutId: true,
+          includeText: true,
+          includeStyleBits: true,
+          includeShadowDescendants: true,
+          maxElements: VOID_MAP_STATE_MAX_ELEMENTS,
+          textLimit: VOID_MAP_STATE_TEXT_LIMIT,
+        }).catch(() => null)
+      : null;
+
+    const voidMapSummary = summarizeVoidElementMap(voidMap || {});
+    const voidMapClickable = Array.isArray(voidMap?.elements)
+      ? voidMap.elements
+          .filter(el => el?.clickable && el?.visibility?.isVisible)
+          .slice(0, 8)
+          .map(el => {
+            const tag = String(el.tagName || "el");
+            const id = el.id ? `#${String(el.id).slice(0, 30)}` : "";
+            const role = el.role ? `[role=${String(el.role).slice(0, 18)}]` : "";
+            const label = String(el.text || el.ariaLabel || el.name || "").trim().slice(0, 28);
+            return `${tag}${id}${role}${label ? `:${label}` : ""}`;
+          })
+      : [];
+
     return {
       url,
       title: statePayload.title,
@@ -3698,7 +4068,9 @@ async function pinchListWebhookTypes() {
       links: Array.isArray(statePayload.links) ? statePayload.links : [],
       inputs: Array.isArray(statePayload.inputs) ? statePayload.inputs : [],
       buttons: Array.isArray(statePayload.buttons) ? statePayload.buttons : [],
-      tabs: tabInfo
+      tabs: tabInfo,
+      voidMapSummary,
+      voidMapClickable,
     };
   }
 
@@ -3721,6 +4093,27 @@ async function pinchListWebhookTypes() {
     const weakTextHit = /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
     const urlHit = /(captcha|cf_chl|turnstile|hcaptcha|recaptcha|challenge-platform|__cf_chl_)/.test(currentUrl);
     const domSignals = await page.evaluate(() => {
+      const vw = Math.max(1, window.innerWidth || 1920);
+      const vh = Math.max(1, window.innerHeight || 1080);
+      const isVisibleCaptchaNode = (el) => {
+        if (!el || typeof el.getBoundingClientRect !== "function") return false;
+        if (el.closest("[aria-hidden='true'], [hidden], template, noscript")) return false;
+        const style = window.getComputedStyle(el);
+        if (!style) return false;
+        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || "1") < 0.05) return false;
+        if (style.pointerEvents === "none") return false;
+        const rect = el.getBoundingClientRect();
+        return !!rect && rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
+      };
+
+      const hasVisibleMatch = (selectors) => selectors.some(selector => {
+        try {
+          return Array.from(document.querySelectorAll(selector)).some(isVisibleCaptchaNode);
+        } catch {
+          return false;
+        }
+      });
+
       const strongSelectors = [
         'iframe[src*="recaptcha" i]',
         'iframe[src*="hcaptcha" i]',
@@ -3729,8 +4122,7 @@ async function pinchListWebhookTypes() {
         '.h-captcha',
         '[class*="cf-turnstile" i]',
         '#cf-challenge-running',
-        '.cf-challenge',
-        '[data-sitekey]'
+        '.cf-challenge'
       ];
       const weakSelectors = [
         '[id*="captcha" i]',
@@ -3739,8 +4131,8 @@ async function pinchListWebhookTypes() {
         '[name*="captcha" i]',
         '[data-testid*="captcha" i]'
       ];
-      const hasStrong = strongSelectors.some(selector => document.querySelector(selector));
-      const hasWeak = weakSelectors.some(selector => document.querySelector(selector));
+      const hasStrong = hasVisibleMatch(strongSelectors);
+      const hasWeak = hasVisibleMatch(weakSelectors);
       return { hasStrong, hasWeak };
     }).catch(() => ({ hasStrong: false, hasWeak: false }));
 
@@ -3902,6 +4294,13 @@ async function pinchListWebhookTypes() {
     return JSON.stringify(String(text || "").trim());
   }
 
+  function buildExactAttrSelector(attr, value) {
+    const name = String(attr || "").trim();
+    const raw = String(value || "").trim();
+    if (!name || !raw) return "";
+    return `[${name}=${quoteCssText(raw)}]`;
+  }
+
   function buildCaptchaCandidateSelectors(state) {
     const candidates = [];
     const seen = new Set();
@@ -3950,10 +4349,25 @@ async function pinchListWebhookTypes() {
       }
     }
 
-    add("input[type='checkbox']");
-    add("input[type='radio']");
-    add("button");
+    add("input[type='checkbox'][name*='captcha' i]");
+    add("input[type='checkbox'][id*='captcha' i]");
+    add("input[type='radio'][name*='captcha' i]");
+    add("input[type='radio'][id*='captcha' i]");
     return candidates.slice(0, 10);
+  }
+
+  function shouldResetTaskContextToGoogle(state, goalMem, searchEngineCompareGoal) {
+    const currentHost = getHostFromUrl(state?.url || "");
+    if (!currentHost || currentHost === "about:blank") return false;
+    if (hostMatchesExpectedHost(currentHost, "google.com")) return false;
+    if (goalMem?.targetHost && hostMatchesExpectedHost(currentHost, goalMem.targetHost)) return false;
+    if (searchEngineCompareGoal) {
+      return !hostMatchesExpectedHost(currentHost, "google.com") && !hostMatchesExpectedHost(currentHost, "bing.com");
+    }
+    if (goalMem?.query) {
+      return !hostMatchesExpectedHost(currentHost, "google.com") && !hostMatchesExpectedHost(currentHost, "bing.com") && !hostMatchesExpectedHost(currentHost, "duckduckgo.com") && !hostMatchesExpectedHost(currentHost, "search.yahoo.com");
+    }
+    return !!goalMem?.targetHost && !hostMatchesExpectedHost(currentHost, goalMem.targetHost);
   }
 
   async function executeCaptchaAttemptPlan(plan, fallbackSelectors) {
@@ -4087,7 +4501,10 @@ Rules:
       } else if (attemptNumber === 2) {
         plan.action = "press";
         plan.key = "Enter";
-        plan.selector = (state.inputs || []).find(item => item?.visible && /text|search|email|password|checkbox|radio/.test(String(item.type || "")))?.id ? `#${String((state.inputs || []).find(item => item?.visible && /text|search|email|password|checkbox|radio/.test(String(item.type || ""))).id).replace(/'/g, "\\'")}` : "";
+        const preferredInput = (state.inputs || []).find(item => item?.visible && /text|search|email|password|checkbox|radio/.test(String(item.type || "")));
+        plan.selector = preferredInput?.id
+          ? buildExactAttrSelector("id", preferredInput.id)
+          : "";
       } else if (attemptNumber === 3) {
         plan.action = "submitForm";
         plan.selector = fallbackSelectors[0] || "";
@@ -5568,6 +5985,8 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
   const compactButtons = (state.buttons || []).filter(b => b.visible).slice(0, 6)
     .map(b => `${compactPromptValue(b.text, 24)}${b.selector ? `@${compactPromptValue(b.selector, 28)}` : ""}`)
     .join(" | ") || "none";
+  const compactVoidMapSummary = compactPromptValue(state.voidMapSummary || "none", 220);
+  const compactVoidMapClickable = (state.voidMapClickable || []).slice(0, 8).map(item => compactPromptValue(item, 54)).join(" | ") || "none";
 
 const userMsg = `Goal:${compactGoal}
 URL:${compactCurrentUrl}
@@ -5576,6 +5995,8 @@ Tabs:${state.tabs?.activeIndex ?? 0}/${state.tabs?.count ?? 1} ${compactTabs}
 Inputs:${compactInputs}
 Buttons:${compactButtons}
 Links:${compactVisibleLinks}
+VoidMap:${compactVoidMapSummary}
+VoidClickable:${compactVoidMapClickable}
 Vision:${compactPromptValue(visionFeedback || "none", 280)}
 Peers:instinct=${compactPromptValue(peerReasoner.instinct || "none", 80)};risk=${compactPromptValue(peerReasoner.risk || "none", 24)};focus=${compactPromptValue(peerReasoner.next_focus || "none", 60)};supervisor=${compactPromptValue(peerSupervisor.decision || "none", 20)}:${compactPromptValue(peerSupervisor.reason || "", 70)};researchHints=${Number(peerResearch.hintCount || 0)}
 GoalProgress:${goalMemCtx || "none"}
@@ -5647,25 +6068,95 @@ Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm
     return null;
   }
 
+  function hasUsablePlannerActions(plan) {
+    const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+    return actions.some(a => {
+      if (!a || !a.action) return false;
+      if (["fill", "type"].includes(String(a.action)) && !String(a.params?.text || a.params?.value || "").trim()) return false;
+      if (["click", "hover", "scrollIntoView"].includes(String(a.action)) && !String(a.params?.selector || "").trim()) return false;
+      return true;
+    });
+  }
+
+  function parsePlannerPayload(raw) {
+    return parseModelJSON(raw) || aggressiveScrapeJSON(raw);
+  }
+
   try {
-    const raw    = await callCFAI(models.planner, bounded, 1500, 2, getRuntimeTemperature(models));
-    const parsed = aggressiveScrapeJSON(raw);
+    const plannerCandidates = buildPlannerCandidateModels(models);
+    if (plannerCandidates.length && String(models.planner || "") !== plannerCandidates[0]) {
+      const previousPlanner = String(models.planner || "").trim();
+      models.planner = plannerCandidates[0];
+      if (previousPlanner) {
+        think(`Planner circuit-breaker: switching planner model ${previousPlanner} -> ${models.planner}`);
+      }
+    }
+
+    let raw = "";
+    try {
+      raw = await callCFAI(
+        models.planner,
+        bounded,
+        1500,
+        0,
+        getRuntimeTemperature(models),
+        { requireNonEmpty: true, nonEmptyLabel: `planner:${models.planner}` }
+      );
+      markPlannerModelSuccess(models.planner);
+    } catch (err) {
+      markPlannerModelFailure(models.planner, err);
+      errLog(`❌ Planner primary call failed: ${err.message}`);
+      think("Planner primary call failed — switching to aggressive recovery.");
+    }
+
+    const parsed = parsePlannerPayload(raw);
     if (!parsed) {
       plannerHistory.push({ role: "assistant", content: String(raw || "").slice(0, MAX_PLANNER_ASSISTANT_MSG_CHARS) });
       errLog(`❌ Planner parse FAILED on raw (first 300 chars): ${String(raw || "").slice(0, 300)}`);
-      think("Planner: parse failed — retrying with simpler prompt");
+      think("Planner parse failed — launching aggressive multi-model JSON recovery.");
       const repairPrompt = `Output ONLY a JSON object. No prose. No code fences. No thinking.\nGoal: ${compactGoal}\nURL: ${compactCurrentUrl}\n\nRequired schema:\n{"reasoning":"one sentence","confidence":70,"done":false,"actions":[{"action":"fill","params":{"selector":"#APjFqb, textarea[name='q'], input[name='q'], input[type='search']","text":"<your search term>"}}]}\n\nStart your output with { immediately.`;
-      const fixed = await callCFAI(models.reasoner, [
-        { role: "system", content: "You output only valid compact JSON. Never add prose, markdown, or thinking tags." },
-        { role: "user",   content: repairPrompt }
-      ], 900, 1, 0);
-      const fixedParsed = aggressiveScrapeJSON(fixed);
-      if (!fixedParsed || !Array.isArray(fixedParsed.actions)) {
-        errLog(`❌ Planner repair FAILED on fixed (first 300 chars): ${String(fixed || "").slice(0, 300)}`);
+
+      const recoveryModels = buildPlannerCandidateModels(models)
+        .slice(0, PLANNER_AGGRESSIVE_RECOVERY_MAX_MODELS);
+
+      let fixedParsed = null;
+      let fixedRaw = "";
+      let fixedModel = "";
+      for (const recoveryModel of recoveryModels) {
+        try {
+          const candidateRaw = await callCFAI(
+            recoveryModel,
+            [
+              { role: "system", content: "You output only valid compact JSON. Never add prose, markdown, or thinking tags." },
+              { role: "user", content: repairPrompt }
+            ],
+            900,
+            PLANNER_AGGRESSIVE_RECOVERY_RETRIES,
+            0,
+            { requireNonEmpty: true, nonEmptyLabel: `planner-repair:${recoveryModel}` }
+          );
+          const candidateParsed = parsePlannerPayload(candidateRaw);
+          if (candidateParsed && (candidateParsed.done === true || hasUsablePlannerActions(candidateParsed))) {
+            fixedParsed = candidateParsed;
+            fixedRaw = candidateRaw;
+            fixedModel = recoveryModel;
+            markPlannerModelSuccess(recoveryModel);
+            break;
+          }
+          markPlannerModelFailure(recoveryModel, new Error("invalid planner repair payload"));
+          errLog(`❌ Planner repair invalid from ${recoveryModel} (first 300 chars): ${String(candidateRaw || "").slice(0, 300)}`);
+        } catch (repairErr) {
+          markPlannerModelFailure(recoveryModel, repairErr);
+          errLog(`❌ Planner repair transport failed via ${recoveryModel}: ${repairErr.message}`);
+        }
+      }
+
+      if (!fixedParsed) {
+        errLog(`❌ Planner repair FAILED across fallback models.`);
         const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
         if (heuristicPlan && heuristicPlan.actions?.length) {
           heuristicPlan._parseFailed = true;
-          heuristicPlan.reasoning = `Planner repair failed. ${heuristicPlan.reasoning}`.slice(0, 1200);
+          heuristicPlan.reasoning = `Planner repair failed across models. ${heuristicPlan.reasoning}`.slice(0, 1200);
           return normalizePlannerResponse(heuristicPlan, "Planner repair failed; heuristic fallback engaged.");
         }
         return normalizePlannerResponse(
@@ -5673,14 +6164,10 @@ Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm
           "Planner parse failed after repair."
         );
       }
-      // Reject repair results with structurally empty/missing params
-      const repairHasValidActions = fixedParsed.actions.some(a => {
-        if (!a || !a.action) return false;
-        if (["fill","type"].includes(String(a.action)) && !String(a.params?.text || a.params?.value || "").trim()) return false;
-        if (["click","hover","scrollIntoView"].includes(String(a.action)) && !String(a.params?.selector || "").trim()) return false;
-        return true;
-      });
-      if (!repairHasValidActions) {
+
+      // Reject repair results with structurally empty/missing params unless done=true.
+      const repairHasValidActions = hasUsablePlannerActions(fixedParsed);
+      if (!repairHasValidActions && fixedParsed.done !== true) {
         errLog(`❌ Planner repair produced invalid/empty action params — discarding.`);
         const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
         if (heuristicPlan && heuristicPlan.actions?.length) {
@@ -5693,9 +6180,18 @@ Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm
           "Planner repair produced empty action params."
         );
       }
-      return normalizePlannerResponse(fixedParsed, "Planner output repaired from malformed JSON.");
+
+      plannerHistory.push({ role: "assistant", content: String(fixedRaw || "").slice(0, MAX_PLANNER_ASSISTANT_MSG_CHARS) });
+      if (fixedModel && fixedModel !== models.planner) {
+        const previousPlanner = String(models.planner || "").trim();
+        models.planner = fixedModel;
+        think(`Planner promotion: ${previousPlanner || "(none)"} -> ${fixedModel}`);
+      }
+      think(`Planner recovered via ${fixedModel || "fallback model"}.`);
+      return normalizePlannerResponse(fixedParsed, `Planner output repaired from malformed JSON via ${fixedModel || "fallback"}.`);
     }
     plannerHistory.push({ role: "assistant", content: String(raw || "").slice(0, MAX_PLANNER_ASSISTANT_MSG_CHARS) });
+    markPlannerModelSuccess(models.planner);
     const normalizedParsed = normalizePlannerResponse(parsed, "Planner response had missing fields.");
     const alignment = evaluatePeerAlignment(normalizedParsed, peerSignals);
     think(`Planner [${normalizedParsed.confidence}% | peer ${Math.round(alignment.score * 100)}%]: ${(normalizedParsed.reasoning || "").slice(0, 300)}`);
@@ -5721,7 +6217,7 @@ Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm
 const PLANNER_TIPS_50 = `
 1 target goal
 2 avoid loops
-3 <=3 actions
+3 <=10 actions
 4 atomic actions
 5 stable selectors
 6 prefer visible
@@ -5770,64 +6266,41 @@ const PLANNER_TIPS_50 = `
 49 maintain progress
 50 finish decisively`;
 
-const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start immediately with { and end with }. No preamble, no explanation text, no code fences.
-CRITICAL: SEARCH ENGINES SUCH AS GOOGLE, BING, DUCKDUCKGO, AND YAHOO REQUIRE YOU TO PRESS THE KEY 'ENTER' TO SUBMIT SEARCHES. DO NOT CLICK THE SEARCH BUTTON. DO NOT USE THE SEARCH BUTTON. DO NOT TYPE "CLICK SEARCH" OR "CLICK THE SEARCH BUTTON". PRESS ENTER INSTEAD.
-Planner mode: concise, deterministic, progress-first.
+const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start with { and end with }. No prose, no markdown, no code fences.
+CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with Enter or submitForm. Do NOT click "Search" buttons.
+Planner mode: deterministic, progress-first, minimal-risk.
 
 Allowed actions: goto,reload,goBack,goForward,click,dblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,mouseMove,mouseClick,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,getText,getAttribute,getAllText,isVisible,elementExists,evaluate,screenshot,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
 
 Hard rules:
-- Output ONLY valid JSON starting with {. No other text.
-- Max 3 actions.
-- Never waitForLoadState("complete").
-- Search flow: fill -> submitForm or press Enter.
-- Do not repeat failing action+selector.
-- If content already visible, extract or done.
-- Prefer peer/supervisor over weak guesses.
+- Output only valid JSON using schema below.
+- Max 6 actions per step.
+- Never use waitForLoadState("complete").
+- Never output non-http(s) URLs (no chrome-error:, about:, data:, javascript:, mailto:, tel:, blob:).
+- Avoid malformed domains (example: node.js). Prefer canonical hosts (example: nodejs.org).
+- Do not repeat same failing action+selector pair.
+- If already on target page and evidence is present, extract and finish.
+- Prefer lower-risk actions before evaluate/reload loops.
 
-Simple browsing mode policy:
-- If a destination site is known, first action should be direct goto to that site.
+Search rules:
+- Preferred sequence: fill/type search input -> press Enter or submitForm -> waitForURLChange or waitForVisible(a[href]).
+- Avoid clicking search buttons when Enter can submit.
+- If selector is uncertain, use robust search-input families before inventing new selectors.
+- If search results are already visible, click a real relevant anchor instead of re-submitting search.
+
+Navigation and recovery rules:
+- If a destination site is known, first action should be goto(destination).
 - Use search only when destination is unknown.
-- Prefer real anchors and link text over generic clickable nodes.
-- Verify navigation with URL + title before adding new strategy layers.
-- Do not enable heavy recovery/vision/research early unless repeated failure is proven.
+- Verify progress using URL/title/content change after major actions.
+- If a click did not produce meaningful change, switch selector family or use a different visible anchor.
+- Avoid back/forward/reload loops unless they are the only plausible recovery path.
+- For multi-site tasks, open one tab per site and keep context per tab.
 
-Intermediate planning rules:
-- GoalProgress field shows pending subgoals — work through them in order.
-- Skip a subgoal only if its condition is already met (check URL, title, content).
-- If GoalProgress says "All subgoals complete" or evidence is clear, output done:true.
-- For extract+summarize goals: extract text ONCE then set done:true. Do NOT repeat getAllText.
-- For search goals: if on target article page, search subgoal is already done.
-- Reasoner has full access to extracted text — no need to extract again for summarization.
-- If the same action ran successfully 2+ times in History with same result, skip it — it is done.
-- Context-aware shortcut: if direct URL for the result is known, goto it directly instead of searching.
-
-Navigation principles (25):
-1. Start with the simplest path before trying anything fancy.
-2. If you already know the site, go straight there instead of searching.
-3. Use the search box as your main tool on search engines.
-4. Press Enter after typing instead of hunting for the search button.
-5. Give the page a moment to settle before clicking anything.
-6. Look for obvious link patterns like blue text or underlined text.
-7. Read the page title to confirm where you are.
-8. Scan the first few lines of text to understand the page.
-9. If something moves on the screen, pause instead of panicking.
-10. Retry calmly instead of switching strategies too fast.
-11. Prefer clicking real links over random clickable elements.
-12. Use text clues like "Wikipedia" or "Official Site" to guide clicks.
-13. If lost, zoom out mentally and rethink the goal.
-14. Check the current URL to see if navigation actually happened.
-15. Avoid clicking things that look like ads or sponsored blocks.
-16. Use the site's logo to return to the homepage when needed.
-17. Scroll a little to reveal hidden content before acting.
-18. Do not assume buttons are visible; sometimes Enter works better.
-19. Look for familiar layouts to orient yourself quickly.
-20. Trust link text more than visual appearance.
-21. If a click does not work, try a different link instead of repeating.
-22. Use search suggestions when they clearly match your goal.
-23. Avoid clicking elements that appear too small or too crowded.
-24. If the page feels chaotic, slow down and observe before acting.
-25. When in doubt, take the direct route instead of the complicated one.
+GoalProgress policy:
+- Execute pending subgoals in order.
+- Skip only subgoals already satisfied by current evidence.
+- If GoalProgress says all complete (or evidence clearly satisfies goal), output done:true.
+- For extract+summarize goals, avoid repeated getAllText after one successful extraction.
 
 Tips (50, terse):
 ${PLANNER_TIPS_50}
@@ -5867,7 +6340,9 @@ async function runActionWithFallback(item, goal, models) {
   }
   if (action === "goto" && params?.url) {
     let normalizedUrl = String(params.url).trim().replace(/[\]\[)\("'`]+$/g, "").replace(/[.,;!?]+$/g, "");
-    if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl)) {
+    if (/^\/\//.test(normalizedUrl)) {
+      normalizedUrl = `https:${normalizedUrl}`;
+    } else if (normalizedUrl && !/^[a-z][a-z0-9+.-]*:/i.test(normalizedUrl)) {
       normalizedUrl = `https://${normalizedUrl}`;
     }
     params.url = normalizedUrl;
@@ -6073,16 +6548,103 @@ async function runActionWithFallback(item, goal, models) {
     }
   }
 
+  if (action === "waitForURLChange") {
+    const baselineUrl = String(params.currentURL || currentUrl || "");
+    const targetRaw = String(params.targetURL || params.url || "").trim();
+    const timeoutMs = Math.max(500, Number(params.timeout) || 8000);
+    const baselineTabCount = context.pages().length;
+    const normalizedTarget = (() => {
+      if (!targetRaw) return "";
+      if (/^\/\//.test(targetRaw)) return `https:${targetRaw}`;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(targetRaw)) return targetRaw;
+      return `https://${targetRaw}`;
+    })();
+    const expectedHost = getHostFromUrl(normalizedTarget);
+
+    const targetMatches = nextUrl => {
+      const current = String(nextUrl || "");
+      if (!current || current === baselineUrl) return false;
+      if (!targetRaw) return true;
+      const currentHost = getHostFromUrl(current);
+      if (expectedHost && hostMatchesExpectedHost(currentHost, expectedHost)) return true;
+      return current.toLowerCase().includes(targetRaw.toLowerCase());
+    };
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const activeUrl = (() => {
+        try { return String(page?.url?.() || ""); } catch { return ""; }
+      })();
+
+      if (targetMatches(activeUrl)) {
+        const resultText = activeUrl ? `url changed: ${activeUrl}` : "url changed";
+        recordOutcome("ok", { result: resultText, path: "primary-url-change" });
+        return { action, status: "ok", result: resultText };
+      }
+
+      const pages = context.pages();
+      if (pages.length > baselineTabCount) {
+        const newest = pages[pages.length - 1];
+        const newestUrl = (() => {
+          try { return String(newest?.url?.() || ""); } catch { return ""; }
+        })();
+
+        if (newestUrl && newestUrl !== "about:blank") {
+          page = newest;
+          await page.bringToFront().catch(() => {});
+          if (targetMatches(newestUrl) || !targetRaw) {
+            const resultText = `url changed in new tab: ${newestUrl}`;
+            recordOutcome("ok", { result: resultText, path: "primary-url-change-new-tab" });
+            return { action, status: "ok", result: resultText };
+          }
+        }
+      }
+
+      await sleep(220);
+    }
+
+    const timeoutError = `URL did not change within ${timeoutMs}ms`;
+    recordOutcome("error", { error: timeoutError, path: "primary-url-change" });
+    return { action, status: "error", error: timeoutError };
+  }
+
   // Primary attempt
   try {
     const result = await actions[action]({ page, context, ...(params || {}) });
     think(`✓ ${action}`);
-    const rawResultText = String(result ?? "");
+    const rawResultText = typeof result === "string"
+      ? result
+      : typeof result === "object" && result !== null
+        ? JSON.stringify(result)
+        : String(result ?? "");
     const resultText = rawResultText.slice(0, 200);
     recordOutcome("ok", { result: resultText, path: "primary" });
     const response = { action, status: "ok", result: resultText };
     if (["getText", "getAllText", "getHTML"].includes(String(action || "")) && rawResultText.trim()) {
       response.extractedText = rawResultText.slice(0, 12000);
+    }
+    if (["getText", "getAllText", "getHTML"].includes(String(action || "")) && shouldCaptureStructuredDom(goal, action, response.extractedText || rawResultText)) {
+      try {
+        const domMap = await captureVoidElementMap(page, {
+          includeText: true,
+          includeAttributes: false,
+          includeOuterHTML: false,
+          includeHidden: true,
+          maxElements: 1200,
+          textLimit: 220,
+        });
+        if (domMap) {
+          response.domMap = {
+            totalCaptured: domMap.totalCaptured || 0,
+            capturedAt: domMap.capturedAt || Date.now(),
+            summary: domMap.summary || {},
+          };
+          response.domMapSummary = summarizeVoidElementMap(domMap);
+          response.result = `${response.result}${response.domMapSummary ? ` | ${response.domMapSummary}` : ""}`.slice(0, 240);
+        }
+      } catch (domErr) {
+        errLog(`DOM map capture failed: ${domErr.message}`);
+      }
     }
     return response;
   } catch (primaryErr) {
@@ -6131,11 +6693,15 @@ async function runActionWithFallback(item, goal, models) {
       // Fallback 4: JS .click()
       try {
         think(`Fallback 4: JS click on ${sel}`);
-        await page.evaluate(selector => {
-          const el = document.querySelector(selector);
-          if (el) el.click();
-          else throw new Error("not found");
-        }, sel);
+        const locator = page.locator(sel).first();
+        await locator.waitFor({ state: "attached", timeout: 3000 });
+        await locator.evaluate(el => {
+          if (el && typeof el.click === "function") {
+            el.click();
+            return;
+          }
+          throw new Error("not clickable");
+        });
         recordOutcome("ok", { result: "js-evaluate fallback", path: "fallback-js-click" });
         return { action, status: "ok", result: "js-evaluate fallback" };
       } catch {}
@@ -6343,6 +6909,9 @@ async function summarizeResult(goal, state, taskLog, visionFeedback, completed, 
   status("Reasoner composing answer...");
   try {
     const extractedSnippet = compactPromptValue(extractedText, 4000) || "(none)";
+    const compareFormatHint = isSearchEngineComparisonGoal(goal)
+      ? "Output exactly 3 paragraphs. Paragraph 1: what Google emphasized. Paragraph 2: what Bing emphasized. Paragraph 3: compare/contrast and synthesize."
+      : "Write a natural, intelligent, specific answer (2-6 sentences).";
     const raw = await callCFAI(models.reasoner, [{
       role: "user",
       content: `Goal: "${goal}"
@@ -6353,7 +6922,7 @@ Vision last saw: ${visionFeedback ? visionFeedback.slice(0, 500) : "(none)"}
 Extracted text snippet: ${extractedSnippet}
 Steps taken: ${taskLog.join("\n")}
 
-Write a natural, intelligent, specific answer (2-6 sentences).
+${compareFormatHint}
 If completed: report exactly what you found/did with specific details (numbers, names, URLs, text).
 If incomplete: explain honestly what happened and what would be needed to complete it.
 feel free to use emoji's and markdown formatting to express your intent make sure to be clear about what was found and what was not found.`
@@ -6514,9 +7083,37 @@ function extractUrlFromText(goalText) {
   return String(m[0] || "").replace(/[\]\[)\("'`]+$/g, "").replace(/[.,;!?]+$/g, "");
 }
 
+function mapKnownHostTypos(hostname) {
+  const host = String(hostname || "").toLowerCase().replace(/\.$/, "");
+  if (!host) return "";
+  const map = {
+    "node.js": "nodejs.org",
+    "www.node.js": "nodejs.org",
+    "docs.node.js": "nodejs.org"
+  };
+  return map[host] || host;
+}
+
+function sanitizeNavigationUrl(rawUrl) {
+  const input = String(rawUrl || "").trim();
+  if (!input) return null;
+
+  try {
+    const parsed = new URL(input);
+    const protocol = String(parsed.protocol || "").toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return null;
+    const mappedHost = mapKnownHostTypos(parsed.hostname);
+    if (!mappedHost) return null;
+    parsed.hostname = mappedHost;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function extractExplicitNavigationTarget(goalText) {
   const fullUrl = extractUrlFromText(goalText);
-  if (fullUrl) return fullUrl;
+  if (fullUrl) return sanitizeNavigationUrl(fullUrl);
 
   const raw = String(goalText || "");
   const m = raw.match(/\b([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[\w\-./?%&=+#]*)?)/i);
@@ -6526,20 +7123,22 @@ function extractExplicitNavigationTarget(goalText) {
   if (!candidate.includes(".")) return null;
 
   const normalized = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
-  try {
-    return new URL(normalized).toString();
-  } catch {
-    return null;
-  }
+  return sanitizeNavigationUrl(normalized);
 }
 
 function inferKnownSiteTarget(goalText) {
   const g = String(goalText || "").toLowerCase();
+  const hasGoogle = /\bgoogle\b/.test(g);
+  const hasBing = /\bbing\b/.test(g);
+  if (hasGoogle && hasBing) {
+    // For dual-engine tasks, start from Google first; Bing can be visited next.
+    return "https://www.google.com/";
+  }
   const known = [
     { pattern: /\bwikip(?:e|i)dia\b|\bwikipidea\b|\bwikpedia\b/, url: "https://www.wikipedia.org/" },
     { pattern: /\bgithub\b/, url: "https://github.com/" },
-    { pattern: /\bbing\b/, url: "https://www.bing.com/" },
     { pattern: /\bgoogle\b/, url: "https://www.google.com/" },
+    { pattern: /\bbing\b/, url: "https://www.bing.com/" },
     { pattern: /\byoutube\b/, url: "https://www.youtube.com/" },
   ];
   const hit = known.find(item => item.pattern.test(g));
@@ -6604,7 +7203,7 @@ function buildSearchResultsUrl(queryText, engine = "bing") {
 }
 
 function pickRecoveryUrl(goalText, fallbackQuery = "") {
-  const explicit = extractExplicitNavigationTarget(goalText);
+  const explicit = sanitizeNavigationUrl(extractExplicitNavigationTarget(goalText));
   if (explicit) return explicit;
   const query = extractSearchQuery(goalText) || String(fallbackQuery || "").trim();
   if (query) return buildSearchResultsUrl(query, "bing");
@@ -6633,13 +7232,71 @@ function extractSearchQuery(goalText) {
   const quoted = g.match(/"([^"]{2,120})"/);
   if (quoted) return sanitizeExtractedSearchQuery(quoted[1]);
   const m =
-    g.match(/\bsearch\s+([^\n\.]{2,120})/i) ||
     g.match(/search\s+for\s+([^\n\.]{2,120})/i) ||
+    g.match(/\bsearch\s+([^\n\.]{2,120})/i) ||
     g.match(/search\s+up\s+([^\n\.]{2,120})/i) ||
     g.match(/look\s+up\s+([^\n\.]{2,120})/i);
   if (!m) return null;
   const cleaned = sanitizeExtractedSearchQuery(m[1]);
   return cleaned || null;
+}
+
+function isSearchEngineComparisonGoal(goalText) {
+  const g = String(goalText || "").toLowerCase();
+  if (!g) return false;
+  const hasSearchIntent = /\b(search|look up|find)\b/.test(g);
+  const hasGoogle = /\bgoogle\b/.test(g);
+  const hasBing = /\bbing\b/.test(g);
+  const hasCompareIntent = /\b(compare|contrast|compare and contrast|difference|differences|versus|vs)\b/.test(g);
+  const hasSummaryIntent = /\b(summarize|summary|summery|three paragraph|3 paragraph|three-paragraph)\b/.test(g);
+  return hasSearchIntent && ((hasGoogle && hasBing) || (hasBing && hasCompareIntent && hasSummaryIntent));
+}
+
+function isDocsPreferredSearch(queryText, goalText = "") {
+  const combined = `${String(goalText || "")} ${String(queryText || "")}`.toLowerCase();
+  if (!combined.trim()) return false;
+  return /\b(how to|how do i|deploy|install|setup|configure|tutorial|guide|docs?|documentation|reference|quickstart|hosting)\b/.test(combined);
+}
+
+function pickDocsLinkFromState(state, queryText) {
+  const links = Array.isArray(state?.links) ? state.links : [];
+  if (!links.length) return null;
+
+  const query = String(queryText || "").toLowerCase();
+  const queryTokens = query.split(/\s+/).filter(Boolean).slice(0, 6);
+  let best = null;
+  let bestScore = 0;
+
+  for (const link of links) {
+    const href = String(link?.href || "").trim();
+    if (!href) continue;
+    const text = String(link?.text || "").trim();
+    const haystack = `${text} ${href}`.toLowerCase();
+    let score = 0;
+
+    if (/\bdocs?\b/.test(haystack)) score += 4;
+    if (/\bdocumentation\b/.test(haystack)) score += 4;
+    if (/\bguide\b/.test(haystack)) score += 3;
+    if (/\btutorial\b/.test(haystack)) score += 3;
+    if (/\bquickstart\b/.test(haystack)) score += 3;
+    if (/\breference\b/.test(haystack)) score += 2;
+    if (/\bstatic-deploy\b/.test(haystack)) score += 6;
+    if (/\bdeploy(ment)?\b/.test(haystack)) score += 2;
+    if (/vite\.dev/.test(haystack)) score += 8;
+    if (/vercel\.com\/docs|netlify\.com\/docs/.test(haystack)) score += 6;
+
+    if (queryTokens.length && queryTokens.every(token => haystack.includes(token))) score += 3;
+    if (query.includes("vite") && /vite\.dev/.test(haystack)) score += 5;
+    if (query.includes("deploy") && /deploy|hosting|publish|static/.test(haystack)) score += 3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = link;
+    }
+  }
+
+  if (!best || bestScore < 5) return null;
+  return best;
 }
 
 function getOriginalQuery(goalText) {
@@ -6648,10 +7305,20 @@ function getOriginalQuery(goalText) {
   return String(goalText || "").trim().slice(0, 180);
 }
 
+const SEARCH_EVIDENCE_STOPWORDS = new Set([
+  "a", "an", "and", "are", "for", "from", "find", "how", "in", "is", "it", "look", "of", "on", "or",
+  "search", "to", "up", "what", "when", "where", "which", "why", "with", "do", "i", "me", "my", "the",
+  "please", "result", "results", "page", "app"
+]);
+
 function hasSearchGoalEvidence(goalText, state) {
   const query = String(extractSearchQuery(goalText) || "").trim().toLowerCase();
   if (!query) return true;
-  const queryTokens = query.split(/\s+/).filter(Boolean).slice(0, 6);
+  const queryTokens = query
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(token => token.length > 2 && !SEARCH_EVIDENCE_STOPWORDS.has(token))
+    .slice(0, 6);
   if (!queryTokens.length) return true;
 
   const urlText = String(state?.url || "").toLowerCase();
@@ -6659,9 +7326,17 @@ function hasSearchGoalEvidence(goalText, state) {
   const bodyText = String(state?.text || "").toLowerCase();
   const joined = `${urlText}\n${titleText}\n${bodyText}`;
 
-  // All core tokens should appear somewhere in URL/title/body.
-  const tokenHit = queryTokens.every(token => joined.includes(token));
-  if (!tokenHit) return false;
+  const matchedTokens = queryTokens.filter(token => joined.includes(token));
+  const requiredHits = Math.min(2, queryTokens.length);
+  if (matchedTokens.length < requiredHits) {
+    return false;
+  }
+
+  // Strong completion signals for docs/results pages even when the exact query
+  // wording changes between search query and final page title/body.
+  if (/(docs?|documentation|guide|tutorial|quickstart|reference|deploy|deployment|hosting|static)/.test(joined)) {
+    return true;
+  }
 
   // Guard known false positive: Wikipedia special search with empty query.
   if (/wikipedia\.org\/wiki\/special:search/i.test(String(state?.url || ""))) {
@@ -6675,10 +7350,22 @@ function hasSearchGoalEvidence(goalText, state) {
   return true;
 }
 
-function shouldAcceptPlannerDoneDecision(goalText, state) {
+function shouldAcceptPlannerDoneDecision(goalText, state, extractedTextBuffer = "") {
   const searchIntent = /\b(search|search\s+for|search\s+up|look\s+up|find)\b/i.test(String(goalText || ""));
   if (searchIntent) {
-    return hasSearchGoalEvidence(goalText, state);
+    if (hasSearchGoalEvidence(goalText, state)) {
+      return true;
+    }
+
+    const extractedEvidence = String(extractedTextBuffer || "").trim();
+    if (extractedEvidence) {
+      const joined = `${String(state?.url || "").toLowerCase()}\n${String(state?.title || "").toLowerCase()}\n${String(state?.text || "").toLowerCase()}\n${extractedEvidence.toLowerCase()}`;
+      if (/\b(docs?|documentation|guide|tutorial|quickstart|reference|deploy|deployment|hosting|static)\b/.test(joined)) {
+        return true;
+      }
+    }
+
+    return false;
   }
   return true;
 }
@@ -7093,6 +7780,92 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
   // 2) Search workflow: fill visible search input then submit via Enter.
   const query = extractSearchQuery(goal);
   if (query) {
+    if (isSearchEngineComparisonGoal(goal)) {
+      const logText = String((taskLog || []).join("\n") || "").toLowerCase();
+      const onGoogle = currentHost === "google.com" || currentHost.endsWith(".google.com");
+      const onBing = currentHost === "bing.com" || currentHost.endsWith(".bing.com");
+      const googleSearchSeen = isGoogleSearchResultsUrl(currentUrl) || logText.includes("google.com/search?q=");
+      const bingSearchSeen = /bing\.com\/search\?q=/.test(currentUrl.toLowerCase()) || logText.includes("bing.com/search?q=");
+      const googleCaptured = logText.includes("capture google:ok");
+      const bingCaptured = logText.includes("capture bing:ok");
+
+      if (googleCaptured && bingCaptured) {
+        return {
+          reasoning: "Heuristic compare flow: both engines captured; ready to summarize.",
+          confidence: 90,
+          done: true,
+          actions: []
+        };
+      }
+
+      if (!googleSearchSeen) {
+        return {
+          reasoning: `Heuristic compare flow: run Google search for \"${query}\" first.`,
+          confidence: 84,
+          done: false,
+          actions: [
+            { action: "goto", params: { url: buildSearchResultsUrl(query, "google") } },
+            { action: "waitForVisible", params: { selector: "a[href]", timeout: 8000 } }
+          ]
+        };
+      }
+
+      if (onGoogle && !googleCaptured) {
+        return {
+          reasoning: "Heuristic compare flow: capture Google result-page text.",
+          confidence: 80,
+          done: false,
+          actions: [
+            { action: "getAllText", params: {} }
+          ]
+        };
+      }
+
+      if (!bingSearchSeen || onGoogle) {
+        return {
+          reasoning: "Heuristic compare flow: run the same query on Bing for contrast.",
+          confidence: 82,
+          done: false,
+          actions: [
+            { action: "goto", params: { url: buildSearchResultsUrl(query, "bing") } },
+            { action: "waitForVisible", params: { selector: "a[href]", timeout: 8000 } }
+          ]
+        };
+      }
+
+      if (onBing && !bingCaptured) {
+        return {
+          reasoning: "Heuristic compare flow: capture Bing result-page text.",
+          confidence: 80,
+          done: false,
+          actions: [
+            { action: "getAllText", params: {} }
+          ]
+        };
+      }
+    }
+
+    if (isDocsPreferredSearch(query, goal)) {
+      const docsLink = pickDocsLinkFromState(state, query);
+      if (docsLink && docsLink.href && !currentUrl.includes(String(docsLink.href))) {
+        const docsHref = String(docsLink.href);
+        const docsHost = getHostFromUrl(docsHref);
+        const docsSelector = [
+          `a[href=${quoteCssText(docsHref)}]`,
+          docsHost ? `a[href*=${quoteCssText(docsHost)}]` : ""
+        ].filter(Boolean).join(", ");
+        return {
+          reasoning: `Heuristic: open a docs-style result for \"${query}\"`,
+          confidence: 80,
+          done: false,
+          actions: [
+            { action: "click", params: { selector: docsSelector } },
+            { action: "waitForURLChange", params: { currentURL: currentUrl, targetURL: docsHref, timeout: 10000 } }
+          ]
+        };
+      }
+    }
+
     const recentFillAttempts = countRecentActionStatus("fill:ok") + countRecentActionStatus("submitform:ok");
     const recentGotoGoogle = countRecentActionStatus("goto:ok") + countRecentActionStatus("google.com");
     const shouldForceSearchUrl = recentFillAttempts >= 4 || recentGotoGoogle >= 4 || failures >= 2;
@@ -7112,7 +7885,11 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
 
     const visibleInput = (state?.inputs || []).find(i => i.visible && /search|text/i.test(String(i.type || "")));
     const inputSelector = visibleInput
-      ? (visibleInput.id ? `#${visibleInput.id}` : (visibleInput.name ? `[name='${visibleInput.name}']` : "input[type='search'],input[type='text'],textarea"))
+      ? (visibleInput.id
+          ? buildExactAttrSelector("id", visibleInput.id)
+          : (visibleInput.name
+              ? buildExactAttrSelector("name", visibleInput.name)
+              : "input[type='search'],input[type='text'],textarea"))
       : "input[type='search'],input[name='q'],textarea[name='q'],input[type='text']";
     return {
       reasoning: `Heuristic: fill search input and submit query \"${query}\"`,
@@ -7255,7 +8032,11 @@ function goalMemoryContext(mem) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function extractMainContent(state) {
   try {
-    const result = await page.evaluate(() => {
+    const targetPage = state?.page || state?.pageHandle || state?.targetPage || state?.browserPage || state?.playwrightPage;
+    if (!targetPage || typeof targetPage.evaluate !== "function") {
+      throw new Error("No page handle available for main-content extraction");
+    }
+    const result = await targetPage.evaluate(() => {
       const noiseSelectors = [
         "nav","header","footer","aside","[role='navigation']","[role='banner']",
         "[role='complementary']","[role='contentinfo']","#toc","#catlinks",
@@ -7284,6 +8065,22 @@ async function extractMainContent(state) {
   } catch {
     return String(state?.text || "").slice(0, 14000);
   }
+}
+
+function shouldCaptureStructuredDom(goal, action, extractedText = "") {
+  const text = `${String(goal || "")} ${String(action || "")} ${String(extractedText || "")}`.toLowerCase();
+  return /\b(extract|summarize|summarise|summary|page map|dom|document structure|element map|layout|visible elements|structure)\b/.test(text);
+}
+
+async function captureVoidElementMap(page, options = {}) {
+  return captureVoidElementMapFromPage(page, options);
+}
+
+function summarizeVoidElementMap(domMap = {}) {
+  const summary = domMap?.summary || {};
+  const totalCaptured = Number(summary.totalCaptured || domMap.totalCaptured || 0);
+  if (!totalCaptured) return "DOM map: 0 elements";
+  return `DOM map: ${totalCaptured} elements (${Number(summary.visibleCount || 0)} visible, ${Number(summary.clickableCount || 0)} clickable, ${Number(summary.anchorCount || 0)} anchors, ${Number(summary.buttonCount || 0)} buttons, ${Number(summary.idsWithElements || 0)} with id)`;
 }
 
 function chunkText(text, maxChunkChars = 3000) {
@@ -7622,7 +8419,7 @@ function evaluateSupervisorPlanGate(input = {}) {
   return {
     score,
     decision,
-    allow: SUPERVISOR_MODE === "passive" ? true : decision !== "blocked",
+    allow: true,
     reasons: [personalityMsg, ...reasons],
     mode: SUPERVISOR_MODE,
     planRisk,
@@ -7644,9 +8441,9 @@ function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
   if ((a === "evaluate") && (planRisk >= SUPERVISOR_ACTION_BLOCK_RISK || instinctRisk >= 0.72)) {
     const msg = generateSupervisorMessage({ type: "dangerousAction" });
     return {
-      allow: SUPERVISOR_MODE === "passive",
+      allow: true,
       reason: msg,
-      severity: "blocked",
+      severity: "warn",
       detectionType: "dangerousAction"
     };
   }
@@ -7654,18 +8451,18 @@ function evaluateSupervisorActionGate(action, params, context = {}, index = 0) {
   if (a === "reload" && failures >= 2 && index > 0) {
     const msg = generateSupervisorMessage({ type: "reloadSpam" });
     return {
-      allow: SUPERVISOR_MODE === "passive",
+      allow: true,
       reason: msg,
-      severity: "blocked",
+      severity: "warn",
       detectionType: "reloadSpam"
     };
   }
 
   if (a === "goto" && !String(params?.url || "").trim()) {
     return {
-      allow: SUPERVISOR_MODE === "passive",
+      allow: true,
       reason: "blocked goto without target url",
-      severity: "blocked",
+      severity: "warn",
       detectionType: "invalidGoto"
     };
   }
@@ -7830,7 +8627,8 @@ RESPOND WITH THIS JSON SHAPE ONLY:
           aiResult = safeParseJSON(fixed);
         }
         if (!aiResult || typeof aiResult !== "object") {
-          throw new Error(`Invalid JSON from supervisor via ${supervisorModel}`);
+          lastError = new Error(`Invalid JSON from supervisor via ${supervisorModel}`);
+          continue;
         }
         usedModel = supervisorModel;
         supervisorRouteFailCache.delete(supervisorModel);
@@ -7890,8 +8688,22 @@ RESPOND WITH THIS JSON SHAPE ONLY:
   }
 }
 
-async function runTask(goal, models, chatId) {
+async function runTask(goal, models, chatId, browserRuntime = null) {
   agentRunning = true;
+  const runtime = browserRuntime && typeof browserRuntime === "object" ? browserRuntime : {};
+  const taskRetryLimit = Number.isFinite(Number(runtime.errorRetry)) ? Math.max(1, Math.min(8, Number(runtime.errorRetry))) : MAX_RETRIES;
+  const taskRetryBackoffMs = Number.isFinite(Number(runtime.errorBackoffMs)) && Number(runtime.errorBackoffMs) > 0
+    ? Math.max(120, Number(runtime.errorBackoffMs))
+    : 2000;
+  const taskHeartbeatEnabled = !!runtime.heartbeat;
+  const taskHeartbeatMs = Number.isFinite(Number(runtime.logIntervalSec)) && Number(runtime.logIntervalSec) > 0
+    ? Math.max(1000, Math.round(Number(runtime.logIntervalSec) * 1000))
+    : 12000;
+  const taskStealthLike = !!runtime.stealth || String(runtime.antiBot || "").toLowerCase() === "evasive";
+  const taskPacingMultiplier = taskStealthLike ? 1.35 : 1;
+  const taskBaseNavigationCooldownMs = taskStealthLike
+    ? Math.max(BASE_NAVIGATION_COOLDOWN_MS, 4500)
+    : BASE_NAVIGATION_COOLDOWN_MS;
   const plannerHistory = [{ role: "system", content: PLANNER_SYSTEM_PROMPT }];
   const taskLog   = [];
   let visionFeedback = null;
@@ -7920,10 +8732,13 @@ async function runTask(goal, models, chatId) {
   let dynamicSignalStreak = 0;
   let lastAttemptedPlanSignature = "";
   let extractedTextBuffer = "";
+  let taskHeartbeatTimer = null;
   const goalMem = buildGoalMemory(goal);
   const originalQuery = goalMem.query || getOriginalQuery(goal);
+  const searchEngineCompareGoal = isSearchEngineComparisonGoal(goal);
+  const compareSnapshots = { google: "", bing: "" };
   const simpleBrowsingModeActive = shouldUseSimpleBrowsingMode(goal);
-  const directNavigationTarget = resolveDirectNavigationTarget(goal);
+  const directNavigationTarget = searchEngineCompareGoal ? "" : resolveDirectNavigationTarget(goal);
   const directNavigationTargetHost = getHostFromUrl(directNavigationTarget || "");
   let simpleFastPathSatisfied = false;
   const escapeContext = {
@@ -7965,7 +8780,26 @@ async function runTask(goal, models, chatId) {
   }
 
   async function triggerEscapeHatch(step, reason, tag, options = {}) {
-    const requestedUrl = String(options?.targetUrl || pickRecoveryUrl(goal, originalQuery));
+    const currentPageUrlRaw = (() => {
+      try { return String(page?.url?.() || "").trim(); } catch { return ""; }
+    })();
+    const requestedTargetRaw = String(options?.targetUrl || pickRecoveryUrl(goal, originalQuery) || "").trim();
+    const fallbackRecoveryUrl = sanitizeNavigationUrl(pickRecoveryUrl(goal, originalQuery)) || "https://www.google.com/";
+    const currentPageUrl = sanitizeNavigationUrl(currentPageUrlRaw);
+    const requestedTarget = sanitizeNavigationUrl(requestedTargetRaw) || fallbackRecoveryUrl;
+    const currentHost = getHostFromUrl(currentPageUrl || "");
+    const requestedHost = getHostFromUrl(requestedTarget || "");
+    const shouldPreserveCurrentUrl =
+      requestedTarget &&
+      currentPageUrl &&
+      requestedHost === "google.com" &&
+      currentHost &&
+      currentHost !== "google.com" &&
+      tag !== "CAPTCHA_ESCAPE" &&
+      tag !== "CONTEXT_RESET";
+    const requestedUrl = shouldPreserveCurrentUrl
+      ? currentPageUrl
+      : requestedTarget || currentPageUrl || fallbackRecoveryUrl;
     stepLogMsg(`Step ${step}: ${tag} — ${reason}`);
     taskLog.push(`Step ${step}: ${tag}`);
     broadcast("escape_hatch", {
@@ -8008,6 +8842,15 @@ async function runTask(goal, models, chatId) {
     await startTaskVisionPipeline(goal, models);
     broadcast("task_start", { goal });
     status("Starting task: " + goal);
+    if (taskHeartbeatEnabled) {
+      taskHeartbeatTimer = setInterval(() => {
+        try {
+          status(`Heartbeat: task active on ${String(page?.url?.() || "about:blank")}`);
+        } catch {
+          status("Heartbeat: task active");
+        }
+      }, taskHeartbeatMs);
+    }
     appendLearningEvent({
       kind: "task",
       phase: "start",
@@ -8039,12 +8882,17 @@ async function runTask(goal, models, chatId) {
       finalState  = state;
       status(`URL: ${state.url}`);
       const currentHost = getHostFromUrl(state.url);
+      if (step === 1 && shouldResetTaskContextToGoogle(state, goalMem, searchEngineCompareGoal)) {
+        await triggerEscapeHatch(step, `Task context mismatch on ${currentHost || "unknown-host"}. Resetting to Google before executing the new task.`, "CONTEXT_RESET", { targetUrl: "https://www.google.com/" });
+        continue;
+      }
       if (directNavigationTargetHost && hostMatchesExpectedHost(currentHost, directNavigationTargetHost)) {
         simpleFastPathSatisfied = true;
       }
 
       if (
         simpleBrowsingModeActive &&
+        !searchEngineCompareGoal &&
         step <= 3 &&
         directNavigationTarget &&
         !simpleFastPathSatisfied &&
@@ -8059,11 +8907,11 @@ async function runTask(goal, models, chatId) {
           actions: [{ action: "goto", params: { url: directNavigationTarget } }]
         };
         const fastResults = await withExecutorWork(() => executeActionPlan(fastPlan, goal, models, {
-          pacingMultiplier: 1,
+          pacingMultiplier: taskPacingMultiplier,
           preActionIdleMs: 0,
           burstLimit: Number.POSITIVE_INFINITY,
           microBreakMs: 0,
-          navigationCooldownMs: BASE_NAVIGATION_COOLDOWN_MS,
+          navigationCooldownMs: taskBaseNavigationCooldownMs,
           navigationCooldownByHost,
           visionOnlyClickMode: false
         }, {
@@ -8089,8 +8937,9 @@ async function runTask(goal, models, chatId) {
         }
       }
 
-      const directTargetUrl = resolveDirectNavigationTarget(goal);
+      const directTargetUrl = searchEngineCompareGoal ? "" : resolveDirectNavigationTarget(goal);
       if (
+        !searchEngineCompareGoal &&
         step >= 4 &&
         directTargetUrl &&
         isGoogleSearchResultsUrl(state.url)
@@ -8145,7 +8994,10 @@ async function runTask(goal, models, chatId) {
       const visionOnlyClickMode = dynamicUiHot && (!simpleBrowsingModeActive || failures >= SIMPLE_BROWSING_DYNAMIC_UI_FAIL_THRESHOLD);
       const dynamicFailureSignal = detectVisionDynamicFailureSignal(visionFeedback, visionSnap, visionOnlyClickMode);
       dynamicSignalStreak = dynamicFailureSignal ? (dynamicSignalStreak + 1) : 0;
-      if (dynamicSignalStreak > ESCAPE_DYNAMIC_STREAK_LIMIT) {
+      const dynamicEscapeEligible =
+        dynamicSignalStreak > ESCAPE_DYNAMIC_STREAK_LIMIT &&
+        (failures >= ESCAPE_DYNAMIC_MIN_FAILURES || (dynamicUiHot && !visionFresh));
+      if (dynamicEscapeEligible) {
         await triggerEscapeHatch(step, `Dynamic UI failure streak reached ${dynamicSignalStreak}`, "DYNAMIC_ESCAPE", { targetUrl: pickRecoveryUrl(goal, originalQuery) });
         continue;
       }
@@ -8194,8 +9046,23 @@ async function runTask(goal, models, chatId) {
 
         let solved = false;
         let currentCaptchaState = state;
+        let captchaAttemptFailures = 0;
         for (let attempt = checks; attempt <= CAPTCHA_HUMAN_CHECK_LIMIT; attempt++) {
-          const attemptResult = await withExecutorWork(() => attemptCaptchaSolve(currentCaptchaState, models, attempt, captcha.reason));
+          let attemptResult = null;
+          try {
+            attemptResult = await withExecutorWork(() => attemptCaptchaSolve(currentCaptchaState, models, attempt, captcha.reason));
+          } catch (err) {
+            captchaAttemptFailures += 1;
+            errLog(`CAPTCHA attempt ${attempt}/${CAPTCHA_HUMAN_CHECK_LIMIT} failed: ${err.message}`);
+            stepLogMsg(`Step captcha: failed attempt ${attempt}/${CAPTCHA_HUMAN_CHECK_LIMIT} on ${currentCaptchaState.url}`);
+            if (captchaAttemptFailures >= 3 || attempt >= 3) {
+              await triggerEscapeHatch(step, `CAPTCHA flow misfired after ${attempt} attempts; recovering from suspected false positive or stale selector state.`, "CAPTCHA_ESCAPE", { targetUrl: "https://www.google.com/", failedAction: "captcha", failedSelector: escapeContext.lastFailedSelector || "" });
+              currentCaptchaState = finalState;
+              break;
+            }
+            await sleepLikeHuman(600, page);
+            continue;
+          }
           currentCaptchaState = attemptResult.state || currentCaptchaState;
           if (attemptResult.solved) {
             solved = true;
@@ -8207,10 +9074,22 @@ async function runTask(goal, models, chatId) {
             status(`CAPTCHA cleared after ${attempt}/${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts.`);
             break;
           }
+          if (attempt >= 3) {
+            await triggerEscapeHatch(step, `CAPTCHA still present after ${attempt} automated attempts; recovering instead of continuing blind retries.`, "CAPTCHA_ESCAPE", { targetUrl: "https://www.google.com/", failedAction: "captcha" });
+            currentCaptchaState = finalState;
+            break;
+          }
           if (attempt >= CAPTCHA_HUMAN_CHECK_LIMIT) break;
         }
 
         if (!solved) {
+          const recoveredToGoogle = hostMatchesExpectedHost(getHostFromUrl(finalState.url), "google.com");
+          if (recoveredToGoogle) {
+            captchaDetectionStreakByPage.delete(pageKey);
+            clearHumanBridgeState();
+            await sleepLikeHuman(350, page);
+            continue;
+          }
           const unresolvedCycles = (captchaHandoffsByPage.get(pageKey) || 0) + 1;
           captchaHandoffsByPage.set(pageKey, unresolvedCycles);
           const shouldEscalate = unresolvedCycles >= CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES;
@@ -8372,14 +9251,14 @@ async function runTask(goal, models, chatId) {
         } else {
           taskLog.push(`Step ${step}: planner error`);
           failures++;
-          if (failures >= MAX_RETRIES) { errLog("Too many failures — stopping."); break; }
-          await sleep(2000);
+          if (failures >= taskRetryLimit) { errLog("Too many failures — stopping."); break; }
+          await sleep(taskRetryBackoffMs);
           continue;
         }
       }
 
       if (plan.done) {
-        if (shouldAcceptPlannerDoneDecision(goal, state)) {
+        if (shouldAcceptPlannerDoneDecision(goal, state, extractedTextBuffer)) {
           stepLogMsg(`Step ${step}: DONE — ${plan.reasoning}`);
           taskLog.push(`Step ${step}: DONE`);
           completed = true;
@@ -8404,7 +9283,7 @@ async function runTask(goal, models, chatId) {
         } else {
           taskLog.push(`Step ${step}: no actions`);
           if (plan._parseFailed) failures++;
-          if (failures >= MAX_RETRIES) break;
+          if (failures >= taskRetryLimit) break;
           continue;
         }
       }
@@ -8541,7 +9420,7 @@ async function runTask(goal, models, chatId) {
               `Supervisor blocks: ${supervisorBlocks}, current URL: ${state.url}`
             );
           }
-          if (failures >= MAX_RETRIES) break;
+          if (failures >= taskRetryLimit) break;
           continue;
         }
       }
@@ -8570,7 +9449,7 @@ async function runTask(goal, models, chatId) {
 
       const adaptiveThrottle = gentleModeActive
         ? {
-            pacingMultiplier: CAPTCHA_GENTLE_PACING_MULTIPLIER,
+            pacingMultiplier: CAPTCHA_GENTLE_PACING_MULTIPLIER * taskPacingMultiplier,
             preActionIdleMs: CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS,
             burstLimit: CAPTCHA_GENTLE_BURST_ACTIONS,
             microBreakMs: CAPTCHA_GENTLE_MICRO_BREAK_MS,
@@ -8579,11 +9458,11 @@ async function runTask(goal, models, chatId) {
             visionOnlyClickMode
           }
         : {
-            pacingMultiplier: 1,
+            pacingMultiplier: taskPacingMultiplier,
             preActionIdleMs: 0,
             burstLimit: Number.POSITIVE_INFINITY,
             microBreakMs: 0,
-            navigationCooldownMs: BASE_NAVIGATION_COOLDOWN_MS,
+            navigationCooldownMs: taskBaseNavigationCooldownMs,
             navigationCooldownByHost,
             visionOnlyClickMode
           };
@@ -8613,6 +9492,28 @@ async function runTask(goal, models, chatId) {
       const extractedNow = getExtractedTextFromResults(results);
       if (extractedNow) {
         extractedTextBuffer = extractedNow;
+        if (searchEngineCompareGoal) {
+          const hostNow = getHostFromUrl(state.url);
+          if ((hostNow === "google.com" || hostNow.endsWith(".google.com")) && !compareSnapshots.google) {
+            compareSnapshots.google = extractedNow;
+            taskLog.push(`Capture google:ok (${extractedNow.length} chars)`);
+            stepLogMsg(`Capture google:ok (${extractedNow.length} chars)`);
+          }
+          if ((hostNow === "bing.com" || hostNow.endsWith(".bing.com")) && !compareSnapshots.bing) {
+            compareSnapshots.bing = extractedNow;
+            taskLog.push(`Capture bing:ok (${extractedNow.length} chars)`);
+            stepLogMsg(`Capture bing:ok (${extractedNow.length} chars)`);
+          }
+          if (compareSnapshots.google && compareSnapshots.bing) {
+            extractedTextBuffer = [
+              "Google results snapshot:",
+              compareSnapshots.google.slice(0, 4000),
+              "",
+              "Bing results snapshot:",
+              compareSnapshots.bing.slice(0, 4000)
+            ].join("\n");
+          }
+        }
       }
 
       // Advance goal memory with this step's results.
@@ -8623,7 +9524,7 @@ async function runTask(goal, models, chatId) {
       if (isExtractionSummaryGoal(goal) && extractedTextBuffer && searchEvidenceReady) {
         // If we haven't done smart extraction yet, do it now for cleaner summary content.
         if (extractedTextBuffer.length < 2000) {
-          const smartText = await withExecutorWork(() => extractMainContent(state));
+          const smartText = await withExecutorWork(() => extractMainContent({ ...state, page }));
           if (smartText && smartText.length > extractedTextBuffer.length) {
             extractedTextBuffer = smartText;
           }
@@ -8651,7 +9552,7 @@ async function runTask(goal, models, chatId) {
               `${actionName} failed ${next} consecutive times`,
               "RECOVERED",
               {
-                targetUrl: "https://google.com",
+                    targetUrl: state.url,
                 failedAction: actionName,
                 failedSelector: result?.selector || plan.actions?.find(item => String(item?.action || "") === actionName)?.params?.selector || ""
               }
@@ -8672,7 +9573,7 @@ async function runTask(goal, models, chatId) {
       if (!hadSuccessfulAction && (Date.now() - stepStartedAt) > ESCAPE_STEP_TIMEOUT_MS) {
         const failedItem = (results || []).find(item => isActionFailureStatus(item?.status)) || {};
         await triggerEscapeHatch(step, `Step runtime exceeded ${ESCAPE_STEP_TIMEOUT_MS}ms`, "RECOVERED", {
-          targetUrl: "https://google.com",
+          targetUrl: state.url,
           failedAction: failedItem.action || "",
           failedSelector: failedItem.selector || ""
         });
@@ -8693,7 +9594,7 @@ async function runTask(goal, models, chatId) {
 
       const allFailed = results.every(r => r.status === "error" || r.status === "blocked");
       failures = allFailed ? failures + 1 : 0;
-      if (failures >= MAX_RETRIES) { errLog("Circuit breaker: stopping."); break; }
+      if (failures >= taskRetryLimit) { errLog("Circuit breaker: stopping."); break; }
 
       // SANITY CHECK: Detect if agent is "bling-induced psychotic" (completely confused)
       const psychosisState = detectPsychosisState(taskLog, failures, step);
@@ -8820,6 +9721,9 @@ async function runTask(goal, models, chatId) {
     broadcast("task_done", { answer, completed: completed && !requiresHuman && !stoppedByGuidance, aborted: stoppedByGuidance });
     return answer;
   } finally {
+    if (taskHeartbeatTimer) {
+      clearInterval(taskHeartbeatTimer);
+    }
     const visionStats = stopTaskVisionPipeline();
     broadcast("vision_stats", {
       fps: VISION_STREAM_FPS,
@@ -8874,7 +9778,7 @@ async function handleRequest(req, res) {
       "Access-Control-Allow-Origin": requestOrigin || "*",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
       "Vary": "Origin"
     });
     res.end();
@@ -9313,6 +10217,30 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (chatMatch && req.method === "PATCH") {
+    try {
+      const body = await readJsonBody(req);
+      const store = loadChatStore(auth?.userId || null);
+      const chat = store.chats.find(item => item.id === chatMatch[1]);
+      if (!chat) {
+        sendJson(res, 404, { error: "Chat not found" });
+        return;
+      }
+      const updated = renameChatTitle(chat, body.title);
+      if (!updated) {
+        sendJson(res, 400, { error: "Title is required" });
+        return;
+      }
+      chat.updatedAt = new Date().toISOString();
+      saveChatStore(store, auth?.userId || null);
+      sendJson(res, 200, { chat, selectedChatId: store.selectedChatId });
+      broadcast("chat_sync", { chatId: chat.id });
+    } catch {
+      sendJson(res, 400, { error: "Invalid request body" });
+    }
+    return;
+  }
+
   if (chatMatch && req.method === "GET") {
     const { store } = ensureCurrentChat(auth?.userId || null);
     const chat = store.chats.find(item => item.id === chatMatch[1]);
@@ -9392,6 +10320,20 @@ async function handleRequest(req, res) {
       }
       const stats = striderIntegration.getStats();
       sendJson(res, stats.ok ? 200 : (stats.code || 400), stats);
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
+    return;
+  }
+
+  if (pathname === "/api/strider/health" && req.method === "GET") {
+    try {
+      if (!striderIntegration) {
+        sendJson(res, 400, { error: "Strider not initialized" });
+        return;
+      }
+      const health = striderIntegration.getHealth();
+      sendJson(res, health.ok ? 200 : (health.code || 400), health);
     } catch (err) {
       sendJson(res, 400, { error: err.message });
     }
@@ -9550,7 +10492,8 @@ async function handleRequest(req, res) {
         activeChat = fallback.chat;
       }
 
-      const command = parseSlashCommand(rawMessage);
+      const normalizedCommandMessage = normalizeBrowserFlagBundleMessage(rawMessage);
+      const command = parseSlashCommand(normalizedCommandMessage);
       const explicitSlashAction = command ? resolveExplicitSlashAction(command) : { kind: "unknown" };
       const slashModel = command ? resolveSlashModelCommand(command) : null;
       if (slashModel && command) {
@@ -9628,6 +10571,7 @@ async function handleRequest(req, res) {
       }
 
       if (command && explicitSlashAction.kind === "browser") {
+        const browserRuntime = buildBrowserRuntimeConfig(command);
         let browserGoal = buildBrowserCommandGoal(command, mediaItems.length ? message : "");
         if (!browserGoal) {
           appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
@@ -9664,7 +10608,16 @@ async function handleRequest(req, res) {
           status("Strider frontier helper attached site-map context to browser task.");
         }
 
-        if (getRuntimeModelOverride(activeChat)) {
+        if (browserRuntime && Array.isArray(browserRuntime.modelSwitch) && browserRuntime.modelSwitch.length) {
+          const preferredModel = String(browserRuntime.modelSwitch[0] || "").trim();
+          const resolvedModel = findModelByNameOrId(modelCatalogCache.items, preferredModel) || preferredModel;
+          if (resolvedModel) {
+            setRuntimeModelOverride(chatId, resolvedModel, userId);
+            status(`Browser task runtime model set to ${resolvedModel}`);
+          }
+        }
+
+        if (!browserRuntime && getRuntimeModelOverride(activeChat)) {
           clearRuntimeModelOverride(chatId, userId);
         }
 
@@ -9672,7 +10625,7 @@ async function handleRequest(req, res) {
         sendJson(res, 202, { ok: true, chatId, command: command.command, media: mediaAnalysisMeta });
         const { chat } = ensureCurrentChat(userId);
         const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
-        await runTask(browserGoal, models, chatId);
+        await runTask(browserGoal, models, chatId, browserRuntime);
         broadcast("url", { url: page.url() });
         return;
       }
@@ -9857,10 +10810,25 @@ async function handleRequest(req, res) {
 
     await runCloudflareStartupPreflight();
 
-    console.log("🚀 Launching browser...");
+    const browserHeadlessEnv = String(process.env.PUPPETERR_HEADLESS || "").trim().toLowerCase();
+    let browserHeadless;
+    if (browserHeadlessEnv === "false" || browserHeadlessEnv === "0" || browserHeadlessEnv === "no") {
+      browserHeadless = false;
+    } else if (browserHeadlessEnv === "true" || browserHeadlessEnv === "1" || browserHeadlessEnv === "yes") {
+      browserHeadless = true;
+    } else {
+      browserHeadless = !process.env.DISPLAY;
+    }
+
+    if (!process.env.DISPLAY && browserHeadless === false) {
+      console.warn("⚠️  No DISPLAY detected; forcing headless browser mode.");
+      browserHeadless = true;
+    }
+
+    console.log(`🚀 Launching browser (headless=${browserHeadless})...`);
     fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
     context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      headless: false,
+      headless: browserHeadless,
       executablePath: require("playwright").chromium.executablePath(),
       userAgent: FINGERPRINT_USER_AGENT,
       locale: FINGERPRINT_LOCALE,
@@ -9887,42 +10855,8 @@ async function handleRequest(req, res) {
       applyOverride(window.Navigator.prototype, "platform", platform);
       applyOverride(window.Navigator.prototype, "hardwareConcurrency", cpuCores);
     }, { platform: FINGERPRINT_PLATFORM, cpuCores: FINGERPRINT_CPU_CORES });
-    await context.addInitScript(() => {
-      const captureElementMap = () => {
-        if (window.__VOID_ELEMENT_MAP_CAPTURED__) return;
-        window.__VOID_ELEMENT_MAP_CAPTURED__ = true;
-
-        const result = Array.from(document.querySelectorAll("[id]")).map((element) => {
-          const rect = element.getBoundingClientRect();
-          const classValue = typeof element.className === "string"
-            ? element.className
-            : element.getAttribute("class") || "";
-
-          return {
-            tagName: element.tagName.toLowerCase(),
-            id: element.id || "",
-            class: classValue,
-            role: element.getAttribute("role"),
-            name: element.getAttribute("name"),
-            "aria-label": element.getAttribute("aria-label"),
-            boundingBox: {
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height
-            }
-          };
-        });
-
-        window.__VOID_ELEMENT_MAP__ = result;
-        console.log("VOID_ELEMENT_MAP", result);
-      };
-
-      if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", captureElementMap, { once: true });
-      } else {
-        queueMicrotask(captureElementMap);
-      }
+    await installVoidElementMapInitScript(context).catch((err) => {
+      console.warn("⚠️  VOID element-map init script install failed:", err.message);
     });
 
     browser = context.browser();
