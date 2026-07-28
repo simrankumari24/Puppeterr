@@ -221,7 +221,7 @@ sudo apt-get install -y \
 "
 
 to run the program itself you need to run this cmd
-"npm start
+"npm start"
 if its not 'INSTALLED' do this
 
 "
