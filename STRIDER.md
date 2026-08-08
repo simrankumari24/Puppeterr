@@ -9,7 +9,7 @@ Strider is a frontier-based autonomous web crawler system that extends Puppeterr
 │               Strider Unified Agent Loop                    │
 ├─────────────────────────────────────────────────────────────┤
 │  • N parallel Fetch Crawlers (fast, static HTML parsing)    │
-│  • 1 Puppeteer Fallback Worker (for JS-heavy pages)        │
+│  • 1 Puppeteer Fallback Worker (for JS-heavy pages)         │
 │  • Unified Frontier Queue (persistent, domain-aware)        │
 │  • Escape Hatch Detection (bot traps, redirects, auth)      │
 │  • Domain Filtering (blocklist, pattern matching)           │
@@ -155,8 +155,8 @@ strider.enqueue('https://another-url.com', 'https://source-url.com');
        ▼
 ┌──────────────────────┐
 │   Frontier Queue     │
-│  [URL, domain, ..] │
-└──────┬─────────┬────┘
+│  [URL, domain, ..]   │
+└──────┬─────────┬───┘
        │         │
        ▼         ▼
    ┌─────────────────────────┐

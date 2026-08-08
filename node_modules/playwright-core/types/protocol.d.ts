@@ -341,6 +341,84 @@ including nodes that are ignored for accessibility.
     }
   }
   
+  /**
+   * A domain for ad-related metrics and data.
+   */
+  export namespace Ads {
+    /**
+     * Ad frame data.
+     */
+    export interface AdFrameData {
+      /**
+       * The DevTools frame token.
+       */
+      frameId: Page.FrameId;
+      /**
+       * The initial origin of the frame. To minimize the payload size, this is
+only sent once per frame.
+       */
+      initialOrigin?: string;
+      /**
+       * The network bytes of the frame.
+       */
+      networkBytes: number;
+      /**
+       * The CPU time of the frame, in milliseconds.
+       */
+      cpuTime: number;
+    }
+    /**
+     * Ad metrics for a page.
+     */
+    export interface AdMetrics {
+      /**
+       * The viewport ad density by area, represented as a percentage (an integer
+between 0 and 100).
+       */
+      viewportAdDensityByArea: number;
+      /**
+       * The time-weighted average of the viewport ad density by area, measured
+across the duration of the page.
+       */
+      averageViewportAdDensityByArea: number;
+      /**
+       * The number of ads currently visible within the viewport.
+       */
+      viewportAdCount: number;
+      /**
+       * The time-weighted average of the viewport ad count, measured across the
+duration of the page.
+       */
+      averageViewportAdCount: number;
+      /**
+       * The total ad CPU usage, in milliseconds.
+       */
+      totalAdCpuTime: number;
+      /**
+       * The total ad network bytes.
+       */
+      totalAdNetworkBytes: number;
+      /**
+       * The list of ad frames that have been updated since the last event.
+       */
+      updateAdFrames: AdFrameData[];
+      /**
+       * The list of ad frame IDs that have been removed since the last event.
+       */
+      removeAdFrames: Page.FrameId[];
+    }
+    
+    
+    /**
+     * Retrieves ad metrics for the current page.
+     */
+    export type getAdMetricsParameters = {
+    }
+    export type getAdMetricsReturnValue = {
+      metrics: AdMetrics;
+    }
+  }
+  
   export namespace Animation {
     /**
      * Animation instance.
@@ -859,8 +937,8 @@ CORS RFC1918 enforcement.
       clientSecurityState?: Network.ClientSecurityState;
     }
     export type AttributionReportingIssueType = "PermissionPolicyDisabled"|"UntrustworthyReportingOrigin"|"InsecureContext"|"InvalidHeader"|"InvalidRegisterTriggerHeader"|"SourceAndTriggerHeaders"|"SourceIgnored"|"TriggerIgnored"|"OsSourceIgnored"|"OsTriggerIgnored"|"InvalidRegisterOsSourceHeader"|"InvalidRegisterOsTriggerHeader"|"WebAndOsHeaders"|"NoWebOrOsSupport"|"NavigationRegistrationWithoutTransientUserActivation"|"InvalidInfoHeader"|"NoRegisterSourceHeader"|"NoRegisterTriggerHeader"|"NoRegisterOsSourceHeader"|"NoRegisterOsTriggerHeader"|"NavigationRegistrationUniqueScopeAlreadySet";
-    export type SharedDictionaryError = "UseErrorCrossOriginNoCorsRequest"|"UseErrorDictionaryLoadFailure"|"UseErrorMatchingDictionaryNotUsed"|"UseErrorUnexpectedContentDictionaryHeader"|"WriteErrorCossOriginNoCorsRequest"|"WriteErrorDisallowedBySettings"|"WriteErrorExpiredResponse"|"WriteErrorFeatureDisabled"|"WriteErrorInsufficientResources"|"WriteErrorInvalidMatchField"|"WriteErrorInvalidStructuredHeader"|"WriteErrorInvalidTTLField"|"WriteErrorNavigationRequest"|"WriteErrorNoMatchField"|"WriteErrorNonIntegerTTLField"|"WriteErrorNonListMatchDestField"|"WriteErrorNonSecureContext"|"WriteErrorNonStringIdField"|"WriteErrorNonStringInMatchDestList"|"WriteErrorNonStringMatchField"|"WriteErrorNonTokenTypeField"|"WriteErrorRequestAborted"|"WriteErrorShuttingDown"|"WriteErrorTooLongIdField"|"WriteErrorUnsupportedType";
-    export type SRIMessageSignatureError = "MissingSignatureHeader"|"MissingSignatureInputHeader"|"InvalidSignatureHeader"|"InvalidSignatureInputHeader"|"SignatureHeaderValueIsNotByteSequence"|"SignatureHeaderValueIsParameterized"|"SignatureHeaderValueIsIncorrectLength"|"SignatureInputHeaderMissingLabel"|"SignatureInputHeaderValueNotInnerList"|"SignatureInputHeaderValueMissingComponents"|"SignatureInputHeaderInvalidComponentType"|"SignatureInputHeaderInvalidComponentName"|"SignatureInputHeaderInvalidHeaderComponentParameter"|"SignatureInputHeaderInvalidDerivedComponentParameter"|"SignatureInputHeaderKeyIdLength"|"SignatureInputHeaderInvalidParameter"|"SignatureInputHeaderMissingRequiredParameters"|"ValidationFailedSignatureExpired"|"ValidationFailedInvalidLength"|"ValidationFailedSignatureMismatch"|"ValidationFailedIntegrityMismatch";
+    export type SharedDictionaryError = "UseErrorCrossOriginNoCorsRequest"|"UseErrorDictionaryLoadFailure"|"UseErrorMatchingDictionaryNotUsed"|"UseErrorUnexpectedContentDictionaryHeader"|"WriteErrorCossOriginNoCorsRequest"|"WriteErrorDisallowedBySettings"|"WriteErrorExpiredResponse"|"WriteErrorFeatureDisabled"|"WriteErrorInsufficientResources"|"WriteErrorInvalidMatchField"|"WriteErrorInvalidStructuredHeader"|"WriteErrorInvalidTTLField"|"WriteErrorNavigationRequest"|"WriteErrorNoMatchField"|"WriteErrorNonIntegerTTLField"|"WriteErrorNonListMatchDestField"|"WriteErrorNonSecureContext"|"WriteErrorNonStringIdField"|"WriteErrorNonStringInMatchDestList"|"WriteErrorInvalidMatchDestList"|"WriteErrorNonStringMatchField"|"WriteErrorNonTokenTypeField"|"WriteErrorRequestAborted"|"WriteErrorShuttingDown"|"WriteErrorTooLongIdField"|"WriteErrorUnsupportedType";
+    export type SRIMessageSignatureError = "MissingSignatureHeader"|"MissingSignatureInputHeader"|"InvalidSignatureHeader"|"InvalidSignatureInputHeader"|"SignatureHeaderValueIsNotByteSequence"|"SignatureHeaderValueIsParameterized"|"SignatureHeaderValueIsIncorrectLength"|"SignatureInputHeaderMissingLabel"|"SignatureInputHeaderValueNotInnerList"|"SignatureInputHeaderValueMissingComponents"|"SignatureInputHeaderInvalidComponentType"|"SignatureInputHeaderInvalidComponentName"|"SignatureInputHeaderInvalidHeaderComponentParameter"|"SignatureInputHeaderInvalidDerivedComponentParameter"|"SignatureInputHeaderKeyIdLength"|"SignatureInputHeaderInvalidParameter"|"SignatureInputHeaderMissingRequiredParameters"|"ValidationFailedSignatureExpired"|"ValidationFailedInvalidLength"|"ValidationFailedSignatureMismatch"|"ValidationFailedIntegrityMismatch"|"SignatureBaseUnknownDerivedComponent"|"SignatureBaseMissingHeader"|"SignatureBaseInvalidUnencodedDigest"|"SignatureBaseUnsupportedComponent";
     export type UnencodedDigestError = "MalformedDictionary"|"UnknownAlgorithm"|"IncorrectDigestType"|"IncorrectDigestLength";
     export type ConnectionAllowlistError = "InvalidHeader"|"MoreThanOneList"|"ItemNotInnerList"|"InvalidAllowlistItemType"|"ReportingEndpointNotToken"|"InvalidUrlPattern";
     /**
@@ -910,7 +988,7 @@ instead of "limited-quirks".
       error: ConnectionAllowlistError;
       request: AffectedRequest;
     }
-    export type GenericIssueErrorType = "FormLabelForNameError"|"FormDuplicateIdForInputError"|"FormInputWithNoLabelError"|"FormAutocompleteAttributeEmptyError"|"FormEmptyIdAndNameAttributesForInputError"|"FormAriaLabelledByToNonExistingIdError"|"FormInputAssignedAutocompleteValueToIdOrNameAttributeError"|"FormLabelHasNeitherForNorNestedInputError"|"FormLabelForMatchesNonExistingIdError"|"FormInputHasWrongButWellIntendedAutocompleteValueError"|"ResponseWasBlockedByORB"|"NavigationEntryMarkedSkippable"|"AutofillAndManualTextPolicyControlledFeaturesInfo"|"AutofillPolicyControlledFeatureInfo"|"ManualTextPolicyControlledFeatureInfo"|"FormModelContextParameterMissingTitleAndDescription"|"FormModelContextMissingToolName"|"FormModelContextMissingToolDescription"|"FormModelContextRequiredParameterMissingName"|"FormModelContextParameterMissingName";
+    export type GenericIssueErrorType = "FormLabelForNameError"|"FormDuplicateIdForInputError"|"FormInputWithNoLabelError"|"FormAutocompleteAttributeEmptyError"|"FormEmptyIdAndNameAttributesForInputError"|"FormAriaLabelledByToNonExistingIdError"|"FormInputAssignedAutocompleteValueToIdOrNameAttributeError"|"FormLabelHasNeitherForNorNestedInputError"|"FormLabelForMatchesNonExistingIdError"|"FormInputHasWrongButWellIntendedAutocompleteValueError"|"ResponseWasBlockedByORB"|"NavigationEntryMarkedSkippable"|"BackUINavigationWouldSkipAd"|"AutofillAndManualTextPolicyControlledFeaturesInfo"|"AutofillPolicyControlledFeatureInfo"|"ManualTextPolicyControlledFeatureInfo"|"FormModelContextParameterMissingTitleAndDescription"|"FormModelContextMissingToolName"|"FormModelContextMissingToolDescription"|"FormModelContextRequiredParameterMissingName"|"FormModelContextParameterMissingName";
     /**
      * Depending on the concrete errorType, different properties are set.
      */
@@ -979,6 +1057,15 @@ Should be updated alongside FederatedAuthUserInfoRequestResult in
 third_party/blink/public/mojom/devtools/inspector_issue.mojom.
      */
     export type FederatedAuthUserInfoRequestIssueReason = "NotSameOrigin"|"NotIframe"|"NotPotentiallyTrustworthy"|"NoApiPermission"|"NotSignedInWithIdp"|"NoAccountSharingPermission"|"InvalidConfigOrWellKnown"|"InvalidAccountsResponse"|"NoReturningUserFromFetchedAccounts";
+    export interface EmailVerificationRequestIssueDetails {
+      emailVerificationRequestIssueReason: EmailVerificationRequestIssueReason;
+    }
+    /**
+     * Represents the failure reason when an email verification request fails.
+Should be updated alongside EmailVerificationRequestResult in
+third_party/blink/public/mojom/devtools/inspector_issue.mojom.
+     */
+    export type EmailVerificationRequestIssueReason = "InvalidEmail"|"DnsFetchFailed"|"DnsInvalidRecord"|"WellKnownHttpNotFound"|"WellKnownNoResponse"|"WellKnownInvalidResponse"|"WellKnownListEmpty"|"WellKnownInvalidContentType"|"WellKnownMissingIssuanceEndpoint"|"WellKnownIssuanceEndpointCrossOrigin"|"WellKnownUnsupportedSigningAlgorithm"|"TokenHttpNotFound"|"TokenNoResponse"|"TokenInvalidResponse"|"TokenInvalidContentType"|"TokenMalformedSdJwt"|"TokenInvalidSdJwt"|"KeyBindingSigningFailed"|"RpOriginIsOpaque"|"WellKnownMissingAccountsEndpoint"|"UserLoggedOut"|"WellKnownAccountsEndpointCrossOrigin"|"AccountsHttpNotFound"|"AccountsNoResponse"|"AccountsInvalidResponse"|"AccountsInvalidContentType"|"AccountsEmptyList"|"EmailVerificationWellKnownHttpNotFound"|"EmailVerificationWellKnownNoResponse"|"EmailVerificationWellKnownInvalidResponse"|"EmailVerificationWellKnownInvalidContentType"|"JwksHttpNotFound"|"JwksInvalidResponse"|"TokenVerificationSdJwtUnsupportedHeaderAlg"|"TokenVerificationSdJwtInvalidTyp"|"TokenVerificationSdJwtMissingIss"|"TokenVerificationSdJwtMissingIat"|"TokenVerificationSdJwtMissingCnf"|"TokenVerificationSdJwtMissingEmail"|"TokenVerificationSdJwtInvalidIssuedAt"|"TokenVerificationSdJwtInvalidIssuer"|"TokenVerificationSdJwtJwksMissingKeys"|"TokenVerificationSdJwtSignatureFailed"|"TokenVerificationSdJwtInvalidEmailVerified"|"TokenVerificationSdJwtInvalidEmail"|"TokenVerificationSdJwtInvalidHolderKey"|"TokenVerificationKbInvalidTyp"|"TokenVerificationKbMissingAud"|"TokenVerificationKbMissingNonce"|"TokenVerificationKbMissingIat"|"TokenVerificationKbMissingSdHash"|"TokenVerificationKbInvalidIssuedAt"|"TokenVerificationKbInvalidAudience"|"TokenVerificationKbInvalidNonce"|"TokenVerificationKbInvalidSdHash"|"TokenVerificationKbMissingCnf"|"TokenVerificationKbSignatureFailed";
     /**
      * This issue tracks client hints related issues. It's used to deprecate old
 features, encourage the use of new ones, and provide general guidance.
@@ -1071,7 +1158,7 @@ re-identify users.
        */
       sourceCodeLocation?: SourceCodeLocation;
     }
-    export type PermissionElementIssueType = "InvalidType"|"FencedFrameDisallowed"|"CspFrameAncestorsMissing"|"PermissionsPolicyBlocked"|"PaddingRightUnsupported"|"PaddingBottomUnsupported"|"InsetBoxShadowUnsupported"|"RequestInProgress"|"UntrustedEvent"|"RegistrationFailed"|"TypeNotSupported"|"InvalidTypeActivation"|"SecurityChecksFailed"|"ActivationDisabled"|"GeolocationDeprecated"|"InvalidDisplayStyle"|"NonOpaqueColor"|"LowContrast"|"FontSizeTooSmall"|"FontSizeTooLarge"|"InvalidSizeValue";
+    export type PermissionElementIssueType = "InvalidType"|"FencedFrameDisallowed"|"CspFrameAncestorsMissing"|"PermissionsPolicyBlocked"|"PaddingRightUnsupported"|"PaddingBottomUnsupported"|"InsetBoxShadowUnsupported"|"RequestInProgress"|"UntrustedEvent"|"RegistrationFailed"|"TypeNotSupported"|"InvalidTypeActivation"|"SecurityChecksFailed"|"ActivationDisabled"|"GeolocationDeprecated"|"InvalidDisplayStyle"|"NonOpaqueColor"|"LowContrast"|"FontSizeTooSmall"|"FontSizeTooLarge"|"InvalidSizeValue"|"NonSecureContext"|"MissingTransientUserActivation";
     /**
      * This issue warns about improper usage of the <permission> element.
      */
@@ -1130,7 +1217,7 @@ Selective Permissions Intervention.
 optional fields in InspectorIssueDetails to convey more specific
 information about the kind of issue.
      */
-    export type InspectorIssueCode = "CookieIssue"|"MixedContentIssue"|"BlockedByResponseIssue"|"HeavyAdIssue"|"ContentSecurityPolicyIssue"|"SharedArrayBufferIssue"|"CorsIssue"|"AttributionReportingIssue"|"QuirksModeIssue"|"PartitioningBlobURLIssue"|"NavigatorUserAgentIssue"|"GenericIssue"|"DeprecationIssue"|"ClientHintIssue"|"FederatedAuthRequestIssue"|"BounceTrackingIssue"|"CookieDeprecationMetadataIssue"|"StylesheetLoadingIssue"|"FederatedAuthUserInfoRequestIssue"|"PropertyRuleIssue"|"SharedDictionaryIssue"|"ElementAccessibilityIssue"|"SRIMessageSignatureIssue"|"UnencodedDigestIssue"|"ConnectionAllowlistIssue"|"UserReidentificationIssue"|"PermissionElementIssue"|"PerformanceIssue"|"SelectivePermissionsInterventionIssue";
+    export type InspectorIssueCode = "CookieIssue"|"MixedContentIssue"|"BlockedByResponseIssue"|"HeavyAdIssue"|"ContentSecurityPolicyIssue"|"SharedArrayBufferIssue"|"CorsIssue"|"AttributionReportingIssue"|"QuirksModeIssue"|"PartitioningBlobURLIssue"|"NavigatorUserAgentIssue"|"GenericIssue"|"DeprecationIssue"|"ClientHintIssue"|"FederatedAuthRequestIssue"|"BounceTrackingIssue"|"CookieDeprecationMetadataIssue"|"StylesheetLoadingIssue"|"FederatedAuthUserInfoRequestIssue"|"PropertyRuleIssue"|"SharedDictionaryIssue"|"ElementAccessibilityIssue"|"SRIMessageSignatureIssue"|"UnencodedDigestIssue"|"ConnectionAllowlistIssue"|"UserReidentificationIssue"|"PermissionElementIssue"|"PerformanceIssue"|"SelectivePermissionsInterventionIssue"|"EmailVerificationRequestIssue";
     /**
      * This struct holds a list of optional fields with additional information
 specific to the kind of issue. When adding a new issue code, please also
@@ -1166,6 +1253,7 @@ add a new optional field to this type.
       permissionElementIssueDetails?: PermissionElementIssueDetails;
       performanceIssueDetails?: PerformanceIssueDetails;
       selectivePermissionsInterventionIssueDetails?: SelectivePermissionsInterventionIssueDetails;
+      emailVerificationRequestIssueDetails?: EmailVerificationRequestIssueDetails;
     }
     /**
      * A unique id for a DevTools inspector issue. Allows other entities (e.g.
@@ -2399,6 +2487,27 @@ inspector" rules), "regular" for regular stylesheets.
       specificity?: Specificity;
     }
     /**
+     * Contribution of an individual simple selector to specificity.
+     */
+    export interface SpecificityComponent {
+      /**
+       * The simple selector text that contributes to specificity.
+       */
+      text: string;
+      /**
+       * The a component contribution.
+       */
+      a: number;
+      /**
+       * The b component contribution.
+       */
+      b: number;
+      /**
+       * The c component contribution.
+       */
+      c: number;
+    }
+    /**
      * Specificity:
 https://drafts.csswg.org/selectors/#specificity-rules
      */
@@ -2416,6 +2525,10 @@ pseudo-classes.
        * The c component, which represents the number of type selectors and pseudo-elements.
        */
       c: number;
+      /**
+       * Per-simple-selector contributions used to explain this specificity.
+       */
+      components?: SpecificityComponent[];
     }
     /**
      * Selector list data.
@@ -2808,6 +2921,9 @@ available).
     export interface CSSContainerQuery {
       /**
        * Container query text.
+Contains the query part without the container name for a single query.
+Deprecated in favor of conditionText which contains the full prelude
+after @container.
        */
       text: string;
       /**
@@ -2839,6 +2955,10 @@ available).
        * true if the query contains anchored() queries.
        */
       queriesAnchored?: boolean;
+      /**
+       * CSSContainerRule.conditionText
+       */
+      conditionText: string;
     }
     /**
      * CSS Supports at-rule descriptor.
@@ -3114,7 +3234,7 @@ stylesheet rules) this rule came from.
       /**
        * Type of at-rule.
        */
-      type: "font-face"|"font-feature-values"|"font-palette-values";
+      type: "font-face"|"font-feature-values"|"font-palette-values"|"counter-style";
       /**
        * Subsection of font-feature-values, if this is a subsection.
        */
@@ -3792,6 +3912,7 @@ property
     }
     /**
      * Modifies the expression of a container query.
+Deprecated. Use setContainerQueryConditionText instead.
      */
     export type setContainerQueryTextParameters = {
       styleSheetId: DOM.StyleSheetId;
@@ -3799,6 +3920,17 @@ property
       text: string;
     }
     export type setContainerQueryTextReturnValue = {
+      /**
+       * The resulting CSS container query rule after modification.
+       */
+      containerQuery: CSSContainerQuery;
+    }
+    export type setContainerQueryConditionTextParameters = {
+      styleSheetId: DOM.StyleSheetId;
+      range: SourceRange;
+      text: string;
+    }
+    export type setContainerQueryConditionTextReturnValue = {
       /**
        * The resulting CSS container query rule after modification.
        */
@@ -4277,7 +4409,7 @@ front-end.
     /**
      * Pseudo element type.
      */
-    export type PseudoType = "first-line"|"first-letter"|"checkmark"|"before"|"after"|"expand-icon"|"picker-icon"|"interest-button"|"marker"|"backdrop"|"column"|"selection"|"search-text"|"target-text"|"spelling-error"|"grammar-error"|"highlight"|"first-line-inherited"|"scroll-marker"|"scroll-marker-group"|"scroll-button"|"scrollbar"|"scrollbar-thumb"|"scrollbar-button"|"scrollbar-track"|"scrollbar-track-piece"|"scrollbar-corner"|"resizer"|"input-list-button"|"view-transition"|"view-transition-group"|"view-transition-image-pair"|"view-transition-group-children"|"view-transition-old"|"view-transition-new"|"placeholder"|"file-selector-button"|"details-content"|"picker"|"permission-icon"|"overscroll-area-parent";
+    export type PseudoType = "first-line"|"first-letter"|"checkmark"|"before"|"after"|"expand-icon"|"picker-icon"|"interest-button"|"marker"|"backdrop"|"column"|"selection"|"search-text"|"target-text"|"spelling-error"|"grammar-error"|"highlight"|"first-line-inherited"|"scroll-marker"|"scroll-marker-group"|"scroll-button"|"scrollbar"|"scrollbar-thumb"|"scrollbar-button"|"scrollbar-track"|"scrollbar-track-piece"|"scrollbar-corner"|"resizer"|"input-list-button"|"view-transition"|"view-transition-group"|"view-transition-image-pair"|"view-transition-group-children"|"view-transition-old"|"view-transition-new"|"placeholder"|"file-selector-button"|"details-content"|"picker"|"select-listbox"|"permission-icon"|"overscroll-area-parent"|"overscroll-backdrop"|"skeleton";
     /**
      * Shadow root type.
      */
@@ -5710,6 +5842,13 @@ and keeps it open until disabled.
 popover if it was previously force-opened.
        */
       enable: boolean;
+      /**
+       * Optional ID of the element invoking this popover, used to establish the implicit anchor.
+If not provided, it will fall back to the first invoker in the document, preferring
+elements with a popovertarget attribute over those with a commandfor attribute. Note that
+if there are multiple invokers, this is just an estimate.
+       */
+      invokerNodeId?: BackendNodeId;
     }
     export type forceShowPopoverReturnValue = {
       /**
@@ -7258,8 +7397,7 @@ platform-provided telemetry data.
     export type setPressureSourceOverrideEnabledReturnValue = {
     }
     /**
-     * TODO: OBSOLETE: To remove when setPressureDataOverride is merged.
-Provides a given pressure state that will be processed and eventually be
+     * Provides a given pressure state that will be processed and eventually be
 delivered to PressureObserver users. |source| must have been previously
 overridden by setPressureSourceOverrideEnabled.
      */
@@ -7268,18 +7406,6 @@ overridden by setPressureSourceOverrideEnabled.
       state: PressureState;
     }
     export type setPressureStateOverrideReturnValue = {
-    }
-    /**
-     * Provides a given pressure data set that will be processed and eventually be
-delivered to PressureObserver users. |source| must have been previously
-overridden by setPressureSourceOverrideEnabled.
-     */
-    export type setPressureDataOverrideParameters = {
-      source: PressureSource;
-      state: PressureState;
-      ownContributionEstimate?: number;
-    }
-    export type setPressureDataOverrideReturnValue = {
     }
     /**
      * Overrides the Idle state.
@@ -10891,7 +11017,7 @@ This is a temporary ability and it will be removed in the future.
     /**
      * Types of reasons why a cookie should have been blocked by 3PCD but is exempted for the request.
      */
-    export type CookieExemptionReason = "None"|"UserSetting"|"TPCDMetadata"|"TPCDDeprecationTrial"|"TopLevelTPCDDeprecationTrial"|"TPCDHeuristics"|"EnterprisePolicy"|"StorageAccess"|"TopLevelStorageAccess"|"Scheme"|"SameSiteNoneCookiesInSandbox";
+    export type CookieExemptionReason = "None"|"UserSetting"|"EnterprisePolicy"|"StorageAccess"|"TopLevelStorageAccess"|"Scheme"|"SameSiteNoneCookiesInSandbox";
     /**
      * A cookie which was not stored from a response with the corresponding reason.
      */
@@ -11578,7 +11704,7 @@ details; this boolean is true if that value is populated.
     /**
      * A fetch result for a device bound session creation or refresh.
      */
-    export type DeviceBoundSessionFetchResult = "Success"|"KeyError"|"SigningError"|"TransientSigningError"|"ServerRequestedTermination"|"InvalidSessionId"|"InvalidChallenge"|"TooManyChallenges"|"InvalidFetcherUrl"|"InvalidRefreshUrl"|"TransientHttpError"|"ScopeOriginSameSiteMismatch"|"RefreshUrlSameSiteMismatch"|"MismatchedSessionId"|"MissingScope"|"NoCredentials"|"SubdomainRegistrationWellKnownUnavailable"|"SubdomainRegistrationUnauthorized"|"SubdomainRegistrationWellKnownMalformed"|"SessionProviderWellKnownUnavailable"|"RelyingPartyWellKnownUnavailable"|"FederatedKeyThumbprintMismatch"|"InvalidFederatedSessionUrl"|"InvalidFederatedKey"|"TooManyRelyingOriginLabels"|"BoundCookieSetForbidden"|"NetError"|"ProxyError"|"EmptySessionConfig"|"InvalidCredentialsConfig"|"InvalidCredentialsType"|"InvalidCredentialsEmptyName"|"InvalidCredentialsCookie"|"PersistentHttpError"|"RegistrationAttemptedChallenge"|"InvalidScopeOrigin"|"ScopeOriginContainsPath"|"RefreshInitiatorNotString"|"RefreshInitiatorInvalidHostPattern"|"InvalidScopeSpecification"|"MissingScopeSpecificationType"|"EmptyScopeSpecificationDomain"|"EmptyScopeSpecificationPath"|"InvalidScopeSpecificationType"|"InvalidScopeIncludeSite"|"MissingScopeIncludeSite"|"FederatedNotAuthorizedByProvider"|"FederatedNotAuthorizedByRelyingParty"|"SessionProviderWellKnownMalformed"|"SessionProviderWellKnownHasProviderOrigin"|"RelyingPartyWellKnownMalformed"|"RelyingPartyWellKnownHasRelyingOrigins"|"InvalidFederatedSessionProviderSessionMissing"|"InvalidFederatedSessionWrongProviderOrigin"|"InvalidCredentialsCookieCreationTime"|"InvalidCredentialsCookieName"|"InvalidCredentialsCookieParsing"|"InvalidCredentialsCookieUnpermittedAttribute"|"InvalidCredentialsCookieInvalidDomain"|"InvalidCredentialsCookiePrefix"|"InvalidScopeRulePath"|"InvalidScopeRuleHostPattern"|"ScopeRuleOriginScopedHostPatternMismatch"|"ScopeRuleSiteScopedHostPatternMismatch"|"SigningQuotaExceeded"|"InvalidConfigJson"|"InvalidFederatedSessionProviderFailedToRestoreKey"|"FailedToUnwrapKey"|"SessionDeletedDuringRefresh";
+    export type DeviceBoundSessionFetchResult = "Success"|"KeyError"|"SigningError"|"TransientSigningError"|"ServerRequestedTermination"|"InvalidSessionId"|"InvalidChallenge"|"TooManyChallenges"|"InvalidFetcherUrl"|"InvalidRefreshUrl"|"TransientHttpError"|"ScopeOriginSameSiteMismatch"|"RefreshUrlSameSiteMismatch"|"MismatchedSessionId"|"MissingScope"|"NoCredentials"|"SubdomainRegistrationWellKnownUnavailable"|"SubdomainRegistrationUnauthorized"|"SubdomainRegistrationWellKnownMalformed"|"SessionProviderWellKnownUnavailable"|"RelyingPartyWellKnownUnavailable"|"FederatedKeyThumbprintMismatch"|"InvalidFederatedSessionUrl"|"InvalidFederatedKey"|"TooManyRelyingOriginLabels"|"BoundCookieSetForbidden"|"NetError"|"ProxyError"|"EmptySessionConfig"|"InvalidCredentialsConfig"|"InvalidCredentialsType"|"InvalidCredentialsEmptyName"|"InvalidCredentialsCookie"|"PersistentHttpError"|"RegistrationAttemptedChallenge"|"InvalidScopeOrigin"|"ScopeOriginContainsPath"|"RefreshInitiatorNotString"|"RefreshInitiatorInvalidHostPattern"|"InvalidScopeSpecification"|"MissingScopeSpecificationType"|"EmptyScopeSpecificationDomain"|"EmptyScopeSpecificationPath"|"InvalidScopeSpecificationType"|"InvalidScopeIncludeSite"|"MissingScopeIncludeSite"|"FederatedNotAuthorizedByProvider"|"FederatedNotAuthorizedByRelyingParty"|"SessionProviderWellKnownMalformed"|"SessionProviderWellKnownHasProviderOrigin"|"RelyingPartyWellKnownMalformed"|"RelyingPartyWellKnownHasRelyingOrigins"|"InvalidFederatedSessionProviderSessionMissing"|"InvalidFederatedSessionWrongProviderOrigin"|"InvalidCredentialsCookieCreationTime"|"InvalidCredentialsCookieName"|"InvalidCredentialsCookieParsing"|"InvalidCredentialsCookieUnpermittedAttribute"|"InvalidCredentialsCookieInvalidDomain"|"InvalidCredentialsCookiePrefix"|"InvalidScopeRulePath"|"InvalidScopeRuleHostPattern"|"ScopeRuleOriginScopedHostPatternMismatch"|"ScopeRuleSiteScopedHostPatternMismatch"|"SigningQuotaExceeded"|"InvalidConfigJson"|"InvalidFederatedSessionProviderFailedToRestoreKey"|"FailedToUnwrapKey"|"SessionDeletedDuringRefresh"|"CrossOriginRegistrationSiteNotIncluded";
     /**
      * Details about a failed device bound session network request.
      */
@@ -13548,6 +13674,51 @@ Page reload is required before the new cookie behavior will be observed
       outlineColor?: DOM.RGBA;
     }
     /**
+     * Supported display cutout shapes.
+     */
+    export type DisplayCutoutShape = "pill"|"notch"|"circle"|"rectangle";
+    /**
+     * Configuration for a display cutout.
+     */
+    export interface DisplayCutoutConfig {
+      /**
+       * A rectangle representing the cutout bounds.
+       */
+      rect: DOM.Rect;
+      /**
+       * Shape used to draw the cutout.
+       */
+      shape: DisplayCutoutShape;
+      /**
+       * Border radius for rounded cutout shapes.
+       */
+      borderRadius?: number;
+      /**
+       * Upper shoulder radius for notch cutout shapes.
+       */
+      upperRadius?: number;
+      /**
+       * Lower transition radius for notch cutout shapes.
+       */
+      lowerRadius?: number;
+      /**
+       * Center x coordinate for circle cutout shapes.
+       */
+      cx?: number;
+      /**
+       * Center y coordinate for circle cutout shapes.
+       */
+      cy?: number;
+      /**
+       * Radius for circle cutout shapes.
+       */
+      radius?: number;
+      /**
+       * The cutout fill color (default: black).
+       */
+      contentColor?: DOM.RGBA;
+    }
+    /**
      * Configuration for Window Controls Overlay
      */
     export interface WindowControlsOverlayConfig {
@@ -14053,6 +14224,17 @@ Backend then generates 'inspectNodeRequested' event upon element selection.
     export type setShowHingeReturnValue = {
     }
     /**
+     * Add a display cutout overlay.
+     */
+    export type setShowDisplayCutoutParameters = {
+      /**
+       * display cutout data, null means hide display cutout
+       */
+      displayCutoutConfig?: DisplayCutoutConfig;
+    }
+    export type setShowDisplayCutoutReturnValue = {
+    }
+    /**
      * Show elements in isolation mode with overlays.
      */
     export type setShowIsolatedElementsParameters = {
@@ -14281,7 +14463,7 @@ supported yet.
 in services/network/public/cpp/permissions_policy/permissions_policy_features.json5.
 LINT.IfChange(PermissionsPolicyFeature)
      */
-    export type PermissionsPolicyFeature = "accelerometer"|"all-screens-capture"|"ambient-light-sensor"|"aria-notify"|"attribution-reporting"|"autofill"|"autoplay"|"bluetooth"|"browsing-topics"|"camera"|"captured-surface-control"|"ch-dpr"|"ch-device-memory"|"ch-downlink"|"ch-ect"|"ch-prefers-color-scheme"|"ch-prefers-reduced-motion"|"ch-prefers-reduced-transparency"|"ch-rtt"|"ch-save-data"|"ch-ua"|"ch-ua-arch"|"ch-ua-bitness"|"ch-ua-high-entropy-values"|"ch-ua-platform"|"ch-ua-model"|"ch-ua-mobile"|"ch-ua-form-factors"|"ch-ua-full-version"|"ch-ua-full-version-list"|"ch-ua-platform-version"|"ch-ua-wow64"|"ch-viewport-height"|"ch-viewport-width"|"ch-width"|"clipboard-read"|"clipboard-write"|"compute-pressure"|"controlled-frame"|"cross-origin-isolated"|"deferred-fetch"|"deferred-fetch-minimal"|"device-attributes"|"digital-credentials-create"|"digital-credentials-get"|"direct-sockets"|"direct-sockets-multicast"|"direct-sockets-private"|"display-capture"|"document-domain"|"encrypted-media"|"execution-while-out-of-viewport"|"execution-while-not-rendered"|"focus-without-user-activation"|"fullscreen"|"frobulate"|"gamepad"|"geolocation"|"gyroscope"|"hid"|"identity-credentials-get"|"idle-detection"|"interest-cohort"|"join-ad-interest-group"|"keyboard-map"|"language-detector"|"language-model"|"local-fonts"|"local-network"|"local-network-access"|"loopback-network"|"magnetometer"|"manual-text"|"media-playback-while-not-visible"|"microphone"|"midi"|"on-device-speech-recognition"|"otp-credentials"|"payment"|"picture-in-picture"|"private-aggregation"|"private-state-token-issuance"|"private-state-token-redemption"|"publickey-credentials-create"|"publickey-credentials-get"|"record-ad-auction-events"|"rewriter"|"run-ad-auction"|"screen-wake-lock"|"serial"|"shared-storage"|"shared-storage-select-url"|"smart-card"|"speaker-selection"|"storage-access"|"sub-apps"|"summarizer"|"sync-xhr"|"tools"|"translator"|"unload"|"usb"|"usb-unrestricted"|"vertical-scroll"|"web-app-installation"|"web-printing"|"web-share"|"window-management"|"writer"|"xr-spatial-tracking";
+    export type PermissionsPolicyFeature = "accelerometer"|"all-screens-capture"|"ambient-light-sensor"|"aria-notify"|"attribution-reporting"|"autofill"|"autoplay"|"bluetooth"|"browsing-topics"|"camera"|"captured-surface-control"|"ch-dpr"|"ch-device-memory"|"ch-downlink"|"ch-ect"|"ch-prefers-color-scheme"|"ch-prefers-reduced-motion"|"ch-prefers-reduced-transparency"|"ch-rtt"|"ch-save-data"|"ch-ua"|"ch-ua-arch"|"ch-ua-bitness"|"ch-ua-high-entropy-values"|"ch-ua-platform"|"ch-ua-model"|"ch-ua-mobile"|"ch-ua-form-factors"|"ch-ua-full-version"|"ch-ua-full-version-list"|"ch-ua-platform-version"|"ch-ua-wow64"|"ch-viewport-height"|"ch-viewport-width"|"ch-width"|"clipboard-read"|"clipboard-write"|"compute-pressure"|"controlled-frame"|"cross-origin-isolated"|"deferred-fetch"|"deferred-fetch-minimal"|"device-attributes"|"digital-credentials-create"|"digital-credentials-get"|"direct-sockets"|"direct-sockets-multicast"|"display-capture"|"document-domain"|"encrypted-media"|"execution-while-out-of-viewport"|"execution-while-not-rendered"|"focus-without-user-activation"|"fullscreen"|"frobulate"|"gamepad"|"geolocation"|"gyroscope"|"hid"|"identity-credentials-get"|"idle-detection"|"interest-cohort"|"join-ad-interest-group"|"keyboard-map"|"language-detector"|"language-model"|"local-fonts"|"local-network"|"local-network-access"|"loopback-network"|"magnetometer"|"manual-text"|"media-playback-while-not-visible"|"microphone"|"midi"|"on-device-speech-recognition"|"otp-credentials"|"payment"|"picture-in-picture"|"private-aggregation"|"private-state-token-issuance"|"private-state-token-redemption"|"publickey-credentials-create"|"publickey-credentials-get"|"record-ad-auction-events"|"rewriter"|"run-ad-auction"|"screen-wake-lock"|"serial"|"shared-storage"|"shared-storage-select-url"|"smart-card"|"speaker-selection"|"storage-access"|"sub-apps"|"summarizer"|"sync-xhr"|"tools"|"translator"|"unload"|"usb"|"usb-unrestricted"|"vertical-scroll"|"web-app-installation"|"webnn"|"web-printing"|"web-share"|"window-management"|"writer"|"xr-spatial-tracking";
     /**
      * Reason for a permissions policy feature to be disabled.
      */
@@ -15467,6 +15649,15 @@ iframes, shadow DOM, external resources, and element-inline styles.
 option, use with caution.
        */
       grantUniveralAccess?: boolean;
+      /**
+       * An optional content security policy to set for the isolated world.
+If omitted, any existing CSP for the world will be cleared.
+Note that clearing or updating the CSP does not immediately affect the active
+context in the same document because LocalDOMWindow caches the
+ContentSecurityPolicy object. The change takes effect on subsequent
+navigations when a new window context is created.
+       */
+      contentSecurityPolicy?: string;
     }
     export type createIsolatedWorldReturnValue = {
       /**
@@ -16617,7 +16808,7 @@ status is shared by prefetchStatusUpdated and prerenderStatusUpdated.
      * TODO(https://crbug.com/1384419): revisit the list of PrefetchStatus and
 filter out the ones that aren't necessary to the developers.
      */
-    export type PrefetchStatus = "PrefetchAllowed"|"PrefetchFailedIneligibleRedirect"|"PrefetchFailedInvalidRedirect"|"PrefetchFailedMIMENotSupported"|"PrefetchFailedNetError"|"PrefetchFailedNon2XX"|"PrefetchEvictedAfterBrowsingDataRemoved"|"PrefetchEvictedAfterCandidateRemoved"|"PrefetchEvictedForNewerPrefetch"|"PrefetchHeldback"|"PrefetchIneligibleRetryAfter"|"PrefetchIsPrivacyDecoy"|"PrefetchIsStale"|"PrefetchNotEligibleBrowserContextOffTheRecord"|"PrefetchNotEligibleDataSaverEnabled"|"PrefetchNotEligibleExistingProxy"|"PrefetchNotEligibleHostIsNonUnique"|"PrefetchNotEligibleNonDefaultStoragePartition"|"PrefetchNotEligibleSameSiteCrossOriginPrefetchRequiredProxy"|"PrefetchNotEligibleSchemeIsNotHttps"|"PrefetchNotEligibleUserHasCookies"|"PrefetchNotEligibleUserHasServiceWorker"|"PrefetchNotEligibleUserHasServiceWorkerNoFetchHandler"|"PrefetchNotEligibleRedirectFromServiceWorker"|"PrefetchNotEligibleRedirectToServiceWorker"|"PrefetchNotEligibleBatterySaverEnabled"|"PrefetchNotEligiblePreloadingDisabled"|"PrefetchNotFinishedInTime"|"PrefetchNotStarted"|"PrefetchNotUsedCookiesChanged"|"PrefetchProxyNotAvailable"|"PrefetchResponseUsed"|"PrefetchSuccessfulButNotUsed"|"PrefetchNotUsedProbeFailed";
+    export type PrefetchStatus = "PrefetchAllowed"|"PrefetchFailedIneligibleRedirect"|"PrefetchFailedInvalidRedirect"|"PrefetchFailedMIMENotSupported"|"PrefetchFailedNetError"|"PrefetchFailedNon2XX"|"PrefetchEvictedAfterBrowsingDataRemoved"|"PrefetchEvictedAfterCandidateRemoved"|"PrefetchEvictedForNewerPrefetch"|"PrefetchHeldback"|"PrefetchIneligibleRetryAfter"|"PrefetchIsPrivacyDecoy"|"PrefetchIsStale"|"PrefetchNotEligibleBlockedByConnectionAllowlist"|"PrefetchNotEligibleBrowserContextOffTheRecord"|"PrefetchNotEligibleDataSaverEnabled"|"PrefetchNotEligibleExistingProxy"|"PrefetchNotEligibleHostIsNonUnique"|"PrefetchNotEligibleNonDefaultStoragePartition"|"PrefetchNotEligibleSameSiteCrossOriginPrefetchRequiredProxy"|"PrefetchNotEligibleSchemeIsNotHttps"|"PrefetchNotEligibleUserHasCookies"|"PrefetchNotEligibleUserHasServiceWorker"|"PrefetchNotEligibleUserHasServiceWorkerNoFetchHandler"|"PrefetchNotEligibleRedirectFromServiceWorker"|"PrefetchNotEligibleRedirectToServiceWorker"|"PrefetchNotEligibleBatterySaverEnabled"|"PrefetchNotEligiblePreloadingDisabled"|"PrefetchNotFinishedInTime"|"PrefetchNotStarted"|"PrefetchNotUsedCookiesChanged"|"PrefetchProxyNotAvailable"|"PrefetchResponseUsed"|"PrefetchSuccessfulButNotUsed"|"PrefetchNotUsedProbeFailed"|"PrefetchCancelledOnUserNavigation";
     /**
      * Information of headers to be displayed when the header mismatch occurred.
      */
@@ -18637,6 +18828,11 @@ this is the "ancestor" frame that created the first worker in the nested chain.
 the type of "page", this may be set to "prerender".
        */
       subtype?: string;
+      /**
+       * Embedder-specific target metadata. This is only set for targets of
+type "tab".
+       */
+      embedderData?: { [key: string]: string };
     }
     /**
      * A filter used by target query/discovery/auto-attach operations.
@@ -18917,13 +19113,11 @@ present in the tab UI strip. Cannot be created with `forTab: true`, `newWindow: 
        */
       hidden?: boolean;
       /**
-       * If specified, the option is used to determine if the new target should
-be focused or not. By default, the focus behavior depends on the
-value of the background field. For example, background=false and focus=false
-will result in the target tab being opened but the browser window remain
-unchanged (if it was in the background, it will remain in the background)
-and background=false with focus=undefined will result in the window being focused.
-Using background: true and focus: true is not supported and will result in an error.
+       * If specified, determines whether the new target should be focused.
+By default, the focus behavior depends on the `background` parameter:
+- If `background` is false (default) and `focus` is omitted, the new target is focused and the browser window is brought to the foreground.
+- If `background` is false and `focus` is false, the target is opened but the browser window's focus remains unchanged (e.g., if the window was in the background, it stays there).
+- If `background` is true, setting `focus` to true is not supported and will result in an error.
        */
       focus?: boolean;
     }
@@ -19110,8 +19304,8 @@ to run paused targets.
       targetId: TargetID;
       /**
        * The id of the panel we want DevTools to open initially. Currently
-supported panels are elements, console, network, sources, resources
-and performance.
+supported panels are elements, console, network, sources, resources,
+timeline, chrome-recorder, heap-profiler, lighthouse, and security.
        */
       panelId?: string;
     }
@@ -19386,6 +19580,21 @@ are ignored.
        * Backend type (defaults to `auto`)
        */
       tracingBackend?: TracingBackend;
+      /**
+       * Maximum width and height (in pixels) of each captured screenshot.
+Only used when the `disabled-by-default-devtools.screenshot` category is
+enabled. Defaults to 500. The combined memory footprint of screenshots
+(`screenshotMaxSize` * `screenshotMaxSize` * 4 * `screenshotMaxCount`)
+is clamped to the existing per-session budget.
+       */
+      screenshotMaxSize?: number;
+      /**
+       * Maximum number of screenshots captured during a single tracing session.
+Only used when the `disabled-by-default-devtools.screenshot` category is
+enabled. Defaults to 450. Clamped together with `screenshotMaxSize` to
+stay within the per-session screenshot memory budget.
+       */
+      screenshotMaxCount?: number;
     }
     export type startReturnValue = {
     }
@@ -23297,6 +23506,7 @@ Error was thrown.
     "Accessibility.getAXNodeAndAncestors": Accessibility.getAXNodeAndAncestorsParameters;
     "Accessibility.getChildAXNodes": Accessibility.getChildAXNodesParameters;
     "Accessibility.queryAXTree": Accessibility.queryAXTreeParameters;
+    "Ads.getAdMetrics": Ads.getAdMetricsParameters;
     "Animation.disable": Animation.disableParameters;
     "Animation.enable": Animation.enableParameters;
     "Animation.getCurrentTime": Animation.getCurrentTimeParameters;
@@ -23382,6 +23592,7 @@ Error was thrown.
     "CSS.setKeyframeKey": CSS.setKeyframeKeyParameters;
     "CSS.setMediaText": CSS.setMediaTextParameters;
     "CSS.setContainerQueryText": CSS.setContainerQueryTextParameters;
+    "CSS.setContainerQueryConditionText": CSS.setContainerQueryConditionTextParameters;
     "CSS.setSupportsText": CSS.setSupportsTextParameters;
     "CSS.setNavigationText": CSS.setNavigationTextParameters;
     "CSS.setScopeText": CSS.setScopeTextParameters;
@@ -23509,7 +23720,6 @@ Error was thrown.
     "Emulation.setSensorOverrideReadings": Emulation.setSensorOverrideReadingsParameters;
     "Emulation.setPressureSourceOverrideEnabled": Emulation.setPressureSourceOverrideEnabledParameters;
     "Emulation.setPressureStateOverride": Emulation.setPressureStateOverrideParameters;
-    "Emulation.setPressureDataOverride": Emulation.setPressureDataOverrideParameters;
     "Emulation.setIdleOverride": Emulation.setIdleOverrideParameters;
     "Emulation.clearIdleOverride": Emulation.clearIdleOverrideParameters;
     "Emulation.setNavigatorOverrides": Emulation.setNavigatorOverridesParameters;
@@ -23685,6 +23895,7 @@ Error was thrown.
     "Overlay.setShowWebVitals": Overlay.setShowWebVitalsParameters;
     "Overlay.setShowViewportSizeOnResize": Overlay.setShowViewportSizeOnResizeParameters;
     "Overlay.setShowHinge": Overlay.setShowHingeParameters;
+    "Overlay.setShowDisplayCutout": Overlay.setShowDisplayCutoutParameters;
     "Overlay.setShowIsolatedElements": Overlay.setShowIsolatedElementsParameters;
     "Overlay.setShowWindowControlsOverlay": Overlay.setShowWindowControlsOverlayParameters;
     "PWA.getOsAppState": PWA.getOsAppStateParameters;
@@ -23966,6 +24177,7 @@ Error was thrown.
     "Accessibility.getAXNodeAndAncestors": Accessibility.getAXNodeAndAncestorsReturnValue;
     "Accessibility.getChildAXNodes": Accessibility.getChildAXNodesReturnValue;
     "Accessibility.queryAXTree": Accessibility.queryAXTreeReturnValue;
+    "Ads.getAdMetrics": Ads.getAdMetricsReturnValue;
     "Animation.disable": Animation.disableReturnValue;
     "Animation.enable": Animation.enableReturnValue;
     "Animation.getCurrentTime": Animation.getCurrentTimeReturnValue;
@@ -24051,6 +24263,7 @@ Error was thrown.
     "CSS.setKeyframeKey": CSS.setKeyframeKeyReturnValue;
     "CSS.setMediaText": CSS.setMediaTextReturnValue;
     "CSS.setContainerQueryText": CSS.setContainerQueryTextReturnValue;
+    "CSS.setContainerQueryConditionText": CSS.setContainerQueryConditionTextReturnValue;
     "CSS.setSupportsText": CSS.setSupportsTextReturnValue;
     "CSS.setNavigationText": CSS.setNavigationTextReturnValue;
     "CSS.setScopeText": CSS.setScopeTextReturnValue;
@@ -24178,7 +24391,6 @@ Error was thrown.
     "Emulation.setSensorOverrideReadings": Emulation.setSensorOverrideReadingsReturnValue;
     "Emulation.setPressureSourceOverrideEnabled": Emulation.setPressureSourceOverrideEnabledReturnValue;
     "Emulation.setPressureStateOverride": Emulation.setPressureStateOverrideReturnValue;
-    "Emulation.setPressureDataOverride": Emulation.setPressureDataOverrideReturnValue;
     "Emulation.setIdleOverride": Emulation.setIdleOverrideReturnValue;
     "Emulation.clearIdleOverride": Emulation.clearIdleOverrideReturnValue;
     "Emulation.setNavigatorOverrides": Emulation.setNavigatorOverridesReturnValue;
@@ -24354,6 +24566,7 @@ Error was thrown.
     "Overlay.setShowWebVitals": Overlay.setShowWebVitalsReturnValue;
     "Overlay.setShowViewportSizeOnResize": Overlay.setShowViewportSizeOnResizeReturnValue;
     "Overlay.setShowHinge": Overlay.setShowHingeReturnValue;
+    "Overlay.setShowDisplayCutout": Overlay.setShowDisplayCutoutReturnValue;
     "Overlay.setShowIsolatedElements": Overlay.setShowIsolatedElementsReturnValue;
     "Overlay.setShowWindowControlsOverlay": Overlay.setShowWindowControlsOverlayReturnValue;
     "PWA.getOsAppState": PWA.getOsAppStateReturnValue;

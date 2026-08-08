@@ -1,6 +1,6 @@
 ### Puppeterr
 PROJECT OVERVIEW
-This project implements a browser‑automation agent composed of four cooperating modules: Planner, Instinct, Reasoner, and Vision. The system is designed to execute tasks inside a browser environment while providing real‑time reasoning, human guidance, and runtime logging. The goal is to approximate a guided autonomous workflow similar to Devin-style agents.
+This project implements a browser‑automation agent composed of four cooperating modules: Planner, Instinct, Reasoner, and Vision. The system is designed to execute tasks inside a browser environment while providing real‑time reasoning, human guidance, and runtime logging. The goal is to approximate a guided autonomous workflow similar to Devin-style agents. If you wish to see what going to be patched/added you may wish to view TODO.md
 
 MODULES
 Planner
@@ -249,7 +249,6 @@ rm -f .puppeterr-profile/SingletonLock \
 echo '...' && sleep 0.5
 echo ':INFO: Leftover processes have been cleared'
 "
-
 if you see this error 
 
 "This congenial-halibut-wr945p799g5vc5rvx-3000.app.github.dev page can’t be found

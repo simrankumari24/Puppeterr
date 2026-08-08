@@ -435,5 +435,21 @@
         }
       ]
     }
-  ]
+  ],
+  "strider": {
+    "workerCount": 1,
+    "seedUrls": [
+      "https://google.com/"
+    ],
+    "randomWalk": false,
+    "runtimeOptions": {
+      "stealth": false,
+      "antiBot": "off",
+      "challengeHandling": "observe"
+    },
+    "status": "running",
+    "updatedAt": "2026-07-29T23:25:06.882Z",
+    "startedAt": "2026-07-29T23:25:06.882Z",
+    "stoppedAt": null
+  }
 }

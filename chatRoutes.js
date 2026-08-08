@@ -149,12 +149,20 @@ async function handleChatRequest(req, res, deps) {
       agentMsg(routed.chatReply);
       broadcast("chat_sync", { chatId });
     } else {
-      await runTask(routed.taskGoal, models, chatId);
+      await runTask(routed.taskGoal, models, chatId, null, userId);
       const page = getPage();
       if (page) broadcast("url", { url: page.url() });
     }
   } catch (err) {
     errLog("Chat handler: " + err.message);
+    try {
+      if (chatId) {
+        appendChatMessage(chatId, "assistant", "Something went wrong: " + err.message, { error: true, completed: false });
+        broadcast("chat_sync", { chatId });
+      }
+    } catch (internalErr) {
+      console.error("Failed to append chat error message:", internalErr.message);
+    }
     broadcast("task_done", { answer: "Something went wrong: " + err.message, completed: false });
     setAgentRunning(false);
   }

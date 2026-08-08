@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-import type { TestStatus, Metadata, PlaywrightTestOptions, PlaywrightWorkerOptions, ReporterDescription, FullConfig, FullProject, Location, WorkerInfo } from './test';
+import type { TestStatus, Metadata, PlaywrightTestOptions, PlaywrightWorkerOptions, ReporterDescription, FullConfig, FullProject, Location, WorkerInfo, TestAnnotation } from './test';
 export type { FullConfig, FullProject, TestStatus, Location, WorkerInfo } from './test';
 
 /**
@@ -228,6 +228,36 @@ export interface Reporter {
   onTestEnd?(test: TestCase, result: TestResult): void;
 
   /**
+   * Called after the configuration has been resolved and before
+   * [reporter.onBegin(config, suite)](https://playwright.dev/docs/api/class-reporter#reporter-on-begin). Allows a
+   * reporter to mark individual tests as skipped, excluded, fixed or failing.
+   * @param params The suite reflects `--project`, `--grep`/`--grep-invert` and `.only` filtering, so it only contains tests that
+   * match the current invocation. Setup and dependency projects are readonly and cannot be changed through
+   * [TestRun](https://playwright.dev/docs/api/class-testrun).
+   *
+   * The suite ignores the `--shard` argument: it always contains the full, un-sharded corpus. Playwright applies its
+   * built-in sharding after
+   * [reporter.preprocess(params)](https://playwright.dev/docs/api/class-reporter#reporter-preprocess) returns, unless
+   * the reporter calls [testRun.skipSharding()](https://playwright.dev/docs/api/class-testrun#test-run-skip-sharding).
+   */
+  preprocess?(params: {
+    /**
+     * Resolved configuration.
+     */
+    config: FullConfig;
+
+    /**
+     * The root suite that contains the projects, files and test cases that will run.
+     */
+    suite: Suite;
+
+    /**
+     * Control which tests will run and their expected status.
+     */
+    testRun: TestRun;
+  }): Promise<void>;
+
+  /**
    * Whether this reporter uses stdio for reporting. When it does not, Playwright Test could add some output to enhance
    * user experience. If your reporter does not print to the terminal, it is strongly recommended to return `false`.
    */
@@ -283,7 +313,7 @@ export interface JSONReportSpec {
 
 export interface JSONReportTest {
   timeout: number;
-  annotations: { type: string, description?: string }[],
+  annotations: TestAnnotation[],
   expectedStatus: TestStatus;
   projectName: string;
   projectId: string;
@@ -315,7 +345,7 @@ export interface JSONReportTestResult {
     body?: string;
     contentType: string;
   }[];
-  annotations: { type: string, description?: string }[];
+  annotations: TestAnnotation[];
   errorLocation?: Location;
 }
 
@@ -719,7 +749,52 @@ export interface TestResult {
 }
 
 /**
- * Represents a step in the [TestRun].
+ * Controls which tests will run and their expected status. A [TestRun](https://playwright.dev/docs/api/class-testrun)
+ * is available during
+ * [reporter.preprocess(params)](https://playwright.dev/docs/api/class-reporter#reporter-preprocess). Setup and
+ * teardown projects cannot be changed.
+ */
+export interface TestRun {
+  /**
+   * Excludes a test or suite from the run. Excluded tests do not appear in the report and their bodies are not
+   * executed.
+   * @param test Test or suite to exclude. The root suite cannot be excluded.
+   */
+  exclude(test: TestCase|Suite): void;
+
+  /**
+   * Marks a test or every test in a suite as "should fail". Playwright runs the tests and ensures they are actually
+   * failing, useful for documenting broken functionality until it is fixed.
+   * @param test Test or suite to mark as expected-to-fail.
+   * @param reason Optional explanation surfaced as the annotation description.
+   */
+  fail(test: TestCase|Suite, reason?: string): void;
+
+  /**
+   * Marks a test or every test in a suite as fixme. The test bodies are not executed and the tests are reported as
+   * skipped, with the intention to fix them.
+   * @param test Test or suite to mark as fixme.
+   * @param reason Optional explanation surfaced as the annotation description.
+   */
+  fixme(test: TestCase|Suite, reason?: string): void;
+
+  /**
+   * Skips a test or every test in a suite. The test bodies are not executed and the tests are reported as skipped.
+   * @param test Test or suite to skip.
+   * @param reason Optional explanation surfaced as the annotation description.
+   */
+  skip(test: TestCase|Suite, reason?: string): void;
+
+  /**
+   * Disables Playwright's built-in shard filter for this run, leaving sharding to the reporter. Reporters typically
+   * implement their own sharding by calling
+   * [testRun.exclude(test)](https://playwright.dev/docs/api/class-testrun#test-run-exclude) on out-of-shard tests.
+   */
+  skipSharding(): void;
+}
+
+/**
+ * Represents a step in a [TestResult](https://playwright.dev/docs/api/class-testresult).
  */
 export interface TestStep {
   /**
