@@ -13,6 +13,7 @@ const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
 const pinchApi = require("pinch-api");
 const pixelGridReasoner = require("./pixelGridReasoner");
 const StriderIntegration = require("./strider-integration");
+const { resolveChatWriteUserId, resolveChatIdForWrite } = require("./chat-scope");
 const {
   installVoidElementMapInitScript,
   captureVoidElementMapFromPage,
@@ -106,6 +107,45 @@ if (fs.existsSync(".env")) {
     }
     process.env[key] = value;
   });
+}
+
+// Spawn element-map helper for a URL (non-blocking). Tries xvfb-run if present.
+function runElementMapForUrl(url) {
+  try {
+    if (!url || typeof url !== "string") return;
+    const scriptPath = path.join(process.cwd(), "element-map.js");
+    if (!fs.existsSync(scriptPath)) {
+      // not fatal; the repo may not include the helper
+      status && status("element-map.js not found; skipping element-map run.");
+      return;
+    }
+
+    const safeUrl = String(url).replace(/"/g, '\\"');
+    const nodeCmd = `node ${scriptPath} "${safeUrl}"`;
+    const xvfbCmd = `xvfb-run -a ${nodeCmd}`;
+
+    // Log trigger and prefer xvfb-run when available, otherwise fall back to plain node.
+    console.log(`🔧 Triggering element-map for: ${url}`);
+    broadcast && broadcast("status", { msg: `element-map triggered for ${url}` });
+    exec("command -v xvfb-run", (err) => {
+      const cmdToRun = err ? nodeCmd : xvfbCmd;
+      console.log(`🔧 element-map command: ${cmdToRun.split(" ").slice(0,6).join(" ")} ...`);
+      exec(cmdToRun, { maxBuffer: 10 * 1024 * 1024 }, (execErr, stdout, stderr) => {
+        if (execErr) {
+          const msg = `element-map error: ${execErr.message}`;
+          console.warn(msg);
+          status && status(msg);
+        } else {
+          status && status("element-map completed");
+          if (stdout && stdout.toString().trim()) {
+            think && think(`element-map output: ${String(stdout).slice(0,800)}`);
+          }
+        }
+      });
+    });
+  } catch (err) {
+    console.warn("element-map spawn failed:", err?.message || err);
+  }
 }
 
 const CF_API_TOKEN  = process.env.CF_API_TOKEN;
@@ -208,7 +248,6 @@ const IDLE_HUMAN_SCHEDULE_FLOOR_MS = Math.max(120, Number(process.env.IDLE_HUMAN
 const IDLE_HUMAN_HOTSPOT_SAMPLE_LIMIT = Math.max(8, Number(process.env.IDLE_HUMAN_HOTSPOT_SAMPLE_LIMIT || 28));
 const IDLE_HUMAN_MAX_TARGET_REUSE = Math.max(2, Number(process.env.IDLE_HUMAN_MAX_TARGET_REUSE || 3));
 const IDLE_HUMAN_MODE = String(process.env.IDLE_HUMAN_MODE || "auto").toLowerCase(); // off | auto | always
-const MAX_LOG_ENTRIES = 4000;
 const AUTH_COOKIE_NAME = "puppeterr_auth";
 const AUTH_SECRET = process.env.APP_AUTH_SECRET || "puppeterr-local-secret";
 const APP_USERNAME = process.env.APP_USERNAME || "admin";
@@ -231,6 +270,71 @@ const VOID_MAP_CAPTURE_EVERY_STATE = String(process.env.VOID_MAP_CAPTURE_EVERY_S
 const VOID_MAP_STATE_MAX_ELEMENTS = Math.max(200, Number(process.env.VOID_MAP_STATE_MAX_ELEMENTS || 1200));
 const VOID_MAP_STATE_TEXT_LIMIT = Math.max(60, Number(process.env.VOID_MAP_STATE_TEXT_LIMIT || 180));
 const fetchImpl = globalThis.fetch || undiciFetch;
+
+// ── Usage-based billing constants ────────────────────────────────────────────
+const FREE_TIER_MAX_TASKS = Math.max(1, Number(process.env.FREE_TIER_MAX_TASKS || 50));
+const CORE_TIER_MAX_TASKS = Math.max(1, Number(process.env.CORE_TIER_MAX_TASKS || 1000));
+const ULTIMATE_TIER_UNLIMITED = true;
+const OVERAGE_COST_PER_TASK = Number(process.env.OVERAGE_COST_PER_TASK || 0.001);
+
+function getTierMaxTasks(subscriptionPlan) {
+  const plan = String(subscriptionPlan || "").toLowerCase();
+  if (plan === "ultimate") return Infinity;
+  if (plan === "core") return CORE_TIER_MAX_TASKS;
+  return FREE_TIER_MAX_TASKS;
+}
+
+function getTierName(subscriptionPlan) {
+  const plan = String(subscriptionPlan || "").toLowerCase();
+  if (plan === "ultimate") return "Ultimate";
+  if (plan === "core") return "Core";
+  return "Free";
+}
+
+async function checkTaskLimit(user) {
+  if (!user) return { allowed: true, remaining: FREE_TIER_MAX_TASKS, tier: "Free" };
+  const maxTasks = getTierMaxTasks(user.subscription_plan);
+  if (!Number.isFinite(maxTasks)) return { allowed: true, remaining: Infinity, tier: "Ultimate" };
+
+  // Reset usage counter if a month has passed
+  const now = Date.now();
+  const resetAt = Number(user.taskUsageResetAt || 0);
+  if (now >= resetAt) {
+    user.taskUsage = 0;
+    user.taskUsageResetAt = now + (30 * 24 * 60 * 60 * 1000);
+    saveUsers(loadUsers().map(u => u.id === user.id ? user : u));
+  }
+
+  const used = Number(user.taskUsage || 0);
+  const remaining = Math.max(0, maxTasks - used);
+  const allowed = remaining > 0;
+  return { allowed, remaining, used, maxTasks, tier: getTierName(user.subscription_plan) };
+}
+
+async function incrementTaskUsage(user) {
+  if (!user) return;
+  user.taskUsage = (Number(user.taskUsage || 0)) + 1;
+  if (!user.taskUsageResetAt) {
+    user.taskUsageResetAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+  }
+  saveUsers(loadUsers().map(u => u.id === user.id ? user : u));
+}
+
+function getUsageStatus(user) {
+  const maxTasks = getTierMaxTasks(user?.subscription_plan);
+  if (!Number.isFinite(maxTasks)) return { tier: "Ultimate", used: 0, remaining: Infinity, percentage: 0 };
+  const used = Number(user?.taskUsage || 0);
+  const remaining = Math.max(0, maxTasks - used);
+  const percentage = maxTasks > 0 ? Math.min(100, Math.round((used / maxTasks) * 100)) : 0;
+  return {
+    tier: getTierName(user?.subscription_plan),
+    used,
+    remaining,
+    maxTasks,
+    percentage,
+    overageCost: remaining <= 0 ? OVERAGE_COST_PER_TASK : 0
+  };
+}
 
 const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
 const ROUTER_LOCK_MODEL = String(process.env.ROUTER_LOCK_MODEL || "false").toLowerCase() === "true";
@@ -566,6 +670,35 @@ let browser, context, page;
 let sessionHistory  = [];
 let agentRunning    = false;
 let currentTaskUserId = null; // tracks which user triggered the active task
+let currentTaskChatId = null; // tracks the active task's chat for runtime error and summary messages
+
+async function ensureActivePage() {
+  if (page) {
+    try {
+      page.url();
+      return page;
+    } catch {}
+  }
+  if (context) {
+    const pages = context.pages().filter(p => p);
+    for (const candidate of pages) {
+      try {
+        candidate.url();
+        page = candidate;
+        await page.bringToFront().catch(() => {});
+        return page;
+      } catch {}
+    }
+    try {
+      page = await context.newPage();
+      await page.bringToFront().catch(() => {});
+      return page;
+    } catch (err) {
+      throw new Error(`No active Playwright page available: ${err.message}`);
+    }
+  }
+  throw new Error("No browser context available to recover the active page.");
+}
 let modelCatalogCache = { expiresAt: 0, items: [] };
 let routerTaskTypeFailures = new Map(); // runtime-only model failures by task type
 let plannerModelHealth = new Map(); // modelId -> { emptyStreak, failUntil, lastFailure, lastError, lastSuccessAt }
@@ -1140,7 +1273,9 @@ function sanitizeUserForSession(user) {
     subscription_plan: user.subscription_plan || null,
     subscription_id: user.subscription_id || null,
     pinch_customer_id: user.pinch_customer_id || null,
-    subscription_status: user.subscription_status || (user.subscription_plan ? "active" : "unsubscribed")
+    subscription_status: user.subscription_status || (user.subscription_plan ? "active" : "unsubscribed"),
+    taskUsage: Number(user.taskUsage || 0),
+    taskUsageResetAt: user.taskUsageResetAt || null
   };
 }
 
@@ -2093,16 +2228,18 @@ function resolveSlashModelCommand(command) {
 
 // userId defaults to currentTaskUserId so agent task callbacks don't need to pass it explicitly
 function appendChatMessage(chatId, role, content, meta = {}, userId = currentTaskUserId) {
-  const store = loadChatStore(userId);
-  const chat = store.chats.find(item => item.id === chatId);
+  const resolvedUserId = resolveChatWriteUserId(userId, currentTaskUserId);
+  const store = loadChatStore(resolvedUserId);
+  const resolvedChatId = resolveChatIdForWrite(chatId, store);
+  const chat = store.chats.find(item => item.id === resolvedChatId);
   if (!chat) return null;
   if (role === "user") {
     maybeAutoTitleChat(chat, content);
   }
   chat.messages.push({ role, content, ts: new Date().toISOString(), ...meta });
   chat.updatedAt = new Date().toISOString();
-  store.selectedChatId = chatId;
-  saveChatStore(store, userId);
+  store.selectedChatId = resolvedChatId;
+  saveChatStore(store, resolvedUserId);
   syncSessionHistory(chat);
   return chat;
 }
@@ -2156,12 +2293,14 @@ function getRuntimeRouterThinking(models) {
 }
 
 function buildBootstrapPayload(catalog = modelCatalogCache.items, auth = null) {
-  const { store, chat } = ensureCurrentChat(auth?.userId || null);
+  const userId = auth?.userId || null;
+  const { store, chat } = ensureCurrentChat(userId);
   const defaults = resolveDefaultModels(catalog);
   const memory = loadMemory();
   const resolvedUsername = auth?.email || auth?.username || APP_USERNAME;
   const subscriptionPlan = auth?.subscriptionPlan || null;
   const subscriptionStatus = auth?.subscriptionStatus || (subscriptionPlan ? "active" : "unsubscribed");
+  const currentChat = store.chats.find(item => item.id === store.selectedChatId) || chat || null;
   return {
     username: resolvedUsername,
     account: {
@@ -2170,9 +2309,9 @@ function buildBootstrapPayload(catalog = modelCatalogCache.items, auth = null) {
       subscriptionStatus,
       pinchCustomerId: auth?.pinchCustomerId || null
     },
-    selectedChatId: store.selectedChatId,
+    selectedChatId: currentChat ? currentChat.id : store.selectedChatId,
     chats: store.chats.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(summarizeChat),
-    currentChat: chat,
+    currentChat: currentChat ? { ...currentChat, messages: Array.isArray(currentChat.messages) ? currentChat.messages : [] } : null,
     memory: memory.slice(-250),
     models: {
       catalog,
@@ -2260,7 +2399,22 @@ function think(msg)   { console.log("  💭 " + msg); broadcast("think",   { msg
 function status(msg)  { console.log("  ⚡ " + msg); broadcast("status",  { msg }); }
 function agentMsg(msg){ console.log("  🤖 " + msg); broadcast("agent",   { msg }); }
 function stepLogMsg(msg) { console.log("  📋 " + msg); broadcast("step", { msg }); }
-function errLog(msg)  { console.log("  ❌ " + msg); broadcast("error",   { msg }); }
+function appendTaskChatMessage(role, content, meta = {}) {
+  if (!currentTaskChatId) return;
+  try {
+    appendChatMessage(currentTaskChatId, role, content, { ...meta }, currentTaskUserId);
+    broadcast("chat_sync", { chatId: currentTaskChatId });
+  } catch (err) {
+    console.error("Failed to append task chat message:", err && err.message ? err.message : err);
+  }
+}
+function errLog(msg)  {
+  console.log("  ❌ " + msg);
+  broadcast("error",   { msg });
+  if (currentTaskChatId) {
+    appendTaskChatMessage("assistant", msg, { error: true, completed: false });
+  }
+}
 function routerThink(models, msg) { if (getRuntimeRouterThinking(models)) think(msg); }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2532,9 +2686,7 @@ function buildPlannerCandidateModels(models = {}) {
     models?.router,
     DEFAULT_MODELS.reasoner,
     DEFAULT_MODELS.router,
-    DEFAULT_MODELS.planner,
-    "@cf/zai-org/glm-5.2",
-  ]) {
+    DEFAULT_MODELS.planner,]) {
     const modelId = String(candidate || "").trim();
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
@@ -2754,72 +2906,6 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
       }
     }
   });
-}
-
-// ── DETR object-detection wrapper ─────────────────────────────────────────────
-async function callDETR(imageB64) {
-  if (!CF_API_TOKEN || !CF_ACCOUNT_ID) return [];
-  const buf = Buffer.from(imageB64, "base64");
-  return withVisionOperation("detr", async () => {
-    for (let i = 0; i <= 2; i++) {
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 25000);
-        const res = await fetch(
-          buildCloudflareRunUrl("@cf/meta/llama-3.2-11b-vision-instruct"),
-          {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/octet-stream" },
-            body: buf,
-            signal: ctrl.signal
-          }
-        );
-        clearTimeout(t);
-        const data = await res.json();
-        if (!data.success) throw new Error(JSON.stringify(data.errors));
-        return Array.isArray(data.result) ? data.result : [];
-      } catch (err) {
-        if (i === 2) { status(`DETR error: ${err.message}`); return []; }
-        await sleep(450 + (i * 150));
-      }
-    }
-    return [];
-  });
-}
-
-function buildDETRContext(detections) {
-  if (!Array.isArray(detections) || !detections.length) return "No objects detected.";
-  return detections
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, 20)
-    .map(d => {
-      const box = d.box || {};
-      return `- ${String(d.label || "object")} (${Math.round((d.score || 0) * 100)}%) at xmin=${box.xmin ?? 0},ymin=${box.ymin ?? 0},xmax=${box.xmax ?? 0},ymax=${box.ymax ?? 0}`;
-    })
-    .join("\n");
-}
-
-async function analyzeUploadedImageWithVision(imageB64, detrContext, userQuery, visionModelId) {
-  const preparedImageB64 = await resizeImageB64ForVision(imageB64, 1024, 1024);
-  const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
-
-You are analyzing a user-uploaded image. Treat it as a standalone image, NOT as a DOM screenshot, browser page, or layout map.
-
-DETR object detection hints (use only as a hint, not as the final answer):
-${detrContext}
-
-Return a detailed response with these exact sections:
-1. Visible text — extract every readable word or phrase as accurately as possible. Preserve line breaks if useful. If there is no readable text, say so.
-2. Objects and people — list the main objects, people, faces, tools, UI-like objects, signs, and any notable spatial relationships.
-3. Colors — describe the dominant colors, accent colors, and the overall palette. Mention contrast, saturation, and any standout color regions.
-4. Detailed summary — give an extremely detailed description of what the image shows, what it appears to be, and any important visual context.
-
-Be thorough and specific. Do not mention pixel grids, ASCII maps, layout keys, DOM inspection, or browser screenshot analysis unless the image itself clearly contains those artifacts.`;
-  try {
-    return await callVisionAI(preparedImageB64, prompt, 1200, visionModelId || DEFAULT_MODELS.vision);
-  } catch (err) {
-    return `Vision analysis failed: ${err.message}`;
-  }
 }
 
 function readImageDimensions(buffer, mimeType = "") {
@@ -3369,17 +3455,29 @@ async function runWithEphemeralCapabilityModel(taskType, baselineModel, runner) 
 
 async function runImageAnalysis(media, modelId, userQuery = "") {
   const chosenModel = String(modelId || DEFAULT_MODELS.vision);
-  const detr = await callDETR(media.dataB64);
-  const detrContext = buildDETRContext(detr);
-  const summary = await analyzeUploadedImageWithVision(media.dataB64, detrContext, userQuery, chosenModel);
+  const preparedImageB64 = await resizeImageB64ForVision(media.dataB64, 800, 560);
+  const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
+
+You are analyzing a user-uploaded image. Return a detailed response with these exact sections:
+1. Visible text — extract every readable word or phrase as accurately as possible.
+2. Objects and people — list the main objects, people, faces, and notable spatial relationships.
+3. Colors — describe the dominant colors, accent colors, and overall palette.
+4. Detailed summary — describe what the image shows and any important context.
+
+Be thorough and specific.`;
+
+  let text;
+  try {
+    text = await callVisionAI(preparedImageB64, prompt, 1200, chosenModel);
+  } catch (err) {
+    text = `Vision analysis failed: ${err.message}`;
+  }
+
   return {
     taskType: "image_analysis",
     model: chosenModel,
-    text: summary,
-    structured: {
-      detections: detr,
-      detectionCount: detr.length
-    },
+    text,
+    structured: {},
     media: [buildMediaReference(media)]
   };
 }
@@ -5259,9 +5357,11 @@ Output ONLY valid JSON:
       ? [baselineRouterModel]
       : [activeRouterModel, baselineRouterModel];
 
+    let baselineAttempted = false;
     for (const modelCandidate of attemptOrder) {
-      if (modelCandidate === baselineRouterModel && retriedWithBaseline) continue;
+      if (modelCandidate === baselineRouterModel && baselineAttempted) continue;
       try {
+        if (modelCandidate === baselineRouterModel) baselineAttempted = true;
         const raw = await callCFAI(modelCandidate, [
           { role: "system", content: system },
           { role: "user", content: rawGoal }
@@ -5410,8 +5510,6 @@ async function analyzeScreen(screenshotB64, state, lastAction, goal, models) {
     }, null, 2);
   }
 }
-
-module.exports = { analyzeScreen, percentPositionToPixels };
 
 function clampNumber(value, min, max) {
   const num = Number(value);
@@ -5963,7 +6061,7 @@ async function expandVisionAssistedClicks(planActions, goal, models, options = {
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: PLANNER  (the "genius" brain)
 // ─────────────────────────────────────────────────────────────────────────────
-async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals = {}) {
+async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals = {}, taskHints = {}) {
   status("Planner reasoning...");
   const learningContext = buildLearningContext(goal, state);
   const peerReasoner = peerSignals?.reasoner || {};
@@ -5987,6 +6085,9 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     .join(" | ") || "none";
   const compactVoidMapSummary = compactPromptValue(state.voidMapSummary || "none", 220);
   const compactVoidMapClickable = (state.voidMapClickable || []).slice(0, 8).map(item => compactPromptValue(item, 54)).join(" | ") || "none";
+  const compactDirectNavigationTarget = taskHints.simpleFastPathCandidate && String(taskHints.directNavigationTarget || "").trim()
+    ? compactUrlForPrompt(taskHints.directNavigationTarget)
+    : "none";
 
 const userMsg = `Goal:${compactGoal}
 URL:${compactCurrentUrl}
@@ -6000,12 +6101,14 @@ VoidClickable:${compactVoidMapClickable}
 Vision:${compactPromptValue(visionFeedback || "none", 280)}
 Peers:instinct=${compactPromptValue(peerReasoner.instinct || "none", 80)};risk=${compactPromptValue(peerReasoner.risk || "none", 24)};focus=${compactPromptValue(peerReasoner.next_focus || "none", 60)};supervisor=${compactPromptValue(peerSupervisor.decision || "none", 20)}:${compactPromptValue(peerSupervisor.reason || "", 70)};researchHints=${Number(peerResearch.hintCount || 0)}
 GoalProgress:${goalMemCtx || "none"}
+DirectNavigationTarget:${compactDirectNavigationTarget}
+DirectNavigationHint:${taskHints.simpleFastPathCandidate ? "There is a direct navigation candidate available, but only follow it if it seems like the best first action." : "none"}
 History:${compactTaskLog}
 Recon:${compactRecon}
 PageText:${compactPageText}
 Learning:${compactPromptValue(learningContext, 200)}
 Failures:${failures};Stuck:${stuck ? "yes" : "no"}
-Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.`;
+Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.`;
 
   plannerHistory.push({ role: "user", content: userMsg.slice(0, MAX_PLANNER_USER_MSG_CHARS) });
   // Keep the conversation bounded BEFORE sending — see trimHistory's doc
@@ -6217,7 +6320,7 @@ Constraints:<=3 actions;avoid repeating failed selector/action;prefer submitForm
 const PLANNER_TIPS_50 = `
 1 target goal
 2 avoid loops
-3 <=10 actions
+3 <=13 actions
 4 atomic actions
 5 stable selectors
 6 prefer visible
@@ -6610,7 +6713,8 @@ async function runActionWithFallback(item, goal, models) {
 
   // Primary attempt
   try {
-    const result = await actions[action]({ page, context, ...(params || {}) });
+    const activePage = await ensureActivePage();
+    const result = await actions[action]({ page: activePage, context, ...(params || {}) });
     think(`✓ ${action}`);
     const rawResultText = typeof result === "string"
       ? result
@@ -7327,8 +7431,11 @@ function hasSearchGoalEvidence(goalText, state) {
   const joined = `${urlText}\n${titleText}\n${bodyText}`;
 
   const matchedTokens = queryTokens.filter(token => joined.includes(token));
-  const requiredHits = Math.min(2, queryTokens.length);
-  if (matchedTokens.length < requiredHits) {
+  const requiredHits = Math.min(3, queryTokens.length);
+  // Require at least one match inside the page title or body (not only URL)
+  const titleOrBody = `${titleText}\n${bodyText}`;
+  const matchedInTitleOrBody = queryTokens.filter(token => titleOrBody.includes(token));
+  if (matchedTokens.length < requiredHits || matchedInTitleOrBody.length < 1) {
     return false;
   }
 
@@ -8083,24 +8190,6 @@ function summarizeVoidElementMap(domMap = {}) {
   return `DOM map: ${totalCaptured} elements (${Number(summary.visibleCount || 0)} visible, ${Number(summary.clickableCount || 0)} clickable, ${Number(summary.anchorCount || 0)} anchors, ${Number(summary.buttonCount || 0)} buttons, ${Number(summary.idsWithElements || 0)} with id)`;
 }
 
-function chunkText(text, maxChunkChars = 3000) {
-  const raw = String(text || "").trim();
-  if (raw.length <= maxChunkChars) return [raw];
-  const sections = raw.split(/\n{2,}(?=[A-Z][^\n]{0,60}\n)/);
-  const chunks = [];
-  let current = "";
-  for (const section of sections) {
-    if (current.length + section.length > maxChunkChars && current.length > 0) {
-      chunks.push(current.trim());
-      current = section;
-    } else {
-      current += (current ? "\n\n" : "") + section;
-    }
-  }
-  if (current.trim()) chunks.push(current.trim());
-  return chunks.length ? chunks : [raw.slice(0, maxChunkChars)];
-}
-
 /**
  * SANITY CHECK: Detects when agent is "bling-induced psychotic" (completely confused/looping)
  * Returns severity level: "ok" | "confused" | "psychotic"
@@ -8688,8 +8777,10 @@ RESPOND WITH THIS JSON SHAPE ONLY:
   }
 }
 
-async function runTask(goal, models, chatId, browserRuntime = null) {
+async function runTask(goal, models, chatId, browserRuntime = null, userId = null) {
   agentRunning = true;
+  currentTaskUserId = userId || currentTaskUserId || null;
+  currentTaskChatId = chatId || null;
   const runtime = browserRuntime && typeof browserRuntime === "object" ? browserRuntime : {};
   const taskRetryLimit = Number.isFinite(Number(runtime.errorRetry)) ? Math.max(1, Math.min(8, Number(runtime.errorRetry))) : MAX_RETRIES;
   const taskRetryBackoffMs = Number.isFinite(Number(runtime.errorBackoffMs)) && Number(runtime.errorBackoffMs) > 0
@@ -8741,6 +8832,7 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
   const directNavigationTarget = searchEngineCompareGoal ? "" : resolveDirectNavigationTarget(goal);
   const directNavigationTargetHost = getHostFromUrl(directNavigationTarget || "");
   let simpleFastPathSatisfied = false;
+  let simpleFastPathCandidate = false;
   const escapeContext = {
     active: false,
     lastType: "",
@@ -8881,7 +8973,13 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
       const state = await getPageState();
       finalState  = state;
       status(`URL: ${state.url}`);
+      // Trigger element-map helper once at task start so external tooling
+      // (element-map.js) can capture a page-level element map.
+      if (step === 1) {
+        try { runElementMapForUrl(state.url); } catch (err) { console.warn('runElementMapForUrl failed:', err?.message || err); }
+      }
       const currentHost = getHostFromUrl(state.url);
+      simpleFastPathCandidate = false;
       if (step === 1 && shouldResetTaskContextToGoogle(state, goalMem, searchEngineCompareGoal)) {
         await triggerEscapeHatch(step, `Task context mismatch on ${currentHost || "unknown-host"}. Resetting to Google before executing the new task.`, "CONTEXT_RESET", { targetUrl: "https://www.google.com/" });
         continue;
@@ -8899,42 +8997,8 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
         !hostMatchesExpectedHost(currentHost, directNavigationTargetHost) &&
         failures <= 1
       ) {
-        think(`Simple browsing fast-path: direct navigation to ${directNavigationTargetHost || directNavigationTarget}`);
-        const fastPlan = {
-          reasoning: "Simple mode direct path: known destination, navigate first.",
-          confidence: 96,
-          done: false,
-          actions: [{ action: "goto", params: { url: directNavigationTarget } }]
-        };
-        const fastResults = await withExecutorWork(() => executeActionPlan(fastPlan, goal, models, {
-          pacingMultiplier: taskPacingMultiplier,
-          preActionIdleMs: 0,
-          burstLimit: Number.POSITIVE_INFINITY,
-          microBreakMs: 0,
-          navigationCooldownMs: taskBaseNavigationCooldownMs,
-          navigationCooldownByHost,
-          visionOnlyClickMode: false
-        }, {
-          step,
-          score: 0.5,
-          failures,
-          visionFresh: true
-        }));
-
-        const fastSummary = fastResults.map(r => `${r.action}:${r.status}`).join(", ");
-        const fastLogLine = `Step ${step} [96%]: ${fastSummary} — Simple mode direct path`;
-        taskLog.push(fastLogLine);
-        stepLogMsg(fastLogLine);
-
-        const landedState = await withExecutorWork(() => getPageState());
-        finalState = landedState;
-        const landedHost = getHostFromUrl(landedState.url);
-        if (directNavigationTargetHost && hostMatchesExpectedHost(landedHost, directNavigationTargetHost)) {
-          simpleFastPathSatisfied = true;
-          think(`Simple browsing fast-path landed on ${landedHost}.`);
-          await sleepLikeHuman(Math.max(180, Math.min(700, STEP_SETTLE_DELAY_MS || 300)), page);
-          continue;
-        }
+        simpleFastPathCandidate = true;
+        think(`Simple browsing candidate available: direct navigation to ${directNavigationTargetHost || directNavigationTarget}. I may still skip it if the planner chooses a better first step.`);
       }
 
       const directTargetUrl = searchEngineCompareGoal ? "" : resolveDirectNavigationTarget(goal);
@@ -9217,6 +9281,17 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
       else if (stuck) narrate(`I seem to be going in circles. Let me try a completely different approach.`);
       else if (failures >= 2) narrate(`The last ${failures} attempts failed. Switching strategy now.`);
       else if (step % 5 === 0) narrate(`Still working on it — step ${step}. Current page: ${state.url}`);
+
+      if (step > 1 && step % 5 === 0 && chatId) {
+        const summaryLines = [];
+        if (instinct?.instinct) summaryLines.push(instinct.instinct);
+        if (instinct?.next_focus) summaryLines.push(`Focus: ${instinct.next_focus}`);
+        if (instinct?.risk) summaryLines.push(`Risk: ${instinct.risk}`);
+        if (instinct?.caution) summaryLines.push(`Caution: ${instinct.caution}`);
+        if (summaryLines.length) {
+          appendTaskChatMessage("assistant", `Reasoner summary (step ${step}):\n` + summaryLines.join("\n"), { reasoner_summary: true, step, completed: false });
+        }
+      }
       
       const instinctFeedback = [
         visionFeedback,
@@ -9241,7 +9316,10 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
 
       let plan;
       try {
-        plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals));
+        plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals, {
+          simpleFastPathCandidate,
+          directNavigationTarget
+        }));
       } catch (err) {
         errLog("Planning failed: " + err.message);
         const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
@@ -9715,7 +9793,7 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
     });
     saveMemory({ goal, result: answer.slice(0, 200), completed, steps: taskLog.length });
     if (chatId) {
-      appendChatMessage(chatId, "assistant", answer, { goal, completed });
+      appendChatMessage(chatId, "assistant", answer, { goal, completed }, currentTaskUserId);
       broadcast("chat_sync", { chatId });
     }
     broadcast("task_done", { answer, completed: completed && !requiresHuman && !stoppedByGuidance, aborted: stoppedByGuidance });
@@ -9740,6 +9818,7 @@ async function runTask(goal, models, chatId, browserRuntime = null) {
     broadcast("bridge_closed", { msg: "Human bridge closed for this run.", url: page ? page.url() : "about:blank" });
     agentRunning = false;
     currentTaskUserId = null; // release user scope after task completes
+    currentTaskChatId = null;
   }
 }
 
@@ -10019,10 +10098,11 @@ async function handleRequest(req, res) {
   }
 
   if (pathname === "/api/analyze-current-ui" && req.method === "POST") {
-    if (!getAuth(req)) { sendJson(res, 401, { error: "Unauthorized" }); return; }
+    const uiAuth = getAuth(req);
+    if (!uiAuth) { sendJson(res, 401, { error: "Unauthorized" }); return; }
     try {
       const body = await readJsonBody(req);
-      const analysis = await analyzeCurrentBrowserUILayout(String(body.prompt || body.query || ""), auth?.userId || null);
+      const analysis = await analyzeCurrentBrowserUILayout(String(body.prompt || body.query || ""), uiAuth.userId || null);
       sendJson(res, 200, {
         ok: true,
         taskType: analysis.taskType,
@@ -10195,13 +10275,15 @@ async function handleRequest(req, res) {
 
   if (pathname === "/api/bootstrap") {
     const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
-    sendJson(res, 200, buildBootstrapPayload(catalog, auth));
+    const bootstrapAuth = getAuth(req);
+    sendJson(res, 200, buildBootstrapPayload(catalog, bootstrapAuth));
     return;
   }
 
   if (pathname === "/api/models") {
     const catalog = await fetchModelCatalog(requestUrl.searchParams.get("force") === "1");
-    const { chat } = ensureCurrentChat(auth?.userId || null);
+    const modelAuth = getAuth(req);
+    const { chat } = ensureCurrentChat(modelAuth?.userId || null);
     sendJson(res, 200, { catalog, current: getActiveModels(chat), defaults: DEFAULT_MODELS, modelParams: getActiveModelParams(chat) });
     return;
   }
@@ -10209,7 +10291,8 @@ async function handleRequest(req, res) {
   if (pathname === "/api/chats" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const chat = createChat(body.title || "New Chat", auth?.userId || null);
+      const chatAuth = getAuth(req);
+      const chat = createChat(body.title || "New Chat", chatAuth?.userId || null);
       sendJson(res, 201, { chat, selectedChatId: chat.id });
     } catch {
       sendJson(res, 400, { error: "Invalid request body" });
@@ -10220,7 +10303,8 @@ async function handleRequest(req, res) {
   if (chatMatch && req.method === "PATCH") {
     try {
       const body = await readJsonBody(req);
-      const store = loadChatStore(auth?.userId || null);
+      const chatAuth = getAuth(req);
+      const store = loadChatStore(chatAuth?.userId || null);
       const chat = store.chats.find(item => item.id === chatMatch[1]);
       if (!chat) {
         sendJson(res, 404, { error: "Chat not found" });
@@ -10232,7 +10316,7 @@ async function handleRequest(req, res) {
         return;
       }
       chat.updatedAt = new Date().toISOString();
-      saveChatStore(store, auth?.userId || null);
+      saveChatStore(store, chatAuth?.userId || null);
       sendJson(res, 200, { chat, selectedChatId: store.selectedChatId });
       broadcast("chat_sync", { chatId: chat.id });
     } catch {
@@ -10242,7 +10326,8 @@ async function handleRequest(req, res) {
   }
 
   if (chatMatch && req.method === "GET") {
-    const { store } = ensureCurrentChat(auth?.userId || null);
+    const chatAuth = getAuth(req);
+    const { store } = ensureCurrentChat(chatAuth?.userId || null);
     const chat = store.chats.find(item => item.id === chatMatch[1]);
     if (!chat) {
       sendJson(res, 404, { error: "Chat not found" });
@@ -10253,7 +10338,8 @@ async function handleRequest(req, res) {
   }
 
   if (selectMatch && req.method === "POST") {
-    const userId = auth?.userId || null;
+    const chatAuth = getAuth(req);
+    const userId = chatAuth?.userId || null;
     let chat = setCurrentChat(selectMatch[1], userId);
     if (!chat) {
       // Chat not found in user's store (stale ID from before per-user isolation).
@@ -10262,14 +10348,16 @@ async function handleRequest(req, res) {
       chat = fallback.chat;
     }
     const catalog = await fetchModelCatalog(false);
-    sendJson(res, 200, buildBootstrapPayload(catalog, auth));
+    const selectAuth = getAuth(req);
+    sendJson(res, 200, buildBootstrapPayload(catalog, selectAuth));
     return;
   }
 
   if (modelsMatch && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
-      const chat = updateChatModels(modelsMatch[1], body.models || {}, auth?.userId || null, body.params || {});
+      const chatAuth = getAuth(req);
+      const chat = updateChatModels(modelsMatch[1], body.models || {}, chatAuth?.userId || null, body.params || {});
       if (!chat) {
         sendJson(res, 404, { error: "Chat not found" });
         return;
@@ -10434,9 +10522,21 @@ async function handleRequest(req, res) {
       pathname === "/api/chat/" && req.method === "POST") {
     try {
       const body = await readJsonBody(req);
+      const chatAuth = getAuth(req);
       const rawMessage = String(body.message || "").trim();
-      const userId = auth?.userId || null;
-      const chatId = body.chatId || ensureCurrentChat(userId).chat.id;
+      const userId = chatAuth?.userId || null;
+      const fallbackChat = ensureCurrentChat(userId).chat;
+      const chatId = body.chatId || fallbackChat.id;
+
+      // Select the target chat FIRST — before anything model-dependent runs.
+      // Media analysis (below) reads this chat's configured vision model,
+      // so selection must happen before that, not after.
+      let activeChat = setCurrentChat(chatId, userId);
+      if (!activeChat) {
+        // chatId is stale (e.g. after server restart) — fall back to the current chat in the authenticated user's store.
+        activeChat = fallbackChat;
+      }
+
       const mediaItems = normalizeIncomingMedia(body);
       const mediaTaskType = mediaItems.length ? classifyMediaTask(mediaItems) : null;
       const shouldAnalyzeLiveUi = !mediaItems.length && wantsPageLayoutAnalysis(rawMessage);
@@ -10444,8 +10544,7 @@ async function handleRequest(req, res) {
       let message = rawMessage;
       let mediaAnalysisMeta = null;
       if (mediaItems.length) {
-        const { chat: mediaChat } = ensureCurrentChat(userId);
-        const mediaModels = attachModelRuntimeParams(getActiveModels(mediaChat), getActiveModelParams(mediaChat));
+        const mediaModels = attachModelRuntimeParams(getActiveModels(activeChat), getActiveModelParams(activeChat));
         const mediaResult = await runMediaAnalysis(mediaItems, mediaModels, rawMessage);
         const refs = mediaItems.map(buildMediaReference);
         const summary = String(mediaResult?.analysis?.text || "Media attached.");
@@ -10472,76 +10571,57 @@ async function handleRequest(req, res) {
         status("Live browser UI analyzed via vision.");
       }
 
-      if (!message && !mediaItems.length) {
-        sendJson(res, 400, { error: "Message is required" });
-        return;
-      }
-
-      if (agentRunning) {
-        sendJson(res, 409, { error: "Agent is already running a task" });
-        return;
-      }
-
-      // Set the active user for the duration of this task so appendChatMessage in the executor writes to the right store
-      currentTaskUserId = userId;
-
-      let activeChat = setCurrentChat(chatId, userId);
-      if (!activeChat) {
-        // chatId is stale (e.g. after server restart) — fall back to current chat
-        const fallback = ensureCurrentChat(userId);
-        activeChat = fallback.chat;
-      }
-
       const normalizedCommandMessage = normalizeBrowserFlagBundleMessage(rawMessage);
       const command = parseSlashCommand(normalizedCommandMessage);
+      const effectiveChatId = activeChat?.id || fallbackChat?.id || chatId;
       const explicitSlashAction = command ? resolveExplicitSlashAction(command) : { kind: "unknown" };
       const slashModel = command ? resolveSlashModelCommand(command) : null;
       if (slashModel && command) {
         if (slashModel.kind === "reset") {
-          clearRuntimeModelOverride(chatId, userId);
-          appendChatMessage(chatId, "user", message, { command: command.command }, userId);
-          appendChatMessage(chatId, "assistant", "Model override cleared. I'll go back to the chat's saved models until you set another command.", { completed: true, command: command.command, model: null }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, reset: true });
-          broadcast("chat_sync", { chatId });
+          clearRuntimeModelOverride(effectiveChatId, userId);
+          appendChatMessage(effectiveChatId, "user", message, { command: command.command }, userId);
+          appendChatMessage(effectiveChatId, "assistant", "Model override cleared. I'll go back to the chat's saved models until you set another command.", { completed: true, command: command.command, model: null }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, model: null, reset: true });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
         if (slashModel.kind === "model") {
           if (!slashModel.modelId) {
-            appendChatMessage(chatId, "user", message, { command: command.command }, userId);
-            appendChatMessage(chatId, "assistant", `I couldn't find a model matching "${slashModel.query}" in the catalog, so I left the current model active.`, { completed: true, command: command.command, model: null, matched: false }, userId);
-            sendJson(res, 200, { ok: true, chatId, command: command.command, model: null, matched: false });
-            broadcast("chat_sync", { chatId });
+            appendChatMessage(effectiveChatId, "user", message, { command: command.command }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `I couldn't find a model matching "${slashModel.query}" in the catalog, so I left the current model active.`, { completed: true, command: command.command, model: null, matched: false }, userId);
+            sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, model: null, matched: false });
+            broadcast("chat_sync", { chatId: effectiveChatId });
             currentTaskUserId = null;
             return;
           }
-          setRuntimeModelOverride(chatId, slashModel.modelId, userId);
-          appendChatMessage(chatId, "user", message, { command: command.command }, userId);
-          appendChatMessage(chatId, "assistant", `Model override set to ${slashModel.modelId}. I'll keep using it until you start a new task or reset it.`, { completed: true, command: command.command, model: slashModel.modelId, matched: true }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, model: slashModel.modelId, matched: true });
-          broadcast("chat_sync", { chatId });
+          setRuntimeModelOverride(effectiveChatId, slashModel.modelId, userId);
+          appendChatMessage(effectiveChatId, "user", message, { command: command.command }, userId);
+          appendChatMessage(effectiveChatId, "assistant", `Model override set to ${slashModel.modelId}. I'll keep using it until you start a new task or reset it.`, { completed: true, command: command.command, model: slashModel.modelId, matched: true }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, model: slashModel.modelId, matched: true });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
       }
 
       if (command && explicitSlashAction.kind === "help") {
-        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        appendChatMessage(effectiveChatId, "user", rawMessage, { command: command.command }, userId);
         const helpText = buildSlashHelpText();
-        appendChatMessage(chatId, "assistant", helpText, { completed: true, command: command.command }, userId);
-        sendJson(res, 200, { ok: true, chatId, command: command.command, help: helpText });
-        broadcast("chat_sync", { chatId });
+        appendChatMessage(effectiveChatId, "assistant", helpText, { completed: true, command: command.command }, userId);
+        sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, help: helpText });
+        broadcast("chat_sync", { chatId: effectiveChatId });
         currentTaskUserId = null;
         return;
       }
 
       if (command && explicitSlashAction.kind === "image") {
         const imagePrompt = buildImageCommandPrompt(command);
-        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        appendChatMessage(effectiveChatId, "user", rawMessage, { command: command.command }, userId);
         if (!imagePrompt) {
-          appendChatMessage(chatId, "assistant", "Use /image followed by a prompt. You can also pass options like --style, --size, or --negative.", { completed: true, command: command.command }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "missing_prompt" });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "assistant", "Use /image followed by a prompt. You can also pass options like --style, --size, or --negative.", { completed: true, command: command.command }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: "missing_prompt" });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10549,22 +10629,22 @@ async function handleRequest(req, res) {
         try {
           const generated = await generateImageFromPrompt(imagePrompt, attachModelRuntimeParams(getActiveModels(activeChat), getActiveModelParams(activeChat)));
           const assistantText = `Generated an image for: ${imagePrompt}`;
-          appendChatMessage(chatId, "assistant", assistantText, {
+          appendChatMessage(effectiveChatId, "assistant", assistantText, {
             completed: true,
             command: command.command,
             generatedImage: generated.image,
             routerSwap: generated.routerMeta
           }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, generatedImage: generated.image, routerSwap: generated.routerMeta });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, generatedImage: generated.image, routerSwap: generated.routerMeta });
+          broadcast("chat_sync", { chatId: effectiveChatId });
         } catch (err) {
-          appendChatMessage(chatId, "assistant", `Image generation failed: ${err.message}`, {
+          appendChatMessage(effectiveChatId, "assistant", `Image generation failed: ${err.message}`, {
             completed: true,
             command: command.command,
             error: true
           }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, error: err.message || "Image generation failed" });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: err.message || "Image generation failed" });
+          broadcast("chat_sync", { chatId: effectiveChatId });
         }
         currentTaskUserId = null;
         return;
@@ -10574,10 +10654,10 @@ async function handleRequest(req, res) {
         const browserRuntime = buildBrowserRuntimeConfig(command);
         let browserGoal = buildBrowserCommandGoal(command, mediaItems.length ? message : "");
         if (!browserGoal) {
-          appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
-          appendChatMessage(chatId, "assistant", "Use /browser followed by the task you want me to do in the browser. You can also pass options like --url, --site, or --goal.", { completed: true, command: command.command }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "missing_prompt" });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "user", rawMessage, { command: command.command }, userId);
+          appendChatMessage(effectiveChatId, "assistant", "Use /browser followed by the task you want me to do in the browser. You can also pass options like --url, --site, or --goal.", { completed: true, command: command.command }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: "missing_prompt" });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10625,18 +10705,18 @@ async function handleRequest(req, res) {
         sendJson(res, 202, { ok: true, chatId, command: command.command, media: mediaAnalysisMeta });
         const { chat } = ensureCurrentChat(userId);
         const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
-        await runTask(browserGoal, models, chatId, browserRuntime);
+        await runTask(browserGoal, models, chatId, browserRuntime, userId);
         broadcast("url", { url: page.url() });
         return;
       }
 
       if (command && explicitSlashAction.kind === "practice") {
-        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        appendChatMessage(effectiveChatId, "user", rawMessage, { command: command.command }, userId);
         
         if (!striderIntegration) {
-          appendChatMessage(chatId, "assistant", "Strider crawler is not available. Please try again in a moment.", { completed: true, command: command.command, error: true }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "strider_unavailable" });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "assistant", "Strider crawler is not available. Please try again in a moment.", { completed: true, command: command.command, error: true }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: "strider_unavailable" });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10654,9 +10734,9 @@ async function handleRequest(req, res) {
           const statsResult = striderIntegration.getStats();
           const mapResult = striderIntegration.getMap();
           if (!statsResult?.ok) {
-            appendChatMessage(chatId, "assistant", "Strider is not running yet. Start it with /practice <url> [--workers <n>] [--random].", { completed: true, command: command.command }, userId);
-            sendJson(res, 200, { ok: true, chatId, command: command.command, running: false });
-            broadcast("chat_sync", { chatId });
+            appendChatMessage(effectiveChatId, "assistant", "Strider is not running yet. Start it with /practice <url> [--workers <n>] [--random].", { completed: true, command: command.command }, userId);
+            sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, running: false });
+            broadcast("chat_sync", { chatId: effectiveChatId });
             currentTaskUserId = null;
             return;
           }
@@ -10673,9 +10753,9 @@ async function handleRequest(req, res) {
             `Processed: ${Number(global.totalUrlsProcessed || 0)} | Elapsed: ${Number(global.elapsed || 0).toFixed(1)}s`,
             `Map: ${nodeCount} nodes, ${edgeCount} edges`
           ].join("\n");
-          appendChatMessage(chatId, "assistant", statsMsg, { completed: true, command: command.command, striderStats: true }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, stats: statsResult });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "assistant", statsMsg, { completed: true, command: command.command, striderStats: true }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, stats: statsResult });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10683,12 +10763,12 @@ async function handleRequest(req, res) {
         if (wantsStop) {
           const stopResult = await striderIntegration.handleStop();
           if (stopResult.ok) {
-            appendChatMessage(chatId, "assistant", "🛑 Strider stopped and frontier state saved.", { completed: true, command: command.command, striderStopped: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", "🛑 Strider stopped and frontier state saved.", { completed: true, command: command.command, striderStopped: true }, userId);
           } else {
-            appendChatMessage(chatId, "assistant", `Stop failed: ${stopResult.error}`, { completed: true, command: command.command, error: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `Stop failed: ${stopResult.error}`, { completed: true, command: command.command, error: true }, userId);
           }
-          sendJson(res, stopResult.ok ? 200 : 400, { ok: !!stopResult.ok, chatId, command: command.command, result: stopResult });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, stopResult.ok ? 200 : 400, { ok: !!stopResult.ok, chatId: effectiveChatId, command: command.command, result: stopResult });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10696,12 +10776,12 @@ async function handleRequest(req, res) {
         if (wantsReset) {
           const resetResult = await striderIntegration.handleReset();
           if (resetResult.ok) {
-            appendChatMessage(chatId, "assistant", "♻️ Strider state reset.", { completed: true, command: command.command, striderReset: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", "♻️ Strider state reset.", { completed: true, command: command.command, striderReset: true }, userId);
           } else {
-            appendChatMessage(chatId, "assistant", `Reset failed: ${resetResult.error}`, { completed: true, command: command.command, error: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `Reset failed: ${resetResult.error}`, { completed: true, command: command.command, error: true }, userId);
           }
-          sendJson(res, resetResult.ok ? 200 : 400, { ok: !!resetResult.ok, chatId, command: command.command, result: resetResult });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, resetResult.ok ? 200 : 400, { ok: !!resetResult.ok, chatId: effectiveChatId, command: command.command, result: resetResult });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10709,12 +10789,12 @@ async function handleRequest(req, res) {
         if (["fifo", "random"].includes(requestedMode)) {
           const modeResult = await striderIntegration.handleModeToggle({ mode: requestedMode });
           if (modeResult.ok) {
-            appendChatMessage(chatId, "assistant", `🎯 Strider mode set to ${requestedMode}.`, { completed: true, command: command.command, striderMode: requestedMode }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `🎯 Strider mode set to ${requestedMode}.`, { completed: true, command: command.command, striderMode: requestedMode }, userId);
           } else {
-            appendChatMessage(chatId, "assistant", `Mode change failed: ${modeResult.error}`, { completed: true, command: command.command, error: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `Mode change failed: ${modeResult.error}`, { completed: true, command: command.command, error: true }, userId);
           }
-          sendJson(res, modeResult.ok ? 200 : 400, { ok: !!modeResult.ok, chatId, command: command.command, result: modeResult });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, modeResult.ok ? 200 : 400, { ok: !!modeResult.ok, chatId: effectiveChatId, command: command.command, result: modeResult });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10722,20 +10802,20 @@ async function handleRequest(req, res) {
         if (enqueueUrl) {
           const enqueueResult = await striderIntegration.handleEnqueue({ url: enqueueUrl });
           if (enqueueResult.ok) {
-            appendChatMessage(chatId, "assistant", `➕ Enqueued URL: ${enqueueUrl}`, { completed: true, command: command.command, striderEnqueue: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `➕ Enqueued URL: ${enqueueUrl}`, { completed: true, command: command.command, striderEnqueue: true }, userId);
           } else {
-            appendChatMessage(chatId, "assistant", `Enqueue failed: ${enqueueResult.error || "invalid URL"}`, { completed: true, command: command.command, error: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `Enqueue failed: ${enqueueResult.error || "invalid URL"}`, { completed: true, command: command.command, error: true }, userId);
           }
-          sendJson(res, enqueueResult.ok ? 200 : 400, { ok: !!enqueueResult.ok, chatId, command: command.command, result: enqueueResult });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, enqueueResult.ok ? 200 : 400, { ok: !!enqueueResult.ok, chatId: effectiveChatId, command: command.command, result: enqueueResult });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
         
         if (!seedUrls.length) {
-          appendChatMessage(chatId, "assistant", "Use /practice <url> [<url2> ...] to start crawling. Controls: --stats, --stop, --reset, --mode <fifo|random>, --enqueue <url>.", { completed: true, command: command.command }, userId);
-          sendJson(res, 200, { ok: true, chatId, command: command.command, error: "missing_urls" });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "assistant", "Use /practice <url> [<url2> ...] to start crawling. Controls: --stats, --stop, --reset, --mode <fifo|random>, --enqueue <url>.", { completed: true, command: command.command }, userId);
+          sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: "missing_urls" });
+          broadcast("chat_sync", { chatId: effectiveChatId });
           currentTaskUserId = null;
           return;
         }
@@ -10749,17 +10829,17 @@ async function handleRequest(req, res) {
           
           if (result.ok) {
             const statusMsg = `🤖 Strider crawler started!\n\n📍 Seed URLs: ${seedUrls.join(", ")}\n🔧 Workers: ${workerCount}\n🎯 Mode: ${randomWalk ? "Random Walk" : "FIFO"}\n\nCheck stats with: /practice --stats`;
-            appendChatMessage(chatId, "assistant", statusMsg, { completed: true, command: command.command, striderStarted: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", statusMsg, { completed: true, command: command.command, striderStarted: true }, userId);
           } else {
-            appendChatMessage(chatId, "assistant", `Crawler start failed: ${result.error}`, { completed: true, command: command.command, error: true }, userId);
+            appendChatMessage(effectiveChatId, "assistant", `Crawler start failed: ${result.error}`, { completed: true, command: command.command, error: true }, userId);
           }
           
-          sendJson(res, 200, { ok: result.ok, chatId, command: command.command, crawlerStarted: result.ok });
-          broadcast("chat_sync", { chatId });
+          sendJson(res, 200, { ok: result.ok, chatId: effectiveChatId, command: command.command, crawlerStarted: result.ok });
+          broadcast("chat_sync", { chatId: effectiveChatId });
         } catch (err) {
-          appendChatMessage(chatId, "assistant", `Error starting crawler: ${err.message}`, { completed: true, command: command.command, error: true }, userId);
-          sendJson(res, 200, { ok: false, chatId, command: command.command, error: err.message });
-          broadcast("chat_sync", { chatId });
+          appendChatMessage(effectiveChatId, "assistant", `Error starting crawler: ${err.message}`, { completed: true, command: command.command, error: true }, userId);
+          sendJson(res, 200, { ok: false, chatId: effectiveChatId, command: command.command, error: err.message });
+          broadcast("chat_sync", { chatId: effectiveChatId });
         }
         
         currentTaskUserId = null;
@@ -10767,24 +10847,24 @@ async function handleRequest(req, res) {
       }
 
       if (command && explicitSlashAction.kind === "unknown") {
-        appendChatMessage(chatId, "user", rawMessage, { command: command.command }, userId);
+        appendChatMessage(effectiveChatId, "user", rawMessage, { command: command.command }, userId);
         const helpText = buildSlashHelpText();
-        appendChatMessage(chatId, "assistant", `Unknown slash command: /${command.command}\n\n${helpText}`, { completed: true, command: command.command, error: true }, userId);
-        sendJson(res, 200, { ok: true, chatId, command: command.command, error: "unknown_command", help: helpText });
-        broadcast("chat_sync", { chatId });
+        appendChatMessage(effectiveChatId, "assistant", `Unknown slash command: /${command.command}\n\n${helpText}`, { completed: true, command: command.command, error: true }, userId);
+        sendJson(res, 200, { ok: true, chatId: effectiveChatId, command: command.command, error: "unknown_command", help: helpText });
+        broadcast("chat_sync", { chatId: effectiveChatId });
         currentTaskUserId = null;
         return;
       }
 
-      appendChatMessage(chatId, "user", message, {}, userId);
-      sendJson(res, 202, { ok: true, chatId, media: mediaAnalysisMeta });
+      appendChatMessage(effectiveChatId, "user", message, {}, userId);
+      sendJson(res, 202, { ok: true, chatId: effectiveChatId, media: mediaAnalysisMeta });
 
       const { chat } = ensureCurrentChat(userId);
       const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
       const chatReply = await answerCasualChat(message, sessionHistory, models);
-      appendChatMessage(chatId, "assistant", chatReply, { completed: true });
+      appendChatMessage(effectiveChatId, "assistant", chatReply, { completed: true }, userId);
       agentMsg(chatReply);
-      broadcast("chat_sync", { chatId });
+      broadcast("chat_sync", { chatId: effectiveChatId });
       currentTaskUserId = null;
     } catch (err) {
       errLog("Chat handler: " + err.message);

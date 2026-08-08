@@ -8,14 +8,14 @@ module.exports = {
   <title>about.blank</title>
   <style>
     :root {
-      --bg: #0b1320;
-      --panel: #0f1b2d;
-      --panel-2: #12233b;
-      --line: rgba(152, 190, 255, 0.25);
-      --text: #eaf2ff;
-      --muted: #9cb3cf;
-      --ok: #67d57a;
-      --warn: #ffc86a;
+      --bg: #f4efe4;
+      --panel: #f3ead7;
+      --panel-2: #efe4cb;
+      --line: rgba(60, 86, 148, 0.16);
+      --text: #1c2530;
+      --muted: #52606e;
+      --ok: #129759;
+      --warn: #ef4a0dc9;
     }
     * { box-sizing: border-box; }
     body {
@@ -117,7 +117,32 @@ module.exports = {
       cursor: pointer;
     }
     button:hover { filter: brightness(1.08); }
+    :root[data-theme="light"] {
+      --bg: #f4efe4;
+      --panel: #f3ead7;
+      --panel-2: #efe4cb;
+      --line: rgba(60, 86, 148, 0.16);
+      --text: #1c2530;
+      --muted: #52606e;
+      --ok: #129759;
+      --warn: #ef4a0dc9;
+    }
+    :root[data-theme="light"] body {
+      background: radial-gradient(circle at 0% 0%, rgba(88, 166, 255, 0.12), transparent 38%), linear-gradient(130deg, #fbf7ef 0%, #ede3c5 100%);
+    }
   </style>
+  <script>
+    (function() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("theme") === "light") {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      } catch (err) {
+        console.warn(err);
+      }
+    })();
+  </script>
 </head>
 <body>
   <div class="wrap">
