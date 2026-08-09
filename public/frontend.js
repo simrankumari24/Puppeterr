@@ -26,7 +26,7 @@ const FRONTEND_HTML = String.raw`
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Puppeterr AI</title>
+    <title>Puppeterr.ai</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -39,22 +39,22 @@ const FRONTEND_HTML = String.raw`
       :root {
         --font: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         --mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
-        --bg:          #0a1018;
-        --sidebar-bg:  #101823;
+        --bg:          #0a1018a2;
+        --sidebar-bg:  #0a1018ad;
         --sidebar-border: rgba(255,255,255,0.08);
-        --panel-bg:    #151f2d;
+        --panel-bg:    #0a1018ad;
         --panel-border: rgba(255,255,255,0.08);
         --panel-border-hover: rgba(255,255,255,0.16);
         --border:      rgba(255,255,255,0.08);
         --border-hover: rgba(255,255,255,0.16);
         --card-bg:     #161f2e;
         --card-border: rgba(255,255,255,0.06);
-        --card-text:   #e8eff7;
-        --text:        #e8eff7;
-        --text-strong: #ffffff;
-        --text-muted:  #93a0af;
-        --text-faint:  rgba(255,255,255,0.6);
-        --muted:       #93a0af;
+        --card-text:   #f5faf1e4;
+        --text:        #f5faf1e4;
+        --text-strong: #f5faf1e4;
+        --text-muted:  #f5faf1e4;
+        --text-faint:  #f2f7edc5;
+        --muted:       #93a0afde;
         --accent:      #85e89d;
         --accent-dim:  rgba(133,232,157,0.14);
         --accent-2:    #6db4ff;
@@ -66,8 +66,8 @@ const FRONTEND_HTML = String.raw`
         --focus:       #6db4ff;
         --input-bg:    #111b27;
         --input-border: rgba(255,255,255,0.12);
-        --input-text:  #e8eff7;
-        --input-placeholder: rgba(232,239,247,0.65);
+        --input-text:  #ced5dd;
+        --input-placeholder: rgba(24, 248, 8, 0.2);
         --button-bg:   #85e89d;
         --button-text: #0d1117;
         --button-border: rgba(133,232,157,0.24);
@@ -78,7 +78,7 @@ const FRONTEND_HTML = String.raw`
         --surface-strong: rgba(255,255,255,0.08);
         --surface-muted: rgba(255,255,255,0.06);
         --hero-glow: rgba(109,180,255,0.14);
-        --radius: 24px;
+        --radius: 40px;
       }
 
       [data-theme="light"] {
@@ -380,12 +380,12 @@ const FRONTEND_HTML = String.raw`
         position: fixed;
         inset: -20% -10% auto;
         height: 380px;
-        background: radial-gradient(circle at 30% 45%, rgba(109,180,255,0.08), transparent 45%);
+        background: radial-gradient(circle at 30% 45%, #dbfcbd50);
         pointer-events: none;
         z-index: 0;
       }
       [data-theme="light"] .shell::before {
-        background: radial-gradient(circle at 30% 45%, rgba(52, 87, 213, 0.06), transparent 48%);
+        background: radial-gradient(circle at 30% 45%, #dbfcbd50);
         opacity: 0.8;
       }
 
@@ -604,11 +604,11 @@ const FRONTEND_HTML = String.raw`
       }
 
       .user-avatar {
-        width: 28px; height: 28px;
+        width: 35px; height: 35px;
         border-radius: 50%;
         background: linear-gradient(135deg, var(--accent-2), var(--accent));
         display: grid; place-items: center;
-        font-size: 12px; font-weight: 700; color: #63bb1cb0;
+        font-size: 16px; font-weight: 700; color: #020202c7;
         flex-shrink: 0;
       }
 
@@ -1569,8 +1569,8 @@ const FRONTEND_HTML = String.raw`
 
       /* runtime dropdown */
       .runtime-dropdown {
-        background: var(--input-bg);
-        border: 1px solid var(--input-border);
+        background: var(--bg);
+        border: 0px solid var(--input-border);
         border-radius: var(--radius);
         overflow: hidden; margin-top: 8px;
       }
@@ -2137,11 +2137,11 @@ const FRONTEND_HTML = String.raw`
     <div class="login-shell" id="loginShell">
       <div class="login-card">
         <div class="login-brand">
-          <div class="login-logo">${iconMarkup("bot")}</div>
+          <div class="login-logo">${iconMarkup("spark")}</div>
           <span class="login-brand-name">Puppeterr</span>
         </div>
         <h2>Welcome back</h2>
-        <p class="login-copy" id="loginModeHint">Sign in to your operator workspace.</p>
+        <p class="login-copy" id="loginModeHint">Sign in or Sign up!.</p>
         <form id="loginForm">
           <div class="field">
             <label for="loginUsername">Email</label>
@@ -2167,7 +2167,7 @@ const FRONTEND_HTML = String.raw`
         <nav class="sidebar" id="sidebarNav">
           <div class="sidebar-header">
             <div class="sidebar-brand">
-              <div class="sidebar-logo">${iconMarkup("bot")}</div>
+              <div class="sidebar-logo">${iconMarkup("spark")}</div>
               Puppeterr
             </div>
             <div class="sidebar-actions">
@@ -3528,7 +3528,7 @@ const FRONTEND_HTML = String.raw`
                 '</div>' +
               '</div>'
             : '';
-          const avatarLabel = isUser ? "Y" : iconMarkup("bot");
+          const avatarLabel = isUser ? "Y" : iconMarkup("spark");
           return '<article class="message-card" data-message-index="' + escapeHtml(index) + '">' +
             '<div class="msg-avatar ' + escapeHtml(message.role) + '">' + avatarLabel + '</div>' +
             '<div class="msg-body">' +

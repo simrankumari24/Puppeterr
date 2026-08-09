@@ -266,7 +266,7 @@ use this to clean start it
 fuser -k 3000/tcp || true
 pkill -f "node agent.js" || true
 pkill -f "xvfb-run -a node agent.js" || true
-xvfb-run -a node agent.js
+npm start
 "
 if that doesnt work... then your tunnel is corrupted and you will need to 
 
