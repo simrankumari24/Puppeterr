@@ -49,7 +49,7 @@
     "mustache": "^4.2.0",
     "nodemailer": "^9.0.3",
     "pinch-api": "^0.1.0",
-    "playwright": "^1.62.0",
+    "playwright": "^1.62.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "undici": "^8.9.0"
