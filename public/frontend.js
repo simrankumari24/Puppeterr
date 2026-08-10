@@ -26,7 +26,7 @@ const FRONTEND_HTML = String.raw`
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Puppeterr.ai</title>
+    <title>Puppeterr AI</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -37,48 +37,75 @@ const FRONTEND_HTML = String.raw`
     <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
       :root {
-        --font: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        --mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
-        --bg:          #0a1018a2;
-        --sidebar-bg:  #0a1018ad;
-        --sidebar-border: rgba(255,255,255,0.08);
-        --panel-bg:    #0a1018ad;
-        --panel-border: rgba(255,255,255,0.08);
-        --panel-border-hover: rgba(255,255,255,0.16);
-        --border:      rgba(255,255,255,0.08);
-        --border-hover: rgba(255,255,255,0.16);
-        --card-bg:     #161f2e;
-        --card-border: rgba(255,255,255,0.06);
-        --card-text:   #f5faf1e4;
-        --text:        #f5faf1e4;
-        --text-strong: #f5faf1e4;
-        --text-muted:  #f5faf1e4;
-        --text-faint:  #f2f7edc5;
-        --muted:       #93a0afde;
-        --accent:      #85e89d;
-        --accent-dim:  rgba(133,232,157,0.14);
-        --accent-2:    #6db4ff;
-        --accent-strong: #70d9ff;
-        --danger:      #f85149;
-        --warn:        #d29922;
-        --success:     #52e388;
-        --info:        #60a5ff;
-        --focus:       #6db4ff;
-        --input-bg:    #111b27;
-        --input-border: rgba(255,255,255,0.12);
-        --input-text:  #ced5dd;
-        --input-placeholder: rgba(24, 248, 8, 0.2);
-        --button-bg:   #85e89d;
-        --button-text: #0d1117;
-        --button-border: rgba(133,232,157,0.24);
-        --button-hover-bg: #6db4ff;
+        /* ── typography ─────────────────────────────────────── */
+        --font:         'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --font-display: 'Orbitron', var(--font);
+        --mono:         'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+        /* ── backgrounds ────────────────────────────────────── */
+        --bg:         #080e16;
+        --sidebar-bg: #0b1320cc;
+        --panel-bg:   #0f1926e6;
+        --card-bg:    #111b29;
+        --input-bg:   #0c1622;
+
+        /* ── borders ────────────────────────────────────────── */
+        --border:             rgba(255,255,255,0.07);
+        --border-hover:       rgba(255,255,255,0.14);
+        --sidebar-border:     rgba(255,255,255,0.06);
+        --panel-border:       rgba(255,255,255,0.07);
+        --panel-border-hover: rgba(255,255,255,0.14);
+        --card-border:        rgba(255,255,255,0.06);
+        --input-border:       rgba(255,255,255,0.10);
+
+        /* ── text ───────────────────────────────────────────── */
+        --text:        #ddeaf8;
+        --text-strong: #eef4ff;
+        --text-muted:  #7a99b8;
+        --text-faint:  rgba(221,234,248,0.40);
+        --card-text:   #ddeaf8;
+        --muted:       #637a92cc;
+
+        /* ── accent palette ─────────────────────────────────── */
+        --accent:        #7de8a0;
+        --accent-dim:    rgba(125,232,160,0.13);
+        --accent-2:      #60b8ff;
+        --accent-strong: #48d6ff;
+        --accent-glow:   rgba(125,232,160,0.20);
+        --accent-2-glow: rgba(96,184,255,0.18);
+
+        /* ── semantic ───────────────────────────────────────── */
+        --danger:  #f85149;
+        --warn:    #e3a935;
+        --success: #52e388;
+        --info:    #60a5ff;
+        --focus:   #60b8ff;
+
+        /* ── buttons ────────────────────────────────────────── */
+        --button-bg:         var(--accent);
+        --button-text:       #071019;
+        --button-border:     rgba(125,232,160,0.22);
+        --button-hover-bg:   var(--accent-2);
         --button-hover-text: #ffffff;
+
+        /* ── surfaces ───────────────────────────────────────── */
         --surface-elevated: rgba(255,255,255,0.04);
-        --surface-subtle: rgba(0,0,0,0.18);
-        --surface-strong: rgba(255,255,255,0.08);
-        --surface-muted: rgba(255,255,255,0.06);
-        --hero-glow: rgba(109,180,255,0.14);
-        --radius: 40px;
+        --surface-subtle:   rgba(0,0,0,0.22);
+        --surface-strong:   rgba(255,255,255,0.08);
+        --surface-muted:    rgba(255,255,255,0.05);
+
+        /* ── inputs ─────────────────────────────────────────── */
+        --input-text:        #cfe0f4;
+        --input-placeholder: rgba(143,163,188,0.38);
+
+        /* ── misc ───────────────────────────────────────────── */
+        --hero-glow:  rgba(96,184,255,0.13);
+        --radius:     40px;
+
+        /* ── flair ──────────────────────────────────────────── */
+        --glow-green: 0 0 28px rgba(125,232,160,0.20), 0 0 8px rgba(125,232,160,0.12);
+        --glow-blue:  0 0 28px rgba(96,184,255,0.20),  0 0 8px rgba(96,184,255,0.12);
+        --shine:      linear-gradient(105deg, transparent 35%, rgba(255,255,255,0.06) 50%, transparent 65%);
       }
 
       [data-theme="light"] {
@@ -144,7 +171,7 @@ const FRONTEND_HTML = String.raw`
       [data-theme="light"] .tag,
       [data-theme="light"] .model-pill,
       [data-theme="light"] .field input {
-        box-shadow: 0 1px 0 # inset, 0 10px 26px rgba(30, 41, 59, 0.04);
+        box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 10px 26px rgba(30, 41, 59, 0.04);
       }
 
       [data-theme="light"] .sidebar {
@@ -201,8 +228,8 @@ const FRONTEND_HTML = String.raw`
       }
 
       [data-theme="light"] .composer-send {
-        background: linear-gradient(180deg, #dbf48f 0%, #c1e85b 100%);
-        color: #26320f;
+        background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+        color: #071019;
         box-shadow: 0 8px 18px rgba(126, 168, 39, 0.18);
       }
       [data-theme="light"] .composer-send:hover {
@@ -252,6 +279,28 @@ const FRONTEND_HTML = String.raw`
         background: var(--input-bg);
         border-color: rgba(30, 41, 59, 0.08);
       }
+
+      /* ── sidebar inline rename ───────────────────────────── */
+      .chat-title-inline-input {
+        flex: 1; min-width: 0;
+        background: var(--input-bg);
+        border: 1px solid var(--accent-2);
+        border-radius: 8px;
+        padding: 2px 8px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(96,184,255,0.12);
+        transition: border-color .14s, box-shadow .14s;
+      }
+      .chat-title-inline-input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(125,232,160,0.14);
+      }
+      .chat-item.renaming { pointer-events: none; }
+      .chat-item.renaming .chat-title-inline-input { pointer-events: all; }
 
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -380,12 +429,12 @@ const FRONTEND_HTML = String.raw`
         position: fixed;
         inset: -20% -10% auto;
         height: 380px;
-        background: radial-gradient(circle at 30% 45%, #dbfcbd50);
+        background: radial-gradient(circle at 30% 45%, #dbfcbd50, transparent 48%);
         pointer-events: none;
         z-index: 0;
       }
       [data-theme="light"] .shell::before {
-        background: radial-gradient(circle at 30% 45%, #dbfcbd50);
+        background: radial-gradient(circle at 30% 45%, rgba(52, 87, 213, 0.06), transparent 49%);
         opacity: 0.8;
       }
 
@@ -1906,16 +1955,22 @@ const FRONTEND_HTML = String.raw`
       .composer-send {
         display: flex; align-items: center; justify-content: center;
         min-width: 52px; height: 44px; border-radius: 12px;
-        background: linear-gradient(180deg, #cde92d 0%, #a8d61d 100%);
-        color: #26320f;
+        background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+        color: #071019;
         font-size: 14px; font-weight: 700; flex-shrink: 0;
         padding: 0 16px;
-        box-shadow: 0 8px 20px rgba(126, 168, 39, 0.18);
-        transition: opacity .15s, transform .12s, box-shadow .12s;
+        box-shadow: 0 8px 24px rgba(133,232,157,0.22), 0 2px 6px rgba(109,180,255,0.14);
+        transition: opacity .15s, transform .12s, box-shadow .15s;
+        position: relative; overflow: hidden;
       }
-      .composer-send:hover { opacity: 1; transform: scale(1.04); box-shadow: 0 10px 24px rgba(126, 168, 39, 0.24); }
-      .composer-send:disabled { opacity: .35; pointer-events: none; }
-      .composer-send.is-thinking { transform: scale(1.01); box-shadow: 0 10px 24px rgba(126, 168, 39, 0.22); }
+      .composer-send::after {
+        content: ""; position: absolute; inset: 0;
+        background: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 60%);
+        pointer-events: none; border-radius: inherit;
+      }
+      .composer-send:hover { opacity: 1; transform: scale(1.05); box-shadow: 0 12px 28px rgba(133,232,157,0.3), 0 4px 10px rgba(109,180,255,0.18); }
+      .composer-send:disabled { opacity: .35; pointer-events: none; cursor: not-allowed; }
+      .composer-send.is-thinking { transform: scale(1.01); box-shadow: 0 10px 24px rgba(133,232,157,0.24); }
       .composer-send-spinner {
         display: inline-block;
         width: 16px;
@@ -2106,6 +2161,107 @@ const FRONTEND_HTML = String.raw`
       }
       @media (max-width: 540px)  { .sidebar { display: none; } }
 
+      /* ── display font scoped to brand elements only ──────── */
+      .login-brand-name,
+      .sidebar-brand,
+      .chat-header-title { font-family: var(--font-display); letter-spacing: 0.04em; }
+
+      /* ── glow accents on interactive focus ───────────────── */
+      .composer-box:focus-within {
+        border-color: rgba(96,184,255,0.28);
+        box-shadow: 0 0 0 3px rgba(96,184,255,0.07), 0 20px 44px rgba(3,9,16,0.22);
+      }
+      .field input:focus,
+      .field textarea:focus {
+        border-color: var(--focus);
+        box-shadow: 0 0 0 3px rgba(96,184,255,0.10);
+      }
+      .primary-btn:focus-visible,
+      .composer-send:focus-visible { box-shadow: var(--glow-green); }
+
+      /* ── shimmer on send button ──────────────────────────── */
+      .composer-send { background-size: 200% 100%; }
+      @keyframes sendShimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+      }
+
+      /* ── quick chip hover flair ──────────────────────────── */
+      .quick-chip {
+        transition: background .14s, color .14s, border-color .14s, transform .14s, box-shadow .14s;
+      }
+      .quick-chip:hover {
+        background: rgba(125,232,160,0.08);
+        border-color: rgba(125,232,160,0.22);
+        color: var(--accent);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 14px rgba(125,232,160,0.10);
+      }
+
+      /* ── message card flair ──────────────────────────────── */
+      .message-card { transition: border-color .18s, background .18s, box-shadow .18s; }
+      .message-card:hover {
+        border-color: rgba(96,184,255,0.10);
+        background: rgba(96,184,255,0.025);
+        box-shadow: 0 2px 14px rgba(3,9,16,0.12);
+      }
+
+      /* ── runtime entry glow on hover ─────────────────────── */
+      .runtime-entry { transition: border-color .14s, background .14s, box-shadow .14s; }
+      .runtime-entry:hover { box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04), 0 2px 8px rgba(0,0,0,0.18); }
+      .runtime-entry.agent:hover  { box-shadow: var(--glow-green); }
+      .runtime-entry.step:hover   { box-shadow: var(--glow-blue); }
+      .runtime-entry.error:hover  { box-shadow: 0 0 18px rgba(248,81,73,0.16); }
+
+      /* ── accent accent on active sidebar chat ────────────── */
+      .chat-item.active {
+        background: linear-gradient(90deg, rgba(125,232,160,0.07) 0%, rgba(96,184,255,0.04) 100%);
+        border-color: rgba(125,232,160,0.14);
+      }
+
+      /* ── narration banner polish ─────────────────────────── */
+      #narrationBanner {
+        background: linear-gradient(135deg, rgba(18,28,42,0.96), rgba(14,28,20,0.98)) !important;
+        border-color: rgba(125,232,160,0.26) !important;
+        color: var(--accent) !important;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.22), inset 0 1px 0 rgba(125,232,160,0.08);
+        border-radius: 14px !important;
+      }
+
+      /* ── typing caret uses accent var ────────────────────── */
+      .typing-caret { border-color: var(--accent); border-top-color: transparent; }
+
+      /* ── connection badge glow when live ─────────────────── */
+      .conn-dot { transition: box-shadow .3s; }
+      .conn-dot.live { box-shadow: var(--glow-green); }
+
+      /* ── ghost button flair ──────────────────────────────── */
+      .ghost-btn { transition: background .14s, color .14s, border-color .14s, box-shadow .14s; }
+      .ghost-btn:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
+
+      /* ── icon-btn subtle hover glow ──────────────────────── */
+      .icon-btn { transition: background .14s, color .14s, box-shadow .14s; }
+      .icon-btn:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.24); }
+
+      /* ── sidebar new chat button accent gradient ──────────── */
+      .sidebar-new-chat {
+        background: linear-gradient(135deg, rgba(125,232,160,0.08) 0%, rgba(96,184,255,0.05) 100%);
+        border: 1px solid rgba(125,232,160,0.14);
+        transition: background .16s, border-color .16s, box-shadow .16s, transform .12s;
+      }
+      .sidebar-new-chat:hover {
+        background: linear-gradient(135deg, rgba(125,232,160,0.14) 0%, rgba(96,184,255,0.09) 100%);
+        border-color: rgba(125,232,160,0.26);
+        box-shadow: 0 4px 18px rgba(125,232,160,0.10);
+        transform: translateY(-1px);
+      }
+
+      /* ── scrollbar polish ────────────────────────────────── */
+      ::-webkit-scrollbar { width: 4px; height: 4px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 99px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
       }
@@ -2137,11 +2293,11 @@ const FRONTEND_HTML = String.raw`
     <div class="login-shell" id="loginShell">
       <div class="login-card">
         <div class="login-brand">
-          <div class="login-logo">${iconMarkup("spark")}</div>
+          <div class="login-logo">${iconMarkup("bot")}</div>
           <span class="login-brand-name">Puppeterr</span>
         </div>
         <h2>Welcome back</h2>
-        <p class="login-copy" id="loginModeHint">Sign in or Sign up!.</p>
+        <p class="login-copy" id="loginModeHint">Sign in to your operator workspace.</p>
         <form id="loginForm">
           <div class="field">
             <label for="loginUsername">Email</label>
@@ -2167,7 +2323,7 @@ const FRONTEND_HTML = String.raw`
         <nav class="sidebar" id="sidebarNav">
           <div class="sidebar-header">
             <div class="sidebar-brand">
-              <div class="sidebar-logo">${iconMarkup("spark")}</div>
+              <div class="sidebar-logo">${iconMarkup("bot")}</div>
               Puppeterr
             </div>
             <div class="sidebar-actions">
@@ -2242,7 +2398,7 @@ const FRONTEND_HTML = String.raw`
           </div>
 
           <!-- NARRATION BANNER: Live agent commentary -->
-          <div id="narrationBanner" style="display:none;opacity:0;transition:opacity 0.4s;margin:0 12px 6px;padding:10px 14px;background:linear-gradient(135deg,#1c2433,#1a2e1a);border:1px solid #2ea04380;border-radius:8px;font-size:13px;color:#7ee787;line-height:1.5;"></div>
+          <div id="narrationBanner" style="display:none;opacity:0;transition:opacity 0.4s;margin:0 12px 6px;padding:10px 14px;font-size:13px;line-height:1.5;"></div>
 
             <div class="composer-wrap" id="composerArea">
               <div id="composerAssist" class="composer-assist hidden"></div>
@@ -3219,14 +3375,106 @@ const FRONTEND_HTML = String.raw`
         chatList.innerHTML = state.chats.map(function(chat) {
           const active = chat.id === state.selectedChatId ? "active" : "";
           const iconText = escapeHtml(String(chat.title || "Chat").trim().charAt(0) || "•");
-          return '<button class="chat-item ' + active + '" data-chat-id="' + escapeHtml(chat.id) + '">' +
+          return '<button class="chat-item ' + active + '" data-chat-id="' + escapeHtml(chat.id) + '" title="Double-click to rename">' +
             '<div class="chat-item-icon" aria-hidden="true">' + iconText + '</div>' +
             '<div class="chat-title-row"><div class="chat-title">' + escapeHtml(chat.title) + '</div><div class="chat-time">' + escapeHtml(prettyTime(chat.updatedAt)) + '</div></div>' +
           '</button>';
         }).join("");
+
         Array.from(chatList.querySelectorAll("[data-chat-id]")).forEach(function(button) {
-          button.addEventListener("click", function() { selectChat(button.getAttribute("data-chat-id")); });
+          button.addEventListener("click", function() {
+            if (button.classList.contains("renaming")) return;
+            selectChat(button.getAttribute("data-chat-id"));
+          });
+          button.addEventListener("dblclick", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            openSidebarTitleEditor(button);
+          });
         });
+      }
+
+      function openSidebarTitleEditor(button) {
+        if (button.classList.contains("renaming")) return;
+        const chatId = button.getAttribute("data-chat-id");
+        const chat = state.chats.find(function(c) { return c.id === chatId; });
+        if (!chat) return;
+
+        const titleEl = button.querySelector(".chat-title");
+        const timeEl  = button.querySelector(".chat-time");
+        if (!titleEl) return;
+
+        const originalTitle = normalizeChatTitleInput(chat.title || "Chat");
+        const isPlaceholder = /^(new chat|welcome chat)$/i.test(originalTitle);
+
+        const input = document.createElement("input");
+        input.className = "chat-title-inline-input";
+        input.type = "text";
+        input.maxLength = 60;
+        input.value = isPlaceholder ? "" : originalTitle;
+        input.placeholder = "Rename chat…";
+
+        button.classList.add("renaming");
+        titleEl.textContent = "";
+        titleEl.appendChild(input);
+        if (timeEl) timeEl.style.display = "none";
+
+        let committed = false;
+
+        const restore = function() {
+          if (titleEl.contains(input)) input.remove();
+          titleEl.textContent = originalTitle;
+          if (timeEl) timeEl.style.display = "";
+          button.classList.remove("renaming");
+        };
+
+        const commit = async function() {
+          if (committed) return;
+          committed = true;
+          const nextTitle = normalizeChatTitleInput(input.value);
+          if (titleEl.contains(input)) input.remove();
+          if (timeEl) timeEl.style.display = "";
+          button.classList.remove("renaming");
+
+          if (!nextTitle || nextTitle === originalTitle) {
+            titleEl.textContent = originalTitle;
+            return;
+          }
+
+          titleEl.textContent = nextTitle;
+          // update icon letter
+          const iconEl = button.querySelector(".chat-item-icon");
+          if (iconEl) iconEl.textContent = nextTitle.trim().charAt(0) || "•";
+
+          try {
+            await request("/api/chats/" + encodeURIComponent(chatId), {
+              method: "PATCH",
+              body: { title: nextTitle }
+            });
+            // patch state
+            const stateChat = state.chats.find(function(c) { return c.id === chatId; });
+            if (stateChat) stateChat.title = nextTitle;
+            if (state.currentChat && state.currentChat.id === chatId) {
+              state.currentChat.title = nextTitle;
+              if (timelineTitle && !timelineTitle.querySelector("input")) {
+                timelineTitle.textContent = nextTitle;
+              }
+            }
+          } catch (error) {
+            showToast("Rename failed: " + error.message, "error");
+            titleEl.textContent = originalTitle;
+            if (iconEl) iconEl.textContent = originalTitle.trim().charAt(0) || "•";
+          }
+        };
+
+        input.addEventListener("keydown", function(e) {
+          if (e.key === "Escape") { e.preventDefault(); committed = true; restore(); return; }
+          if (e.key === "Enter")  { e.preventDefault(); commit(); }
+        });
+        input.addEventListener("blur", commit, { once: true });
+        input.addEventListener("click", function(e) { e.stopPropagation(); });
+
+        requestAnimationFrame(function() { input.focus(); input.select(); });
       }
 
       function renderMemory() {
@@ -3253,62 +3501,72 @@ const FRONTEND_HTML = String.raw`
         return String(value || "").replace(/\s+/g, " ").trim().slice(0, 60);
       }
 
+      function applyLiveTitle(chatId, newTitle) {
+        if (!state.currentChat || state.currentChat.id !== chatId) return;
+        state.currentChat.title = newTitle;
+        if (timelineTitle && !timelineTitle.querySelector("input")) {
+          timelineTitle.textContent = newTitle;
+        }
+        const listItem = document.querySelector('.chat-item[data-chat-id="' + CSS.escape(String(chatId)) + '"] .chat-title');
+        if (listItem) listItem.textContent = newTitle;
+      }
+
       function openChatTitleEditor() {
         if (!state.currentChat || state.currentView === "upgrade" || !timelineTitle) return;
         if (timelineTitle.querySelector("input")) return;
+
         const originalTitle = normalizeChatTitleInput(state.currentChat.title || "Conversation");
+        const isPlaceholder = /^(new chat|welcome chat)$/i.test(originalTitle);
+
         const input = document.createElement("input");
         input.className = "chat-title-edit-input";
         input.type = "text";
         input.maxLength = 60;
-        input.value = /^new chat$/i.test(originalTitle) || /^welcome chat$/i.test(originalTitle) ? "" : originalTitle;
-        input.placeholder = "Rename chat";
-        let cancelled = false;
+        input.value = isPlaceholder ? "" : originalTitle;
+        input.placeholder = "Rename chat…";
+
+        let committed = false;
 
         const restore = function() {
+          if (timelineTitle.contains(input)) input.remove();
           timelineTitle.textContent = originalTitle;
         };
 
         const commit = async function() {
-          if (cancelled) {
-            restore();
-            return;
-          }
+          if (committed) return;
+          committed = true;
           const nextTitle = normalizeChatTitleInput(input.value);
+          if (timelineTitle.contains(input)) input.remove();
           if (!nextTitle || nextTitle === originalTitle) {
-            restore();
+            timelineTitle.textContent = originalTitle;
             return;
           }
+          timelineTitle.textContent = nextTitle;
+          const chatId = state.currentChat.id;
           try {
-            await request("/api/chats/" + encodeURIComponent(state.currentChat.id), {
+            await request("/api/chats/" + encodeURIComponent(chatId), {
               method: "PATCH",
               body: { title: nextTitle }
             });
-            await loadBootstrap(false);
+            state.currentChat.title = nextTitle;
+            const listItem = document.querySelector('.chat-item[data-chat-id="' + CSS.escape(String(chatId)) + '"] .chat-title');
+            if (listItem) listItem.textContent = nextTitle;
           } catch (error) {
-            addRuntimeEvent("error", "Rename failed: " + error.message);
-            restore();
+            showToast("Rename failed: " + error.message, "error");
+            timelineTitle.textContent = originalTitle;
+            if (state.currentChat && state.currentChat.id === chatId) state.currentChat.title = originalTitle;
           }
         };
 
-        input.addEventListener("keydown", function(event) {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            cancelled = true;
-            input.blur();
-            return;
-          }
-          if (event.key === "Enter") {
-            event.preventDefault();
-            input.blur();
-          }
+        input.addEventListener("keydown", function(e) {
+          if (e.key === "Escape") { e.preventDefault(); committed = true; restore(); return; }
+          if (e.key === "Enter")  { e.preventDefault(); commit(); }
         });
 
         input.addEventListener("blur", commit, { once: true });
         timelineTitle.textContent = "";
         timelineTitle.appendChild(input);
-        input.focus();
-        input.select();
+        requestAnimationFrame(function() { input.focus(); input.select(); });
       }
 
       function isGuidanceModeActive() {
@@ -3432,7 +3690,7 @@ const FRONTEND_HTML = String.raw`
         renderTimeline();
       }
 
-      function renderTimeline() {
+      function renderTimeline(quiet) {
         renderSidebarViewState();
         if (composerArea) composerArea.style.display = state.currentView === "upgrade" ? "none" : "";
         if (state.currentView === "upgrade") {
@@ -3474,7 +3732,7 @@ const FRONTEND_HTML = String.raw`
           const visibleContent = getVisibleMessageContent(message);
           const parsedMessageTs = message && message.ts ? new Date(message.ts).getTime() : Number.NaN;
           const messageAgeMs = Number.isFinite(parsedMessageTs) ? (Date.now() - parsedMessageTs) : Number.POSITIVE_INFINITY;
-          const shouldAnimateTyping = !isUser && messageAgeMs <= TYPING_FX_MAX_AGE_MS;
+          const shouldAnimateTyping = !isUser && !quiet && messageAgeMs <= TYPING_FX_MAX_AGE_MS;
           const generatedImage = message && message.generatedImage ? message.generatedImage : null;
           let renderedContent = visibleContent;
           let typingCaret = "";
@@ -3528,7 +3786,7 @@ const FRONTEND_HTML = String.raw`
                 '</div>' +
               '</div>'
             : '';
-          const avatarLabel = isUser ? "Y" : iconMarkup("spark");
+          const avatarLabel = isUser ? "Y" : iconMarkup("bot");
           return '<article class="message-card" data-message-index="' + escapeHtml(index) + '">' +
             '<div class="msg-avatar ' + escapeHtml(message.role) + '">' + avatarLabel + '</div>' +
             '<div class="msg-body">' +
@@ -3872,7 +4130,7 @@ const FRONTEND_HTML = String.raw`
         container.style.display = "block";
       }
 
-      function applyBootstrap(data) {
+      function applyBootstrap(data, quiet) {
         state.account = data.account || state.account;
         state.chats = data.chats || [];
         state.currentChat = data.currentChat || null;
@@ -3888,10 +4146,10 @@ const FRONTEND_HTML = String.raw`
         modelModeStatus.textContent = overrideModel ? overrideModel.split("/").pop() : "default";
         browserUrl.textContent = state.browserUrl;
         renderChats();
-        renderMemory();
-        renderModels();
+        if (!quiet) renderMemory();
+        if (!quiet) renderModels();
         renderSupervisorPill();
-        renderTimeline();
+        renderTimeline(quiet);
         restoreDraftForCurrentChat();
       }
 
@@ -3927,10 +4185,10 @@ const FRONTEND_HTML = String.raw`
         }
       }
 
-      async function loadBootstrap(forceModels) {
+      async function loadBootstrap(forceModels, quiet) {
         try {
           const data = await request("/api/bootstrap" + (forceModels ? "?force=1" : ""));
-          applyBootstrap(data);
+          applyBootstrap(data, quiet);
         } catch (error) {
           if (error.status === 401) {
             disconnectEvents();
@@ -3969,6 +4227,61 @@ const FRONTEND_HTML = String.raw`
         } catch (error) {
           addRuntimeEvent("error", error.message);
         }
+      }
+
+      // ── AUTO TITLE GENERATOR ─────────────────────────────────────────
+      // Fires once per chat when the first non-trivial message is sent.
+      // Uses the Anthropic API (same model as the app) to produce a short,
+      // informative, friendly title. Skips casual openers like "hi", "hello",
+      // "who are you", etc.
+
+      var AUTO_TITLED_CHATS = {};
+
+      var CASUAL_PATTERN = /^(hi+|hey+|hello+|howdy|sup|what'?s up|who are you|what are you|what can you do|what do you do|test|testing|ok|okay|yo+|good morning|good evening|good night|morning|evening|night|thanks|thank you|ty|np|cool|nice|great|awesome|sure|yes|no|nope|yep|yup|lol|haha|hehe|wow|omg|wtf|hmm+|hm+|uh+|um+|ah+|oh+)[!?.]*$/i;
+
+      function maybeAutoTitle(chatId, messageText) {
+        if (AUTO_TITLED_CHATS[chatId]) { return; }
+        var text = String(messageText || "").trim();
+        if (!text || CASUAL_PATTERN.test(text)) { return; }
+        var chat = state.chats.find(function(c) { return c.id === chatId; });
+        if (!chat) { return; }
+        if (chat.title && !/^(new chat|welcome chat)$/i.test(chat.title.trim())) { return; }
+        AUTO_TITLED_CHATS[chatId] = true;
+
+        (async function() {
+          try {
+            var res = await fetch("https://api.anthropic.com/v1/messages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                model: "claude-sonnet-4-6",
+                max_tokens: 24,
+                system: "You generate short, friendly, informative chat titles. Reply with ONLY the title — no quotes, no punctuation at the end, no explanation. Max 6 words. Make it specific to what the user actually wants to do.",
+                messages: [{ role: "user", content: "Message: " + text.slice(0, 400) + "\n\nTitle:" }]
+              })
+            });
+            if (!res.ok) { delete AUTO_TITLED_CHATS[chatId]; return; }
+            var data = await res.json();
+            var raw = (data.content && data.content[0] && data.content[0].text) || "";
+            var title = raw.replace(/^["'\s]+|["'\s.]+$/g, "").trim().slice(0, 60);
+            if (!title) { delete AUTO_TITLED_CHATS[chatId]; return; }
+
+            await request("/api/chats/" + encodeURIComponent(chatId), {
+              method: "PATCH",
+              body: { title: title }
+            });
+            applyLiveTitle(chatId, title);
+            var stateChat = state.chats.find(function(c) { return c.id === chatId; });
+            if (stateChat) { stateChat.title = title; }
+            var btn = chatList.querySelector('.chat-item[data-chat-id="' + CSS.escape(String(chatId)) + '"]');
+            if (btn) {
+              var iconEl = btn.querySelector(".chat-item-icon");
+              if (iconEl) { iconEl.textContent = title.trim().charAt(0) || "•"; }
+            }
+          } catch (e) {
+            delete AUTO_TITLED_CHATS[chatId];
+          }
+        })();
       }
 
       function normalizeBrowserFlagBundleMessage(text) {
@@ -4027,6 +4340,8 @@ const FRONTEND_HTML = String.raw`
             state.pendingImage = null;
             if (imagePreviewWrap) imagePreviewWrap.style.display = "none";
           }
+          // Auto-title: fire-and-forget, won't block the rest of the flow
+          maybeAutoTitle(state.currentChat.id, outboundText);
           loadBootstrap(false).catch(function() {});
           // Poll for the reply in case SSE is not connected, but always refresh the active chat state after each attempt.
           (function pollForReply(attempts) {
@@ -4198,7 +4513,24 @@ const FRONTEND_HTML = String.raw`
             if (payload.type === "chat_sync") {
               state.sending = false;
               sendBtn.disabled = false;
-              loadBootstrap(false).catch(function() {});
+
+              // Don't touch the DOM at all if the user is actively typing
+              var composerFocused = composerInput && document.activeElement === composerInput;
+              var sidebarEditing = !!document.querySelector(".chat-title-inline-input");
+              var headerEditing  = timelineTitle && !!timelineTitle.querySelector("input");
+              if (composerFocused || sidebarEditing || headerEditing) { return; }
+
+              // Throttle: rebuild at most once every 8s — chat_sync fires every ~1s
+              var now = Date.now();
+              if (state._lastSyncLoad && (now - state._lastSyncLoad) < 8000) { return; }
+              state._lastSyncLoad = now;
+
+              loadBootstrap(false, true).catch(function() {});
+              return;
+            }
+            // AUTO-GENERATED TITLE: backend finished naming the chat
+            if (payload.type === "chat_title" && payload.chatId && payload.title) {
+              applyLiveTitle(payload.chatId, payload.title);
               return;
             }
             if (payload.type === "task_start") {
