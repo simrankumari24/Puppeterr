@@ -1,3 +1,21 @@
-2026/08/10-19:17:19.986 d36 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2026/08/10-19:17:20.064 d36 Recovering log #7
-2026/08/10-19:17:20.133 d36 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000007.log 
+2026/08/18-23:53:16.126 3d433 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2026/08/18-23:53:16.143 3d433 Recovering log #102
+2026/08/18-23:53:16.143 3d433 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000102.log 
+2026/08/18-23:55:37.367 3d433 Level-0 table #106: started
+2026/08/18-23:55:37.406 3d433 Level-0 table #106: 130873 bytes OK
+2026/08/18-23:55:37.412 3d433 Delete type=0 #102
+2026/08/18-23:57:16.590 3d435 Level-0 table #108: started
+2026/08/18-23:57:16.603 3d435 Level-0 table #108: 28091 bytes OK
+2026/08/18-23:57:16.611 3d435 Delete type=0 #105
+2026/08/18-23:57:16.611 3d435 Compacting 4@0 + 1@1 files
+2026/08/18-23:57:16.913 3d435 Generated table #109@0: 523 keys, 1198387 bytes
+2026/08/18-23:57:16.914 3d435 Compacted 4@0 + 1@1 files => 1198387 bytes
+2026/08/18-23:57:16.925 3d435 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/08/18-23:57:16.926 3d435 Delete type=2 #101
+2026/08/18-23:57:16.926 3d435 Delete type=2 #108
+2026/08/18-23:57:16.926 3d435 Delete type=2 #106
+2026/08/18-23:57:16.926 3d435 Delete type=2 #103
+2026/08/18-23:57:16.926 3d435 Delete type=2 #99
+2026/08/19-00:16:21.986 3d435 Level-0 table #111: started
+2026/08/19-00:16:22.015 3d435 Level-0 table #111: 818459 bytes OK
+2026/08/19-00:16:22.018 3d435 Delete type=0 #107

@@ -461,8 +461,8 @@ const FRONTEND_HTML = String.raw`
         border-bottom-left-radius: 0;
       }
       .sidebar.collapsed {
-        width: 78px;
-        min-width: 78px;
+        width: 84px;
+        min-width: 82px;
       }
 
       .sidebar-header {
@@ -521,7 +521,7 @@ const FRONTEND_HTML = String.raw`
       }
       .icon-btn:hover { background: var(--border); color: var(--text); }
       .sidebar-toggle-btn {
-        font-size: 14px;
+        font-size: 13px;
       }
 
       .sidebar-new-chat {
@@ -614,33 +614,7 @@ const FRONTEND_HTML = String.raw`
       .chat-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
       .chat-time { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
 
-      .memory-section {
-        border-top: 1px solid var(--border);
-        padding: 10px 10px 6px;
-      }
-
-      .memory-section-header {
-        display: flex; align-items: center; justify-content: space-between;
-        padding: 0 4px 8px;
-      }
-
-      .memory-section-title {
-        font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
-        text-transform: uppercase; color: var(--muted);
-      }
-
-      .memory-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
-
-      .memory-item {
-        padding: 7px 10px;
-        border-radius: 7px;
-        background: rgba(255,255,255,0.03);
-        border: 1px solid var(--border);
-        font-size: 12px;
-      }
-
-      .memory-item strong { display: block; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .memory-item div { color: var(--muted); font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      
 
       .sidebar-footer {
         border-top: 1px solid var(--border);
@@ -679,12 +653,91 @@ const FRONTEND_HTML = String.raw`
         justify-content: center;
         width: 30px;
         overflow: hidden;
-        color: transparent;
-        font-size: 0;
+        font-size: 0; /* hide the textual label while keeping children visible */
+      }
+
+      /* Ensure the logo remains visible in collapsed mode */
+      .sidebar.collapsed .sidebar-brand .sidebar-logo {
+        width: 30px;
+        height: 30px;
+        font-size: 14px;
+        color: var(--text);
+        display: grid;
+        place-items: center;
       }
 
       .sidebar.collapsed .sidebar-actions {
         gap: 2px;
+      }
+
+      /* Collapsed layout: center the icon list and stack header actions */
+      .sidebar.collapsed {
+        align-items: center;
+      }
+
+      .sidebar.collapsed .sidebar-header {
+        padding: 8px 6px;
+        flex-direction: column;
+        gap: 6px;
+        align-items: center;
+        justify-content: flex-start;
+      }
+
+      .sidebar.collapsed .sidebar-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .sidebar.collapsed .sidebar-scroll {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding-left: 0;
+        padding-right: 0;
+      }
+
+      .sidebar.collapsed .chat-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: center;
+        width: 100%;
+      }
+
+      .sidebar.collapsed .chat-item {
+        width: 56px;
+        height: 56px;
+        padding: 6px 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .sidebar.collapsed .chat-item-icon {
+        display: inline-flex;
+        margin: 0;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.04);
+        color: transparent;
+        transition: transform .12s, box-shadow .12s, background .12s;
+      }
+      .sidebar.collapsed .chat-item:hover .chat-item-icon {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+        background: rgba(255,255,255,0.03);
+      }
+
+      .sidebar.collapsed .sidebar-footer {
+        padding: 8px 6px;
+        align-items: center;
       }
 
       .sidebar.collapsed .sidebar-new-chat,
@@ -2219,6 +2272,18 @@ const FRONTEND_HTML = String.raw`
         border-color: rgba(125,232,160,0.14);
       }
 
+      /* Disable heavy animations during frequent chat sync updates when class is present */
+      .no-sync-anim .chat-item,
+      .no-sync-anim .message-card,
+      .no-sync-anim .timeline,
+      .no-sync-anim .chat-main,
+      .no-sync-anim .sidebar,
+      .no-sync-anim .composer,
+      .no-sync-anim .sidebar-new-chat {
+        animation: none !important;
+        transition: none !important;
+      }
+
       /* ── narration banner polish ─────────────────────────── */
       #narrationBanner {
         background: linear-gradient(135deg, rgba(18,28,42,0.96), rgba(14,28,20,0.98)) !important;
@@ -2293,10 +2358,10 @@ const FRONTEND_HTML = String.raw`
     <div class="login-shell" id="loginShell">
       <div class="login-card">
         <div class="login-brand">
-          <div class="login-logo">${iconMarkup("bot")}</div>
+          <div class="login-logo">${iconMarkup("spark")}</div>
           <span class="login-brand-name">Puppeterr</span>
         </div>
-        <h2>Welcome back</h2>
+        <h2>Welcome back!</h2>
         <p class="login-copy" id="loginModeHint">Sign in to your operator workspace.</p>
         <form id="loginForm">
           <div class="field">
@@ -2323,8 +2388,8 @@ const FRONTEND_HTML = String.raw`
         <nav class="sidebar" id="sidebarNav">
           <div class="sidebar-header">
             <div class="sidebar-brand">
-              <div class="sidebar-logo">${iconMarkup("bot")}</div>
-              Puppeterr
+              <div class="sidebar-logo">${iconMarkup("spark")}</div>
+              <span class="sidebar-brand-name">Puppeterr</span>
             </div>
             <div class="sidebar-actions">
               <button class="icon-btn theme-toggle" id="themeToggleBtn" title="Toggle theme" aria-label="Toggle theme">${iconMarkup("moon")}</button>
@@ -2347,13 +2412,7 @@ const FRONTEND_HTML = String.raw`
             <div class="chat-list" id="chatList"></div>
           </div>
 
-          <div class="memory-section">
-            <div class="memory-section-header">
-              <span class="memory-section-title">Memory</span>
-              <button class="icon-btn" id="refreshMemoryBtn" title="Refresh memory" style="width:24px;height:24px;font-size:13px;">${iconMarkup("refresh")}</button>
-            </div>
-            <div class="memory-list" id="memoryList"></div>
-          </div>
+          
 
           <div class="sidebar-footer">
             <div class="sidebar-user">
@@ -2558,6 +2617,9 @@ const FRONTEND_HTML = String.raw`
           timers: {},
           revealedAt: {}
         },
+        lastUserTypingAt: 0,
+        // track chats the user manually renamed to avoid backend auto-titles overwriting
+        manualTitles: {},
         cursorFx: {
           x: 42,
           y: 42,
@@ -2656,6 +2718,7 @@ const FRONTEND_HTML = String.raw`
 
       const UI_PREFS_KEY = "puppeterr_ui_prefs_v1";
       const CHAT_DRAFTS_KEY = "puppeterr_chat_drafts_v1";
+      const MANUAL_TITLES_KEY = "puppeterr_manual_titles_v1";
 
       const loginShell = document.getElementById("loginShell");
       const appShell = document.getElementById("appShell");
@@ -2769,6 +2832,13 @@ const FRONTEND_HTML = String.raw`
           if (parsed && typeof parsed.sidebarCollapsed === "boolean") {
             state.sidebarCollapsed = parsed.sidebarCollapsed;
           }
+          try {
+            const rawManual = localStorage.getItem(MANUAL_TITLES_KEY);
+            if (rawManual) {
+              const parsedManual = JSON.parse(rawManual);
+              if (parsedManual && typeof parsedManual === "object") state.manualTitles = parsedManual;
+            }
+          } catch (e) {}
         } catch {}
       }
 
@@ -2782,6 +2852,10 @@ const FRONTEND_HTML = String.raw`
             theme: state.theme
           }));
         } catch {}
+      }
+
+      function saveManualTitles() {
+        try { localStorage.setItem(MANUAL_TITLES_KEY, JSON.stringify(state.manualTitles || {})); } catch (e) {}
       }
 
       function applyTheme(themeName) {
@@ -3368,6 +3442,9 @@ const FRONTEND_HTML = String.raw`
       }
 
       function renderChats() {
+        // If the user is renaming a chat inline, avoid rebuilding the chat list
+        // which would remove the input and kick the user out of edit mode.
+        if (document.querySelector('.chat-title-inline-input')) return;
         if (!state.chats.length) {
           chatList.innerHTML = '<div style="padding:10px 6px;font-size:12px;color:var(--muted)">No chats yet.</div>';
           return;
@@ -3375,9 +3452,10 @@ const FRONTEND_HTML = String.raw`
         chatList.innerHTML = state.chats.map(function(chat) {
           const active = chat.id === state.selectedChatId ? "active" : "";
           const iconText = escapeHtml(String(chat.title || "Chat").trim().charAt(0) || "•");
-          return '<button class="chat-item ' + active + '" data-chat-id="' + escapeHtml(chat.id) + '" title="Double-click to rename">' +
+          const safeTitle = escapeHtml(chat.title || "");
+          return '<button class="chat-item ' + active + '" data-chat-id="' + escapeHtml(chat.id) + '" title="' + safeTitle + ' — Double-click to rename" aria-label="' + safeTitle + '">' +
             '<div class="chat-item-icon" aria-hidden="true">' + iconText + '</div>' +
-            '<div class="chat-title-row"><div class="chat-title">' + escapeHtml(chat.title) + '</div><div class="chat-time">' + escapeHtml(prettyTime(chat.updatedAt)) + '</div></div>' +
+            '<div class="chat-title-row"><div class="chat-title">' + safeTitle + '</div><div class="chat-time">' + escapeHtml(prettyTime(chat.updatedAt)) + '</div></div>' +
           '</button>';
         }).join("");
 
@@ -3460,6 +3538,8 @@ const FRONTEND_HTML = String.raw`
                 timelineTitle.textContent = nextTitle;
               }
             }
+            // mark this chat as manually renamed so server auto-titles won't overwrite it
+            try { state.manualTitles = state.manualTitles || {}; state.manualTitles[chatId] = true; saveManualTitles(); } catch (e) {}
           } catch (error) {
             showToast("Rename failed: " + error.message, "error");
             titleEl.textContent = originalTitle;
@@ -3478,13 +3558,14 @@ const FRONTEND_HTML = String.raw`
       }
 
       function renderMemory() {
-        if (!state.memory.length) {
-          memoryList.innerHTML = '<div class="empty-state">No long-term memory saved yet.</div>';
-          return;
-        }
-        memoryList.innerHTML = state.memory.slice(-4).reverse().map(function(item) {
-          return '<div class="memory-item"><strong>' + escapeHtml(item.goal || "Past task") + '</strong><div>' + escapeHtml(item.result || "") + '</div></div>';
-        }).join("");
+          if (!memoryList) return;
+          if (!state.memory.length) {
+            memoryList.innerHTML = '<div class="empty-state">No long-term memory saved yet.</div>';
+            return;
+          }
+          memoryList.innerHTML = state.memory.slice(-4).reverse().map(function(item) {
+            return '<div class="memory-item"><strong>' + escapeHtml(item.goal || "Past task") + '</strong><div>' + escapeHtml(item.result || "") + '</div></div>';
+          }).join("");
       }
 
       function renderSidebarViewState() {
@@ -3502,6 +3583,10 @@ const FRONTEND_HTML = String.raw`
       }
 
       function applyLiveTitle(chatId, newTitle) {
+        // If the user manually renamed this chat, don't overwrite it with an auto-title
+        try {
+          if (state.manualTitles && state.manualTitles[chatId]) return;
+        } catch (e) {}
         if (!state.currentChat || state.currentChat.id !== chatId) return;
         state.currentChat.title = newTitle;
         if (timelineTitle && !timelineTitle.querySelector("input")) {
@@ -3551,6 +3636,8 @@ const FRONTEND_HTML = String.raw`
             state.currentChat.title = nextTitle;
             const listItem = document.querySelector('.chat-item[data-chat-id="' + CSS.escape(String(chatId)) + '"] .chat-title');
             if (listItem) listItem.textContent = nextTitle;
+            // mark this chat as manually renamed so server auto-titles won't overwrite it
+            try { state.manualTitles = state.manualTitles || {}; state.manualTitles[chatId] = true; saveManualTitles(); } catch (e) {}
           } catch (error) {
             showToast("Rename failed: " + error.message, "error");
             timelineTitle.textContent = originalTitle;
@@ -4229,59 +4316,14 @@ const FRONTEND_HTML = String.raw`
         }
       }
 
-      // ── AUTO TITLE GENERATOR ─────────────────────────────────────────
-      // Fires once per chat when the first non-trivial message is sent.
-      // Uses the Anthropic API (same model as the app) to produce a short,
-      // informative, friendly title. Skips casual openers like "hi", "hello",
-      // "who are you", etc.
-
-      var AUTO_TITLED_CHATS = {};
-
-      var CASUAL_PATTERN = /^(hi+|hey+|hello+|howdy|sup|what'?s up|who are you|what are you|what can you do|what do you do|test|testing|ok|okay|yo+|good morning|good evening|good night|morning|evening|night|thanks|thank you|ty|np|cool|nice|great|awesome|sure|yes|no|nope|yep|yup|lol|haha|hehe|wow|omg|wtf|hmm+|hm+|uh+|um+|ah+|oh+)[!?.]*$/i;
-
+      // Auto title generation is handled server-side to avoid CORS and ensure
+      // the server's configured models (Cloudflare/reasoner) are used. Frontend
+      // requests the server to attempt to generate a title when needed.
       function maybeAutoTitle(chatId, messageText) {
-        if (AUTO_TITLED_CHATS[chatId]) { return; }
-        var text = String(messageText || "").trim();
-        if (!text || CASUAL_PATTERN.test(text)) { return; }
-        var chat = state.chats.find(function(c) { return c.id === chatId; });
-        if (!chat) { return; }
-        if (chat.title && !/^(new chat|welcome chat)$/i.test(chat.title.trim())) { return; }
-        AUTO_TITLED_CHATS[chatId] = true;
-
-        (async function() {
-          try {
-            var res = await fetch("https://api.anthropic.com/v1/messages", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                model: "claude-sonnet-4-6",
-                max_tokens: 24,
-                system: "You generate short, friendly, informative chat titles. Reply with ONLY the title — no quotes, no punctuation at the end, no explanation. Max 6 words. Make it specific to what the user actually wants to do.",
-                messages: [{ role: "user", content: "Message: " + text.slice(0, 400) + "\n\nTitle:" }]
-              })
-            });
-            if (!res.ok) { delete AUTO_TITLED_CHATS[chatId]; return; }
-            var data = await res.json();
-            var raw = (data.content && data.content[0] && data.content[0].text) || "";
-            var title = raw.replace(/^["'\s]+|["'\s.]+$/g, "").trim().slice(0, 60);
-            if (!title) { delete AUTO_TITLED_CHATS[chatId]; return; }
-
-            await request("/api/chats/" + encodeURIComponent(chatId), {
-              method: "PATCH",
-              body: { title: title }
-            });
-            applyLiveTitle(chatId, title);
-            var stateChat = state.chats.find(function(c) { return c.id === chatId; });
-            if (stateChat) { stateChat.title = title; }
-            var btn = chatList.querySelector('.chat-item[data-chat-id="' + CSS.escape(String(chatId)) + '"]');
-            if (btn) {
-              var iconEl = btn.querySelector(".chat-item-icon");
-              if (iconEl) { iconEl.textContent = title.trim().charAt(0) || "•"; }
-            }
-          } catch (e) {
-            delete AUTO_TITLED_CHATS[chatId];
-          }
-        })();
+        try {
+          // Fire-and-forget: ask server to try generating a title for this chat
+          request('/api/chats/' + encodeURIComponent(chatId) + '/generate_title', { method: 'POST', body: { text: String(messageText || '').slice(0, 400) } }).catch(function() {});
+        } catch (e) {}
       }
 
       function normalizeBrowserFlagBundleMessage(text) {
@@ -4305,10 +4347,12 @@ const FRONTEND_HTML = String.raw`
         if ((!text && !state.pendingImage) || state.sending || !state.currentChat) return;
         const outboundText = normalizeBrowserFlagBundleMessage(text);
         state.sending = true;
-        sendBtn.disabled = false;
+        if (sendBtn) sendBtn.disabled = true;
         renderGuidancePanel();
-        composerInput.value = "";
-        composerInput.style.height = "auto";
+        if (composerInput) {
+          composerInput.value = "";
+          composerInput.style.height = "auto";
+        }
         saveDraftForChat(state.currentChat.id, "");
         state.currentChat.messages.push({
           role: "user",
@@ -4351,25 +4395,25 @@ const FRONTEND_HTML = String.raw`
                 var newCount = state.currentChat ? state.currentChat.messages.length : 0;
                 if (newCount > prevCount || !state.sending) {
                   state.sending = false;
-                  sendBtn.disabled = false;
+                  if (sendBtn) sendBtn.disabled = false;
                   renderGuidancePanel();
                 } else if (attempts > 1) {
                   pollForReply(attempts - 1);
                 } else {
                   state.sending = false;
-                  sendBtn.disabled = false;
+                  if (sendBtn) sendBtn.disabled = false;
                   renderGuidancePanel();
                 }
               }).catch(function() {
                 state.sending = false;
-                sendBtn.disabled = false;
+                if (sendBtn) sendBtn.disabled = false;
                 renderGuidancePanel();
               });
             }, 2000);
           })(15);
         } catch (error) {
           state.sending = false;
-          sendBtn.disabled = false;
+          if (sendBtn) sendBtn.disabled = false;
           renderGuidancePanel();
           addRuntimeEvent("error", error.message);
           await loadBootstrap(false);
@@ -4512,18 +4556,25 @@ const FRONTEND_HTML = String.raw`
             }
             if (payload.type === "chat_sync") {
               state.sending = false;
-              sendBtn.disabled = false;
+              if (sendBtn) sendBtn.disabled = false;
 
-              // Don't touch the DOM at all if the user is actively typing
-              var composerFocused = composerInput && document.activeElement === composerInput;
+              // Don't touch the DOM at all if the user is actively typing or editing titles
+              var composerFocused = composerArea && document.activeElement && composerArea.contains(document.activeElement);
+              var recentTyping = state.lastUserTypingAt && ((Date.now() - state.lastUserTypingAt) < 2000);
               var sidebarEditing = !!document.querySelector(".chat-title-inline-input");
               var headerEditing  = timelineTitle && !!timelineTitle.querySelector("input");
-              if (composerFocused || sidebarEditing || headerEditing) { return; }
+              if (composerFocused || recentTyping || sidebarEditing || headerEditing) { return; }
 
               // Throttle: rebuild at most once every 8s — chat_sync fires every ~1s
               var now = Date.now();
               if (state._lastSyncLoad && (now - state._lastSyncLoad) < 8000) { return; }
               state._lastSyncLoad = now;
+
+              // Suppress heavy UI animations briefly while applying the sync update
+              try { document.documentElement.classList.add('no-sync-anim'); } catch (e) {}
+              window.setTimeout(function() {
+                try { document.documentElement.classList.remove('no-sync-anim'); } catch (e) {}
+              }, 1200);
 
               loadBootstrap(false, true).catch(function() {});
               return;
@@ -4554,7 +4605,7 @@ const FRONTEND_HTML = String.raw`
             }
             if (payload.type === "task_done") {
               state.sending = false;
-              sendBtn.disabled = false;
+              if (sendBtn) sendBtn.disabled = false;
               state.agentQuestion = null;
               state.latestGuidance = null;
               renderGuidancePanel();
@@ -4777,7 +4828,7 @@ const FRONTEND_HTML = String.raw`
         }
       }
 
-      loginForm.addEventListener("submit", performLogin);
+      if (loginForm) loginForm.addEventListener("submit", performLogin);
       const signupBtn = document.getElementById("signupBtn");
       if (signupBtn) signupBtn.addEventListener("click", performSignup);
       const logoutBtn = document.getElementById("logoutBtn");
@@ -4788,7 +4839,8 @@ const FRONTEND_HTML = String.raw`
           window.open(withApiBase("/code-sector"), "_blank", "noopener,noreferrer");
         });
       }
-      document.getElementById("newChatBtn").addEventListener("click", createNewChat);
+      const newChatBtn = document.getElementById("newChatBtn");
+      if (newChatBtn) newChatBtn.addEventListener("click", createNewChat);
       if (timelineTitle) {
         timelineTitle.addEventListener("click", openChatTitleEditor);
       }
@@ -4798,14 +4850,17 @@ const FRONTEND_HTML = String.raw`
           window.open(upgradeUrl, "_blank", "noopener,noreferrer");
         });
       }
-      document.getElementById("refreshAllBtn").addEventListener("click", function() { loadBootstrap(false); refreshBrowser(); });
+      const refreshAllBtn = document.getElementById("refreshAllBtn");
+      if (refreshAllBtn) refreshAllBtn.addEventListener("click", function() { loadBootstrap(false); refreshBrowser(); });
       if (themeToggleBtn) {
         themeToggleBtn.addEventListener("click", function() {
           applyTheme(state.theme === "dark" ? "light" : "dark");
         });
       }
-      document.getElementById("refreshModelsBtn").addEventListener("click", function() { loadBootstrap(true); });
-      document.getElementById("refreshMemoryBtn").addEventListener("click", refreshMemory);
+      const refreshModelsBtn = document.getElementById("refreshModelsBtn");
+      if (refreshModelsBtn) refreshModelsBtn.addEventListener("click", function() { loadBootstrap(true); });
+      const _refreshMemoryBtn = document.getElementById("refreshMemoryBtn");
+      if (_refreshMemoryBtn) _refreshMemoryBtn.addEventListener("click", refreshMemory);
       if (sidebarToggleBtn) {
         sidebarToggleBtn.addEventListener("click", function() {
           state.sidebarCollapsed = !state.sidebarCollapsed;
@@ -4821,37 +4876,45 @@ const FRONTEND_HTML = String.raw`
       if (refreshHumanBridgeBtn) {
         refreshHumanBridgeBtn.addEventListener("click", refreshHumanBridgeState);
       }
-      sendBtn.addEventListener("click", sendMessage);
-      composerInput.addEventListener("input", function() {
-        const chatIdNow = state.selectedChatId;
-        saveDraftForChat(chatIdNow, composerInput.value);
-        composerInput.style.height = "auto";
-        composerInput.style.height = Math.min(composerInput.scrollHeight, 220) + "px";
-      });
-      renderQuickActions(DEFAULT_QUICK_PROMPTS);
-      composerInput.addEventListener("keydown", function(event) {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault();
-          sendMessage();
-        }
-      });
-
-      // ── Paste-image support: Ctrl+V / right-click paste into the composer ────
-      composerInput.addEventListener("paste", function(event) {
-        const items = event.clipboardData && event.clipboardData.items;
-        if (!items) return;
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].kind === "file" && items[i].type.startsWith("image/")) {
+      if (sendBtn) sendBtn.addEventListener("click", sendMessage);
+      if (composerInput) {
+        composerInput.addEventListener("input", function() {
+          const chatIdNow = state.selectedChatId;
+          saveDraftForChat(chatIdNow, composerInput.value);
+          composerInput.style.height = "auto";
+          composerInput.style.height = Math.min(composerInput.scrollHeight, 220) + "px";
+        });
+        composerInput.addEventListener("keydown", function() {
+          state.lastUserTypingAt = Date.now();
+        });
+        renderQuickActions(DEFAULT_QUICK_PROMPTS);
+        composerInput.addEventListener("keydown", function(event) {
+          if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            const file = items[i].getAsFile();
-            if (file) {
-              analyzeUploadedImage(file);
-              addRuntimeEvent("status", "Image pasted — running DETR analysis…");
-            }
-            return;
+            sendMessage();
           }
-        }
-      });
+        });
+
+        // ── Paste-image support: Ctrl+V / right-click paste into the composer ────
+        composerInput.addEventListener("paste", function(event) {
+          const items = event.clipboardData && event.clipboardData.items;
+          if (!items) return;
+          for (let i = 0; i < items.length; i++) {
+            if (items[i].kind === "file" && items[i].type.startsWith("image/")) {
+              event.preventDefault();
+              const file = items[i].getAsFile();
+              if (file) {
+                analyzeUploadedImage(file);
+                addRuntimeEvent("status", "Image pasted — running DETR analysis…");
+              }
+              return;
+            }
+          }
+        });
+      } else {
+        // ensure quick actions still render even without composer
+        renderQuickActions(DEFAULT_QUICK_PROMPTS);
+      }
 
       loadUiPrefs();
       applyTheme(state.theme);

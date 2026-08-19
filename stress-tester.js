@@ -26,10 +26,63 @@ const CF_API_TOKEN = String(process.env.CF_API_TOKEN || "").trim();
 const CF_ACCOUNT_ID = String(process.env.CF_ACCOUNT_ID || "").trim();
 const STRESS_TESTER_PROMPT_MODEL = "@cf/zai-org/glm-5.2";
 const MODEL_CACHE_MS = 15 * 60 * 1000;
+
+// "bank"     -> fixed, ordered, no-repeat 50-prompt benchmark set (default; deterministic, no tampering)
+// "template" -> randomized template-based generation (original behavior)
+// "llm"      -> Cloudflare-model-generated adversarial prompts (original behavior)
+const PROMPT_SOURCE = String(process.env.STRESS_TESTER_PROMPT_SOURCE || "bank").trim().toLowerCase();
+
 const ENV_MAX_RUNS = Number.isFinite(Number(process.env.STRESS_TESTER_MAX_RUNS))
   ? Math.max(1, Math.min(MAX_RUNS_HARD_CAP, Number(process.env.STRESS_TESTER_MAX_RUNS)))
   : Infinity;
 const fetchImpl = globalThis.fetch || undiciFetch;
+
+// ---------------------------------------------------------------------------
+// Fixed 50-prompt benchmark bank (Tier A: easy -> Tier D: hard).
+// Order is fixed and cycle N always maps to PROMPT_BANK[(N-1) % 50] so a run
+// log can always be traced back to exactly which prompt produced it.
+// ---------------------------------------------------------------------------
+const PROMPT_BANK = [
+  { tier: "A", text: `go to archive.org and search for "public domain images"` },
+  { tier: "A", text: `go to docs.python.org and find the page for the "list" type` },
+  { tier: "A", text: `go to reddit.com/r/programming and get the top post title` },
+  { tier: "A", text: `go to britannica.com and search for "Ada Lovelace"` },
+
+  { tier: "B", text: `go to wikipedia.org, search "Saturn V", and extract the launch date` },
+  { tier: "B", text: `go to npmjs.com, search "express", click the top result, and report the latest version` },
+  { tier: "B", text: `go to github.com, search "playwright", open the top repo, and report the star count` },
+  { tier: "B", text: `go to docs.python.org, find the asyncio page, and extract one code example` },
+  { tier: "B", text: `go to reddit.com, search "best budget headphones", and report the top comment` },
+  { tier: "B", text: `go to imdb.com, find "Inception", and report its release year and rating` },
+  { tier: "B", text: `go to weather.com, check Chicago's forecast, and tell me if I need an umbrella tomorrow` },
+  { tier: "B", text: `go to stackoverflow.com, find a question about "async await javascript", and summarize the top answer` },
+  { tier: "B", text: `go to britannica.com, search "black hole", and extract the definition` },
+  { tier: "B", text: `go to npmjs.com, search "react", and list 3 alternative packages shown` },
+  { tier: "B", text: `go to github trending, find the #1 repo today, and report its description` },
+  { tier: "B", text: `go to wikipedia.org, search "transformer architecture", and find who introduced it` },
+
+  { tier: "C", text: `go to wikipedia, search "Ada Lovelace", follow a link to Charles Babbage, and compare their birth years` },
+  { tier: "C", text: `go to pypi.org, search "vite", open the package page, then check if there's a GitHub link and follow it` },
+  { tier: "C", text: `go to npmjs.com, search "axios", check the latest version, then go to its GitHub repo and check open issue count` },
+  { tier: "C", text: `go to github.com, find the vitejs/vite repo, open the README, and summarize the install steps` },
+  { tier: "C", text: `go to hacker news, find a story about AI, open it, then find a related article via search` },
+  { tier: "C", text: `go to wikipedia, look up "Saturn V", follow a link to "Apollo 11", and find the moon landing date` },
+  { tier: "C", text: `go to docs.python.org, find the "set" type page, then compare it with a definition from a second source` },
+  { tier: "C", text: `go to imdb.com, find "Inception", then search for its director on the same site and list 2 other films they made` },
+  { tier: "C", text: `go to reddit.com/r/webdev, find a thread about frameworks, open it, and list the two most-upvoted opinions` },
+  { tier: "C", text: `go to britannica.com, search "Mars rover Perseverance", then verify one fact from it using Wikipedia` },
+  { tier: "C", text: `go to nytimes.com, find a tech article, open it, then find a second article on the same topic elsewhere` },
+  { tier: "C", text: `go to github trending, pick the top Python repo, open its issues tab, and report the oldest open issue title` },
+
+  { tier: "D", text: `find out what the current stable version of Node.js is and where to download it` },
+  { tier: "D", text: `find a highly-rated budget mechanical keyboard and tell me its price` },
+  { tier: "D", text: `check if there's a Python package for parsing PDFs and tell me the most popular one` },
+  { tier: "D", text: `find out who currently holds the record for WebArena benchmark performance` },
+  { tier: "D", text: `look up the difference between npm and yarn and summarize it in 3 bullet points` },
+  { tier: "D", text: `find a recent article about browser AI agents and tell me one criticism it raises` },
+  { tier: "D", text: `find the GitHub repo for "requests" (python library), check its last commit date, and report if it's still actively maintained` },
+  { tier: "D", text: `look up what a "false positive completion" means in the context of AI agent evaluation, using any source you find` }
+];
 
 function normalizeFlagKey(raw) {
   return String(raw || "").replace(/^--?/, "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-");
@@ -234,6 +287,12 @@ const runtimeConfig = {
   scenario: cliScenario,
   scenarioInstructions: buildScenarioInstructions(cliScenario)
 };
+
+// Bank mode default: cap to exactly one pass over the 50 prompts unless the
+// operator explicitly overrides STRESS_TESTER_MAX_RUNS.
+if (PROMPT_SOURCE === "bank" && !Number.isFinite(runtimeConfig.maxRuns)) {
+  runtimeConfig.maxRuns = PROMPT_BANK.length;
+}
 
 const ISSUE_TYPES = [
   "navigation_failure",
@@ -466,7 +525,6 @@ async function fetchCloudflareModelCatalog(force = false) {
   if (!CF_API_TOKEN || !CF_ACCOUNT_ID) return [];
 
   try {
-    // Mirrors the proven catalog fetch in agent.js.
     const res = await fetchImpl(
       `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/models`,
       {
@@ -591,21 +649,6 @@ async function callCloudflareReasonerForPrompt(modelId) {
   return text;
 }
 
-async function generateRandomPrompt(cycleNumber) {
-  const fallbackPrompt = generateTemplatePrompt(cycleNumber);
-  const scenarioSuffix = buildScenarioPromptSuffix(cycleNumber);
-  try {
-    const modelId = await resolveStressPromptModel();
-    if (!modelId) return fallbackPrompt;
-    const generated = await callCloudflareReasonerForPrompt(modelId);
-    if (!generated) return fallbackPrompt;
-    return [generated, scenarioSuffix].filter(Boolean).join("\n\n");
-  } catch (error) {
-    console.warn(`[stress-tester] CF prompt generation fallback: ${error.message}`);
-    return fallbackPrompt;
-  }
-}
-
 function selectModelForCycle(cycleNumber) {
   const models = Array.isArray(runtimeConfig.scenario.modelSwitch)
     ? runtimeConfig.scenario.modelSwitch.filter(Boolean)
@@ -630,6 +673,47 @@ function buildScenarioPromptSuffix(cycleNumber) {
   ].join("\n");
 }
 
+function buildDiagnosisFooter(extra) {
+  return [
+    "At the very end of your final message, include these exact markers and a machine-readable diagnosis:",
+    "<<PUPPETERR_FINAL_ANSWER>>",
+    "Your normal final answer here.",
+    "<<END_PUPPETERR_FINAL_ANSWER>>",
+    "<<PUPPETERR_SELF_DIAGNOSIS_JSON>>",
+    JSON.stringify(Object.assign({
+      summary: "short summary of what happened",
+      completed: true,
+      issues: [
+        {
+          type: "navigation_failure",
+          evidence: "optional evidence"
+        }
+      ],
+      uncertainty: "what remained uncertain, if anything",
+      fallbacks: ["fallbacks or workarounds you used"],
+      notes: "any planner/vision/selector/supervisor observations"
+    }, extra || {}), null, 2),
+    "<<END_PUPPETERR_SELF_DIAGNOSIS_JSON>>",
+    "Use an empty issues array if nothing went wrong."
+  ].join("\n\n");
+}
+
+// -----------------------------------------------------------------------
+// Bank-mode prompt builder: fixed order, no randomness, no repeats within
+// a single pass. cycle 1 -> PROMPT_BANK[0], cycle 50 -> PROMPT_BANK[49].
+// -----------------------------------------------------------------------
+function buildBankPrompt(cycleNumber) {
+  const index = (cycleNumber - 1) % PROMPT_BANK.length;
+  const entry = PROMPT_BANK[index];
+  const scenarioSuffix = buildScenarioPromptSuffix(cycleNumber);
+
+  return [
+    `/browser ${entry.text}`,
+    scenarioSuffix,
+    buildDiagnosisFooter({ tier: entry.tier, bankIndex: index })
+  ].filter(Boolean).join("\n\n");
+}
+
 function generateTemplatePrompt(cycleNumber) {
   const blueprint = pick(TASK_BLUEPRINTS);
   const subject = pick(blueprint.subjects);
@@ -650,27 +734,28 @@ function generateTemplatePrompt(cycleNumber) {
     stressFlavor,
     constraints.join(" "),
     scenarioSuffix,
-    "At the very end of your final message, include these exact markers and a machine-readable diagnosis:",
-    "<<PUPPETERR_FINAL_ANSWER>>",
-    "Your normal final answer here.",
-    "<<END_PUPPETERR_FINAL_ANSWER>>",
-    "<<PUPPETERR_SELF_DIAGNOSIS_JSON>>",
-    JSON.stringify({
-      summary: "short summary of what happened",
-      completed: true,
-      issues: [
-        {
-          type: "navigation_failure",
-          evidence: "optional evidence"
-        }
-      ],
-      uncertainty: "what remained uncertain, if anything",
-      fallbacks: ["fallbacks or workarounds you used"],
-      notes: "any planner/vision/selector/supervisor observations"
-    }, null, 2),
-    "<<END_PUPPETERR_SELF_DIAGNOSIS_JSON>>",
-    "Use an empty issues array if nothing went wrong."
+    buildDiagnosisFooter()
   ].filter(Boolean).join("\n\n");
+}
+
+async function generateRandomPrompt(cycleNumber) {
+  if (PROMPT_SOURCE === "bank") return buildBankPrompt(cycleNumber);
+  if (PROMPT_SOURCE === "template") return generateTemplatePrompt(cycleNumber);
+
+  // "llm" mode: Cloudflare-model-generated adversarial prompts, falls back
+  // to the template generator if the model call fails.
+  const fallbackPrompt = generateTemplatePrompt(cycleNumber);
+  const scenarioSuffix = buildScenarioPromptSuffix(cycleNumber);
+  try {
+    const modelId = await resolveStressPromptModel();
+    if (!modelId) return fallbackPrompt;
+    const generated = await callCloudflareReasonerForPrompt(modelId);
+    if (!generated) return fallbackPrompt;
+    return [generated, scenarioSuffix].filter(Boolean).join("\n\n");
+  } catch (error) {
+    console.warn(`[stress-tester] CF prompt generation fallback: ${error.message}`);
+    return fallbackPrompt;
+  }
 }
 
 async function applyModelSwitchForChat(chatId, cycleNumber) {
@@ -1105,8 +1190,19 @@ function summarizeAllRuns() {
   const bugExamples = {};
   const bugSampleRuns = {};
 
+  // Per-tier breakdown (bank mode traceability).
+  const tierCounts = {};
+
   runs.forEach(run => {
     if (run && run.completed) completedRuns += 1;
+
+    const tier = run && run.promptTier ? String(run.promptTier) : null;
+    if (tier) {
+      if (!tierCounts[tier]) tierCounts[tier] = { total: 0, completed: 0 };
+      tierCounts[tier].total += 1;
+      if (run.completed) tierCounts[tier].completed += 1;
+    }
+
     const diagnosisSummary = String(run && run.puppeterrSelfDiagnosis && run.puppeterrSelfDiagnosis.summary || "");
     if (diagnosisSummary && !/missing or unparsable/i.test(diagnosisSummary)) {
       runsWithStructuredDiagnosis += 1;
@@ -1147,12 +1243,23 @@ function summarizeAllRuns() {
       };
     });
 
+  const tierBreakdown = Object.entries(tierCounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([tier, counts]) => ({
+      tier,
+      total: counts.total,
+      completed: counts.completed,
+      successRate: counts.total ? Number((counts.completed / counts.total).toFixed(4)) : 0
+    }));
+
   const summary = {
     generatedAt: new Date().toISOString(),
+    promptSource: PROMPT_SOURCE,
     totalRuns: runs.length,
     completedRuns,
     incompleteRuns: runs.length - completedRuns,
     successRate: runs.length ? Number((completedRuns / runs.length).toFixed(4)) : 0,
+    tierBreakdown,
     diagnosticsCoverage: {
       structuredSelfDiagnosisRuns: runsWithStructuredDiagnosis,
       missingOrUnparsableRuns: Math.max(0, runs.length - runsWithStructuredDiagnosis)
@@ -1203,6 +1310,7 @@ async function loginIfNeeded() {
 
 async function runOneCycle(cycleNumber) {
   const prompt = await generateRandomPrompt(cycleNumber);
+  const promptTier = PROMPT_SOURCE === "bank" ? PROMPT_BANK[(cycleNumber - 1) % PROMPT_BANK.length].tier : null;
   const sent = await sendToPuppeterr(prompt, cycleNumber);
   const completion = await waitForCompletion(sent);
   const extracted = extractSelfDiagnosis(completion.finalMessage.content || "");
@@ -1236,6 +1344,8 @@ async function runOneCycle(cycleNumber) {
     cycle: cycleNumber,
     timestamp: finishedAt,
     baseUrl: BASE_URL,
+    promptSource: PROMPT_SOURCE,
+    promptTier,
     chatId: sent.chatId,
     busyRetries: Number(sent.busyRetries || 0),
     modelSwitch: sent.modelSwitch || null,
@@ -1266,6 +1376,10 @@ async function runOneCycle(cycleNumber) {
 
 async function main() {
   console.log(`[stress-tester] Using Puppeterr at ${BASE_URL}`);
+  console.log(`[stress-tester] Prompt source: ${PROMPT_SOURCE}`);
+  if (PROMPT_SOURCE === "bank") {
+    console.log(`[stress-tester] Bank mode: ${PROMPT_BANK.length} fixed prompts, one pass, cycle N maps to bank[(N-1) % ${PROMPT_BANK.length}].`);
+  }
   console.log(`[stress-tester] Writing run log to ${LOG_PATH}`);
   if (runtimeConfig.scenario.rawArgs.length) {
     console.log(`[stress-tester] Scenario CLI args: ${runtimeConfig.scenario.rawArgs.join(" ")}`);
@@ -1307,6 +1421,8 @@ async function main() {
         cycle,
         timestamp: new Date().toISOString(),
         baseUrl: BASE_URL,
+        promptSource: PROMPT_SOURCE,
+        promptTier: PROMPT_SOURCE === "bank" ? PROMPT_BANK[(cycle - 1) % PROMPT_BANK.length].tier : null,
         prompt: null,
         completed: false,
         timedOut: false,

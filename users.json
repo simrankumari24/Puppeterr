@@ -9,7 +9,9 @@
     "pinch_customer_id": null,
     "subscription_status": "unsubscribed",
     "createdAt": "2026-07-08T01:13:57.731Z",
-    "updatedAt": "2026-07-08T01:13:57.731Z"
+    "updatedAt": "2026-07-08T01:13:57.731Z",
+    "taskUsage": 27,
+    "taskUsageResetAt": 1789001380553
   },
   {
     "id": "29cf0a25-3d67-4b4d-9cd6-ea29d7eb02e5",

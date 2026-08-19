@@ -222,7 +222,7 @@ sudo apt-get install -y \
 
 to run the program itself you need to run this cmd
 "npm start"
-if its not 'INSTALLED' do this
+if xvfb (it fails because of a module issue) not 'INSTALLED' do this
 
 "
 sudo apt-get update
