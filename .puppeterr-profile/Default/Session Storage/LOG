@@ -1,3 +1,6 @@
-2026/08/10-19:17:26.462 d36 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Session Storage/MANIFEST-000001
-2026/08/10-19:17:26.465 d36 Recovering log #3
-2026/08/10-19:17:26.517 d36 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Session Storage/000003.log 
+2026/08/18-23:53:16.613 3d433 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Session Storage/MANIFEST-000001
+2026/08/18-23:53:16.614 3d433 Recovering log #56
+2026/08/18-23:53:16.615 3d433 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Session Storage/000056.log 
+2026/08/18-23:55:37.371 3d435 Level-0 table #61: started
+2026/08/18-23:55:37.406 3d435 Level-0 table #61: 16323 bytes OK
+2026/08/18-23:55:37.417 3d435 Delete type=0 #56

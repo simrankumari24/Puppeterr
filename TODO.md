@@ -57,12 +57,6 @@ Patch up the image anyisis pipeline (half fixed-half broken rn)
 
 Add more  benifits to the paid plans to make it feel more... 'prenium'
 
----
-
-
-
-
-an if else funtion if the text is larger than umm x pixels then switch to font A if its not then font b
 
 
 ---
@@ -149,34 +143,6 @@ what step succeeded
 how long each step took
 
 This is extremely premium.
-
-
-
-Theme Engine v2
-Your idea: Orbitron + Geist Mono.
-
-Let’s expand:
-
-Orbitron
-
-Geist
-
-Geist Mono
-
-JetBrains Mono
-
-Terminal Green
-
-Neon Purple
-
-Solarized
-
-High Contrast
-
-Puppeterr Dark
-
-Users can switch themes instantly.
-
 
 
 

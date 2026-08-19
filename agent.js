@@ -1,10 +1,11 @@
 const { chromium } = require("playwright-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const fs   = require("fs");
+const os   = require("os");
 const http = require("http");
 const crypto = require("crypto");
 const path = require("path");
-const { execSync, exec } = require("child_process");
+const { execSync, exec, spawn } = require("child_process");
 const bcrypt = require("bcryptjs");
 const { fetch: undiciFetch } = require("undici");
 const nodemailer = require("nodemailer");
@@ -18,6 +19,25 @@ const {
   installVoidElementMapInitScript,
   captureVoidElementMapFromPage,
 } = require("./element-map");
+let sharp = null;
+try {
+  sharp = require("sharp");
+} catch {}
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
+
+function writeJsonAtomic(filePath, value) {
+  const target = String(filePath || "");
+  const tempPath = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2));
+  fs.renameSync(tempPath, target);
+}
 async function humanMove(page, x, y, telemetry = {}) {
   const steps = 25 + Math.floor(Math.random() * 10);
   const start = await page.evaluate(() => ({
@@ -109,42 +129,73 @@ if (fs.existsSync(".env")) {
   });
 }
 
+// Cached once at startup — avoids spawning `command -v xvfb-run` on every element-map call
+let _xvfbAvailable = null;
+function checkXvfbOnce(cb) {
+  if (_xvfbAvailable !== null) { cb(_xvfbAvailable); return; }
+  exec("command -v xvfb-run", (err) => {
+    _xvfbAvailable = !err;
+    cb(_xvfbAvailable);
+  });
+}
+
 // Spawn element-map helper for a URL (non-blocking). Tries xvfb-run if present.
-function runElementMapForUrl(url) {
+// onDone(err) is called when the child process finishes (or immediately on skip).
+function runElementMapForUrl(url, onDone) {
+  const done = typeof onDone === "function" ? onDone : () => {};
   try {
-    if (!url || typeof url !== "string") return;
+    if (!url || typeof url !== "string") { done(null); return; }
     const scriptPath = path.join(process.cwd(), "element-map.js");
     if (!fs.existsSync(scriptPath)) {
-      // not fatal; the repo may not include the helper
       status && status("element-map.js not found; skipping element-map run.");
+      done(null);
       return;
     }
 
-    const safeUrl = String(url).replace(/"/g, '\\"');
-    const nodeCmd = `node ${scriptPath} "${safeUrl}"`;
-    const xvfbCmd = `xvfb-run -a ${nodeCmd}`;
-
-    // Log trigger and prefer xvfb-run when available, otherwise fall back to plain node.
+    const safeUrl = String(url).trim();
     console.log(`🔧 Triggering element-map for: ${url}`);
     broadcast && broadcast("status", { msg: `element-map triggered for ${url}` });
-    exec("command -v xvfb-run", (err) => {
-      const cmdToRun = err ? nodeCmd : xvfbCmd;
-      console.log(`🔧 element-map command: ${cmdToRun.split(" ").slice(0,6).join(" ")} ...`);
-      exec(cmdToRun, { maxBuffer: 10 * 1024 * 1024 }, (execErr, stdout, stderr) => {
-        if (execErr) {
-          const msg = `element-map error: ${execErr.message}`;
-          console.warn(msg);
-          status && status(msg);
+
+    checkXvfbOnce((useXvfb) => {
+      const cmd = useXvfb ? "xvfb-run" : "node";
+      const args = useXvfb ? ["-a", "node", scriptPath, safeUrl] : [scriptPath, safeUrl];
+      let tmpProfileDir = null;
+      try {
+        tmpProfileDir = fs.mkdtempSync(path.join(os.tmpdir(), "puppeterr-elementmap-"));
+      } catch (e) {
+        tmpProfileDir = path.join(process.cwd(), ".puppeterr-profile-temp");
+      }
+      console.log(`🔧 element-map spawn: ${cmd} ${args.slice(0, 6).join(" ")} ...`);
+      const childEnv = Object.assign({}, process.env, { BROWSER_PROFILE_DIR: tmpProfileDir });
+      const child = spawn(cmd, args, { env: childEnv });
+      let out = "";
+      let errOut = "";
+      child.stdout && child.stdout.on("data", d => { out += String(d || ""); });
+      child.stderr && child.stderr.on("data", d => { errOut += String(d || ""); });
+      child.on("error", (spawnErr) => {
+        const msg = `element-map spawn failed: ${spawnErr?.message || String(spawnErr)}`;
+        console.warn(msg);
+        status && status(msg);
+        done(spawnErr);
+      });
+      child.on("close", (code, signal) => {
+        if (code !== 0) {
+          const msg = `element-map exited ${code || signal}: ${String(errOut || out).slice(0, 800)}`;
+          console.warn(`🔧 element-map error: ${msg}`);
+          status && status(`element-map error: ${msg}`);
+          done(new Error(msg));
         } else {
           status && status("element-map completed");
-          if (stdout && stdout.toString().trim()) {
-            think && think(`element-map output: ${String(stdout).slice(0,800)}`);
-          }
+          if (out && String(out).trim()) think && think(`element-map output: ${String(out).slice(0, 800)}`);
+          done(null);
         }
+        // Clean up temp profile dir
+        try { if (tmpProfileDir) fs.rmSync(tmpProfileDir, { recursive: true, force: true }); } catch {}
       });
     });
   } catch (err) {
     console.warn("element-map spawn failed:", err?.message || err);
+    done(err);
   }
 }
 
@@ -161,6 +212,7 @@ const SESSION_FILE  = "session.json";
 const CHAT_STORE_FILE = "chat-history.json";
 const LOG_FILE = "log.json";
 const USER_STORE_FILE = "users.json";
+const STABLE_PAGE_FILE = "stable-page.json"; // last known-good URL before any crash
 const PASSWORD_MIN_LENGTH = Math.max(8, Number(process.env.PASSWORD_MIN_LENGTH || 8));
 const REQUIRE_EMAIL_VERIFICATION = String(process.env.REQUIRE_EMAIL_VERIFICATION || "false").toLowerCase() === "true";
 const PINCH_API_VERSION = process.env.PINCH_API_VERSION || "2020.1";
@@ -202,6 +254,8 @@ const ACTION_PACING_DELAY_MS = Number(process.env.ACTION_PACING_DELAY_MS || 350)
 const STEP_SETTLE_DELAY_MS = Number(process.env.STEP_SETTLE_DELAY_MS || 450);
 const PLANNER_RETRY_DELAY_MS = Number(process.env.PLANNER_RETRY_DELAY_MS || 700);
 const POST_STEP_DELAY_MS = Number(process.env.POST_STEP_DELAY_MS || 300);
+// How many planner steps to wait before allowing forced direct navigation
+const DIRECT_NAV_MIN_STEP = Math.max(4, Number(process.env.DIRECT_NAV_MIN_STEP || 12));
 const VISION_SAMPLE_EVERY_STEPS = Math.max(1, Number(process.env.VISION_SAMPLE_EVERY_STEPS || 2));
 const VERIFY_EVERY_STEPS = Math.max(1, Number(process.env.VERIFY_EVERY_STEPS || 2));
 const INSTINCT_SAMPLE_EVERY_STEPS = Math.max(1, Number(process.env.INSTINCT_SAMPLE_EVERY_STEPS || 2));
@@ -231,6 +285,8 @@ const SIMPLE_BROWSING_DYNAMIC_UI_FAIL_THRESHOLD = Math.max(1, Number(process.env
 const SUPERVISOR_MODE = String(process.env.SUPERVISOR_MODE || "enforce").toLowerCase(); // off | passive | enforce
 const SUPERVISOR_BLOCK_SCORE = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_BLOCK_SCORE || 0.52)));
 const SUPERVISOR_WARN_SCORE = Math.max(SUPERVISOR_BLOCK_SCORE, Math.min(0.98, Number(process.env.SUPERVISOR_WARN_SCORE || 0.67)));
+const ELEMENT_MAP_MIN_INTERVAL_MS = Math.max(1000, Number(process.env.ELEMENT_MAP_MIN_INTERVAL_MS || 10000));
+const ELEMENT_MAP_MAX_INTERVAL_MS = Math.max(ELEMENT_MAP_MIN_INTERVAL_MS, Number(process.env.ELEMENT_MAP_MAX_INTERVAL_MS || 20000));
 const SUPERVISOR_ACTION_BLOCK_RISK = Math.max(0.2, Math.min(0.95, Number(process.env.SUPERVISOR_ACTION_BLOCK_RISK || 0.72)));
 const SUPERVISOR_ROUTE_FAIL_TTL_MS = Math.max(5000, Number(process.env.SUPERVISOR_ROUTE_FAIL_TTL_MS || 90000));
 const SUPERVISOR_DECISION_CACHE_TTL_MS = Math.max(500, Number(process.env.SUPERVISOR_DECISION_CACHE_TTL_MS || 4000));
@@ -271,7 +327,29 @@ const VOID_MAP_STATE_MAX_ELEMENTS = Math.max(200, Number(process.env.VOID_MAP_ST
 const VOID_MAP_STATE_TEXT_LIMIT = Math.max(60, Number(process.env.VOID_MAP_STATE_TEXT_LIMIT || 180));
 const fetchImpl = globalThis.fetch || undiciFetch;
 
-// ── Usage-based billing constants ────────────────────────────────────────────
+// ── Stable page checkpoint ────────────────────────────────────────────────────
+// Written after every successful navigation. Read on crash-restart so the
+// browser reopens the last page that didn't cause a crash.
+const SKIP_STABLE_URLS = new Set(["about:blank", "chrome://newtab/", "about:newtab"]);
+
+function saveStablePage(url) {
+  try {
+    if (!url || SKIP_STABLE_URLS.has(url) || url.startsWith("chrome://")) return;
+    const tmp = STABLE_PAGE_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ url, savedAt: new Date().toISOString() }));
+    fs.renameSync(tmp, STABLE_PAGE_FILE);
+  } catch {}
+}
+
+function loadStablePage() {
+  try {
+    const raw = fs.readFileSync(STABLE_PAGE_FILE, "utf8");
+    const { url } = JSON.parse(raw);
+    if (url && typeof url === "string" && url.startsWith("http")) return url;
+  } catch {}
+  return null;
+}
+// ─────────────────────────────────────────────────────────────────────────────
 const FREE_TIER_MAX_TASKS = Math.max(1, Number(process.env.FREE_TIER_MAX_TASKS || 50));
 const CORE_TIER_MAX_TASKS = Math.max(1, Number(process.env.CORE_TIER_MAX_TASKS || 1000));
 const ULTIMATE_TIER_UNLIMITED = true;
@@ -300,9 +378,9 @@ async function checkTaskLimit(user) {
   const now = Date.now();
   const resetAt = Number(user.taskUsageResetAt || 0);
   if (now >= resetAt) {
-    user.taskUsage = 0;
-    user.taskUsageResetAt = now + (30 * 24 * 60 * 60 * 1000);
-    saveUsers(loadUsers().map(u => u.id === user.id ? user : u));
+    const nextUser = { ...user, taskUsage: 0, taskUsageResetAt: now + (30 * 24 * 60 * 60 * 1000) };
+    saveUsers(loadUsers().map(u => u.id === user.id ? nextUser : u));
+    Object.assign(user, nextUser);
   }
 
   const used = Number(user.taskUsage || 0);
@@ -313,11 +391,13 @@ async function checkTaskLimit(user) {
 
 async function incrementTaskUsage(user) {
   if (!user) return;
-  user.taskUsage = (Number(user.taskUsage || 0)) + 1;
-  if (!user.taskUsageResetAt) {
-    user.taskUsageResetAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
-  }
-  saveUsers(loadUsers().map(u => u.id === user.id ? user : u));
+  const nextUser = {
+    ...user,
+    taskUsage: (Number(user.taskUsage || 0)) + 1,
+    taskUsageResetAt: user.taskUsageResetAt || (Date.now() + (30 * 24 * 60 * 60 * 1000))
+  };
+  saveUsers(loadUsers().map(u => u.id === user.id ? nextUser : u));
+  Object.assign(user, nextUser);
 }
 
 function getUsageStatus(user) {
@@ -675,15 +755,14 @@ let currentTaskChatId = null; // tracks the active task's chat for runtime error
 async function ensureActivePage() {
   if (page) {
     try {
-      page.url();
-      return page;
+      if (!page.isClosed()) return page;
     } catch {}
   }
   if (context) {
     const pages = context.pages().filter(p => p);
     for (const candidate of pages) {
       try {
-        candidate.url();
+        if (candidate.isClosed()) continue;
         page = candidate;
         await page.bringToFront().catch(() => {});
         return page;
@@ -691,6 +770,11 @@ async function ensureActivePage() {
     }
     try {
       page = await context.newPage();
+      // wire crash handlers to pages opened mid-session
+      if (page && !page.__crashWired) {
+        page.__crashWired = true;
+        page.on("crash", () => handleBrowserCrash("page renderer crashed (tab crash / OOM)"));
+      }
       await page.bringToFront().catch(() => {});
       return page;
     } catch (err) {
@@ -1249,7 +1333,7 @@ function loadUsers() {
 }
 
 function saveUsers(users) {
-  fs.writeFileSync(USER_STORE_FILE, JSON.stringify(Array.isArray(users) ? users : [], null, 2));
+  writeJsonAtomic(USER_STORE_FILE, Array.isArray(users) ? users : []);
 }
 
 function findUserByEmail(email) {
@@ -1674,7 +1758,7 @@ function loadChatStore(userId) {
 }
 
 function saveChatStore(store, userId) {
-  fs.writeFileSync(chatStoreFile(userId), JSON.stringify(store, null, 2));
+  writeJsonAtomic(chatStoreFile(userId), store);
 }
 
 function summarizeChat(chat) {
@@ -1734,6 +1818,54 @@ function maybeAutoTitleChat(chat, prompt) {
   const generated = inferChatTitleFromIntent(prompt);
   if (generated) {
     chat.title = generated;
+  }
+}
+
+async function generateAndSaveTitleForChat(chatId, text, userId = null) {
+  try {
+    const store = loadChatStore(userId);
+    const chat = store.chats.find(c => c.id === String(chatId || ""));
+    if (!chat) return null;
+    if (!text || !String(text || "").trim()) return null;
+
+    // Prefer the chat's configured reasoner, fallback to router/planner defaults
+    const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
+    const modelToUse = String(models.reasoner || models.router || DEFAULT_MODELS.reasoner || DEFAULT_MODELS.router);
+
+    const system = `You are a concise title generator. Produce a chat title in 4 to 8 words (not characters).` +
+      ` Output only the title on a single line, with Title Case, no surrounding quotes or punctuation, and no explanation.`;
+    const userMsg = `Create a very short title (4-8 words) for this user query or conversation snippet:\n\n${String(text).trim().slice(0,2000)}`;
+
+    let raw = await callCFAI(modelToUse, [
+      { role: "system", content: system },
+      { role: "user", content: userMsg }
+    ], 64, 1, 0.2);
+
+    if (!raw) return null;
+    // Clean result: take first non-empty line, strip punctuation at ends
+    let title = String(raw || "").split(/\r?\n/).map(l=>l.trim()).find(l=>l);
+    if (!title) title = String(raw || "").trim();
+    // Remove leading prefixes like "Title:" or "Suggested title:"
+    title = title.replace(/^(title|suggested title|suggestion)[:\-\s]+/i, "");
+    // Strip surrounding quotes and trailing punctuation
+    title = title.replace(/^['"“”]+|['"“”]+$/g, "").replace(/[.?!]+$/g, "");
+    title = normalizeChatTitleText(title);
+    if (!title) return null;
+    title = title.split(/\s+/).slice(0,12).join(" "); // safety cap
+    title = titleCaseFragment(title);
+
+    // Only set if the chat currently has a generic title (avoid clobbering manual titles)
+    if (!isGenericChatTitle(chat.title)) return null;
+
+    const original = chat.title;
+    chat.title = title;
+    chat.updatedAt = new Date().toISOString();
+    saveChatStore(store, userId);
+    try { broadcast("chat_title", { chatId: chat.id, title: chat.title }); } catch (e) {}
+    return { original, title };
+  } catch (err) {
+    errLog && errLog("generateAndSaveTitleForChat: " + (err?.message || String(err)));
+    return null;
   }
 }
 
@@ -2233,6 +2365,7 @@ function appendChatMessage(chatId, role, content, meta = {}, userId = currentTas
   const resolvedChatId = resolveChatIdForWrite(chatId, store);
   const chat = store.chats.find(item => item.id === resolvedChatId);
   if (!chat) return null;
+  let originalTitle = chat.title;
   if (role === "user") {
     maybeAutoTitleChat(chat, content);
   }
@@ -2240,6 +2373,19 @@ function appendChatMessage(chatId, role, content, meta = {}, userId = currentTas
   chat.updatedAt = new Date().toISOString();
   store.selectedChatId = resolvedChatId;
   saveChatStore(store, resolvedUserId);
+  // If chat title is still generic and a user message was added, kick off
+  // an asynchronous reasoner-based title generation (non-blocking).
+  try {
+    if (role === "user" && isGenericChatTitle(chat.title)) {
+      generateAndSaveTitleForChat(resolvedChatId, content, resolvedUserId).catch(() => {});
+    }
+  } catch (e) {}
+  // If an auto-title was generated, notify connected frontends so they can update UI
+  try {
+    if (chat.title && chat.title !== originalTitle) {
+      broadcast("chat_title", { chatId: resolvedChatId, title: chat.title });
+    }
+  } catch (e) {}
   syncSessionHistory(chat);
   return chat;
 }
@@ -2390,9 +2536,16 @@ async function fetchModelCatalog(force = false) {
 
 // ── SSE broadcast to all connected frontend clients ──────────────────────────
 let sseClients = [];
-function broadcast(type, payload) {
+// Buffer recent error/log messages per chat and debounce summarization
+const taskLogBuffers = new Map(); // chatId -> [{ts,msg}, ...]
+const taskLogSummaryTimers = new Map();
+const LOG_SUMMARY_DEBOUNCE_MS = Math.max(500, Number(process.env.LOG_SUMMARY_DEBOUNCE_MS || 1000));
+function broadcast(type, payload, targetUserId = currentTaskUserId || null) {
   const data = "data: " + JSON.stringify({ type, ...payload }) + "\n\n";
-  sseClients.forEach(res => { try { res.write(data); } catch {} });
+  const recipients = targetUserId
+    ? sseClients.filter(client => String(client.userId || "") === String(targetUserId || ""))
+    : sseClients;
+  recipients.forEach(client => { try { client.res.write(data); } catch {} });
 }
 
 function think(msg)   { console.log("  💭 " + msg); broadcast("think",   { msg }); }
@@ -2410,9 +2563,67 @@ function appendTaskChatMessage(role, content, meta = {}) {
 }
 function errLog(msg)  {
   console.log("  ❌ " + msg);
-  broadcast("error",   { msg });
-  if (currentTaskChatId) {
-    appendTaskChatMessage("assistant", msg, { error: true, completed: false });
+  // Do NOT broadcast raw error messages directly to the chat UI. Instead,
+  // buffer them per-task and call the reasoner to generate a short,
+  // user-facing summary that is appended to the chat. This prevents
+  // exposing verbose internal logs while preserving useful diagnostics.
+  // Broadcast a status-level notice so realtime monitors still see activity.
+  try { broadcast("status", { msg: "internal error logged" }); } catch (e) {}
+
+  if (!currentTaskChatId) return;
+  try {
+    const buf = taskLogBuffers.get(currentTaskChatId) || [];
+    buf.push({ ts: Date.now(), msg: String(msg || "") });
+    // Keep the buffer small
+    if (buf.length > 20) buf.shift();
+    taskLogBuffers.set(currentTaskChatId, buf);
+
+    // Debounce the summarization call
+    if (taskLogSummaryTimers.has(currentTaskChatId)) {
+      clearTimeout(taskLogSummaryTimers.get(currentTaskChatId));
+    }
+    const t = setTimeout(() => {
+      taskLogSummaryTimers.delete(currentTaskChatId);
+      summarizeAndAppendLogs(currentTaskChatId).catch(err => console.error("log summary failed:", err && err.message ? err.message : err));
+    }, LOG_SUMMARY_DEBOUNCE_MS);
+    taskLogSummaryTimers.set(currentTaskChatId, t);
+  } catch (e) {
+    console.error("errLog buffer failed", e && e.message ? e.message : e);
+  }
+}
+
+async function summarizeAndAppendLogs(chatId) {
+  try {
+    const buf = taskLogBuffers.get(chatId) || [];
+    if (!buf.length) return;
+    // Build a short prompt for the reasoner to create a user-facing summary
+    const recent = buf.map(b => `- ${new Date(b.ts).toISOString()}: ${b.msg}`).join("\n");
+    // Clear buffer immediately to avoid duplicate work
+    taskLogBuffers.set(chatId, []);
+
+    const system = `You are an assistant that summarizes internal agent diagnostics into a concise, non-technical, user-facing summary and a short actionable recommendation. Do NOT include raw logs or stack traces. Keep it to 1-2 sentences for summary and 1 short suggestion.`;
+    const user = `Summarize these recent internal planner/runtime logs for the user. Return exactly two lines: first line = concise summary (1-2 sentences). Second line = a short actionable suggestion (imperative). Do not include raw logs, warnings, or timestamps.
+\nLogs:\n${recent}`;
+
+    const model = String(DEFAULT_MODELS.reasoner || DEFAULT_MODELS.planner || DEFAULT_MODELS.router);
+    let summaryRaw = "";
+    try {
+      summaryRaw = await callCFAI(model, [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ], 300, 1);
+    } catch (e) {
+      // Fallback: make a tiny heuristic summary
+      summaryRaw = "The agent encountered internal planner errors and had to recover. Suggest retrying or checking model availability.\nSuggestion: Retry the operation or switch planner models.";
+    }
+
+    const cleaned = String(summaryRaw || "").trim();
+    if (!cleaned) return;
+    appendTaskChatMessage("assistant", cleaned, { log_summary: true, completed: false });
+    // Trigger a chat sync so frontends refresh and show the summary
+    try { broadcast("chat_sync", { chatId }); } catch (e) {}
+  } catch (err) {
+    console.error("summarizeAndAppendLogs error", err && err.message ? err.message : err);
   }
 }
 function routerThink(models, msg) { if (getRuntimeRouterThinking(models)) think(msg); }
@@ -2680,13 +2891,16 @@ function buildPlannerCandidateModels(models = {}) {
   const primary = String(models?.planner || "").trim();
   const ordered = [];
   const seen = new Set();
+  // Prefer an explicit/pluggable planner default early in the candidate list
+  // so that router models (often set to large code models like Qwen) are
+  // not promoted into planner duties when a planner default exists.
   for (const candidate of [
     primary,
+    DEFAULT_MODELS.planner,
     models?.reasoner,
     models?.router,
     DEFAULT_MODELS.reasoner,
-    DEFAULT_MODELS.router,
-    DEFAULT_MODELS.planner,]) {
+    DEFAULT_MODELS.router,]) {
     const modelId = String(candidate || "").trim();
     if (!modelId || seen.has(modelId)) continue;
     seen.add(modelId);
@@ -2694,7 +2908,13 @@ function buildPlannerCandidateModels(models = {}) {
   }
   const healthy = ordered.filter(modelId => !isPlannerModelQuarantined(modelId));
   const quarantined = ordered.filter(modelId => isPlannerModelQuarantined(modelId));
-  return [...healthy, ...quarantined];
+  // Exclude known unsuitable planner models (e.g. Qwen code models) from
+  // the planner candidate list to prevent accidental promotion.
+  const unsuitable = (id = "") => /@cf\/qwen\//i.test(String(id || ""));
+  const filteredOrdered = ordered.filter(id => !unsuitable(id));
+  const healthyFiltered = filteredOrdered.filter(modelId => !isPlannerModelQuarantined(modelId));
+  const quarantinedFiltered = filteredOrdered.filter(modelId => isPlannerModelQuarantined(modelId));
+  return [...healthyFiltered, ...quarantinedFiltered];
 }
 
 function extractChatCompletionText(payload) {
@@ -3183,8 +3403,37 @@ function buildPageLayoutAnalysisResult(analysis, imageWidth, imageHeight, userQu
 // never exceed the vision model's 128K token context window.
 // LLaMA 3.2-11b-vision tokenises a 1366×768 JPEG to ~500K tokens — well over
 // the limit.  Capping at 800×560 keeps input tokens well under 50K.
-async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560) {
-  if (!page) return imageB64;
+async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560, mimeType = "image/jpeg") {
+  const sourceB64 = String(imageB64 || "").trim();
+  if (!sourceB64) return "";
+
+  const sourceMime = String(mimeType || "image/jpeg").toLowerCase();
+  const outputFormat = sourceMime.includes("png") ? "png"
+    : sourceMime.includes("webp") ? "webp"
+    : sourceMime.includes("gif") ? "gif"
+    : "jpeg";
+
+  if (sharp) {
+    try {
+      const inputBuffer = Buffer.from(sourceB64, "base64");
+      const image = sharp(inputBuffer, { failOnError: false });
+      const metadata = await image.metadata().catch(() => ({}));
+      const width = Math.max(1, Number(metadata.width || 0) || 1);
+      const height = Math.max(1, Number(metadata.height || 0) || 1);
+      const ratio = Math.min(1, maxWidth / width, maxHeight / height);
+      let pipeline = image;
+      if (ratio < 1) {
+        pipeline = pipeline.resize({ width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)), fit: "inside", withoutEnlargement: true });
+      }
+      if (outputFormat === "png") pipeline = pipeline.png();
+      else if (outputFormat === "webp") pipeline = pipeline.webp({ quality: 82 });
+      else pipeline = pipeline.jpeg({ quality: 72, mozjpeg: true });
+      const buf = await pipeline.toBuffer();
+      if (buf && buf.length) return buf.toString("base64");
+    } catch {}
+  }
+
+  if (!page) return sourceB64;
   try {
     const resized = await page.evaluate(({ b64, maxW, maxH }) => {
       return new Promise((resolve, reject) => {
@@ -3201,12 +3450,12 @@ async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560
           resolve(canvas.toDataURL("image/jpeg", 0.72).split(",")[1] || b64);
         };
         img.onerror = () => resolve(b64);
-        img.src = "data:image/jpeg;base64," + b64;
+        img.src = `data:${sourceMime || "image/jpeg"};base64,` + b64;
       });
-    }, { b64: imageB64, maxW: maxWidth, maxH: maxHeight });
-    return typeof resized === "string" && resized ? resized : imageB64;
+    }, { b64: sourceB64, maxW: maxWidth, maxH: maxHeight });
+    return typeof resized === "string" && resized ? resized : sourceB64;
   } catch {
-    return imageB64;
+    return sourceB64;
   }
 }
 
@@ -3319,7 +3568,7 @@ function inferMediaType(mimeType, fallbackKind = "") {
   const mime = String(mimeType || "").toLowerCase();
   const kind = String(fallbackKind || "").toLowerCase();
   if (mime.startsWith("video/") || kind === "video") return "video";
-  if (mime.startsWith("image/") || kind === "image" || kind.includes("screenshot") || kind.includes("clipboard")) return "image";
+  if (mime.startsWith("image/") || kind === "image" || kind.includes("image") || kind.includes("screenshot") || kind.includes("clipboard")) return "image";
   return "unknown";
 }
 
@@ -3407,6 +3656,57 @@ function classifyMediaTask(mediaItems) {
   return "general_media";
 }
 
+function parseImageAnalysisStructured(text = "") {
+  const lines = String(text || "").split(/\r?\n/);
+  const sections = {
+    visibleText: [],
+    objectsAndPeople: [],
+    colors: [],
+    summary: []
+  };
+
+  const headerMatchers = [
+    { key: "visibleText", re: /^(?:\d+[.)]\s*)?(?:visible\s*text|text)\s*(?:[:\-—]\s*)?(.+)?$/i },
+    { key: "objectsAndPeople", re: /^(?:\d+[.)]\s*)?(?:objects\s*and\s*people|objects|people)\s*(?:[:\-—]\s*)?(.+)?$/i },
+    { key: "colors", re: /^(?:\d+[.)]\s*)?(?:colors?|colour(s)?)\s*(?:[:\-—]\s*)?(.+)?$/i },
+    { key: "summary", re: /^(?:\d+[.)]\s*)?(?:detailed\s*summary|summary)\s*(?:[:\-—]\s*)?(.+)?$/i }
+  ];
+
+  let currentKey = "";
+  for (const line of lines) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) {
+      if (currentKey) sections[currentKey].push("");
+      continue;
+    }
+
+    let matched = false;
+    for (const matcher of headerMatchers) {
+      const hit = trimmed.match(matcher.re);
+      if (hit) {
+        currentKey = matcher.key;
+        matched = true;
+        const tail = String(hit[1] || "").trim();
+        if (tail) sections[currentKey].push(tail);
+        break;
+      }
+    }
+
+    if (!matched && currentKey) {
+      sections[currentKey].push(trimmed);
+    }
+  }
+
+  const join = (items) => items.join("\n").trim();
+  return {
+    visibleText: join(sections.visibleText),
+    objectsAndPeople: join(sections.objectsAndPeople),
+    colors: join(sections.colors),
+    summary: join(sections.summary),
+    raw: String(text || "").trim()
+  };
+}
+
 async function runWithEphemeralCapabilityModel(taskType, baselineModel, runner) {
   const baseline = String(baselineModel || DEFAULT_MODELS.router);
   const failedSet = routerTaskTypeFailures.get(taskType) || new Set();
@@ -3455,8 +3755,11 @@ async function runWithEphemeralCapabilityModel(taskType, baselineModel, runner) 
 
 async function runImageAnalysis(media, modelId, userQuery = "") {
   const chosenModel = String(modelId || DEFAULT_MODELS.vision);
-  const preparedImageB64 = await resizeImageB64ForVision(media.dataB64, 800, 560);
-  const prompt = `User query: "${String(userQuery || "").slice(0, 99999)}"
+  const sourceMime = String(media?.mimeType || "image/jpeg");
+  const imageBuffer = Buffer.from(String(media?.dataB64 || ""), "base64");
+  const dimensions = readImageDimensions(imageBuffer, sourceMime);
+  const preparedImageB64 = await resizeImageB64ForVision(media.dataB64, 800, 560, sourceMime);
+  const prompt = `User query: "${String(userQuery || "").slice(0, 800)}"
 
 You are analyzing a user-uploaded image. Return a detailed response with these exact sections:
 1. Visible text — extract every readable word or phrase as accurately as possible.
@@ -3473,11 +3776,19 @@ Be thorough and specific.`;
     text = `Vision analysis failed: ${err.message}`;
   }
 
+  const structured = parseImageAnalysisStructured(text);
+  structured.dimensions = {
+    width: Math.max(1, Number(dimensions.width || 0) || 1),
+    height: Math.max(1, Number(dimensions.height || 0) || 1)
+  };
+  structured.mimeType = sourceMime;
+  structured.kind = String(media?.kind || "");
+
   return {
     taskType: "image_analysis",
     model: chosenModel,
     text,
-    structured: {},
+    structured,
     media: [buildMediaReference(media)]
   };
 }
@@ -5070,7 +5381,7 @@ Return JSON only:
     if (fs.existsSync(LOG_FILE)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(LOG_FILE, "utf8"));
-        learningLogCache = Array.isArray(parsed) ? parsed : [];
+        learningLogCache = Array.isArray(parsed) ? parsed.slice(-2000) : [];
       } catch {
         learningLogCache = [];
       }
@@ -5082,7 +5393,7 @@ Return JSON only:
 
   function saveLearningLog() {
     if (!Array.isArray(learningLogCache)) learningLogCache = [];
-    fs.writeFileSync(LOG_FILE, JSON.stringify(learningLogCache, null, 2));
+    writeJsonAtomic(LOG_FILE, learningLogCache);
   }
 
   function getHostFromUrl(rawUrl) {
@@ -5233,7 +5544,9 @@ Return JSON only:
   function appendLearningEvent(event) {
     const log = loadLearningLog();
     log.push({ ts: new Date().toISOString(), ...event });
-    // No cutoff — retain full history
+    if (log.length > 2000) {
+      learningLogCache = log.slice(-2000);
+    }
     saveLearningLog();
   }
 
@@ -6515,6 +6828,7 @@ async function runActionWithFallback(item, goal, models) {
     page = newPage;
     if (params?.url) {
       await page.goto(String(params.url), { waitUntil: "domcontentloaded" });
+      saveStablePage(page.url());
     }
     const resultText = `opened tab ${context.pages().length - 1}`;
     recordOutcome("ok", { result: resultText, path: "pseudo" });
@@ -8778,6 +9092,9 @@ RESPOND WITH THIS JSON SHAPE ONLY:
 }
 
 async function runTask(goal, models, chatId, browserRuntime = null, userId = null) {
+  if (agentRunning) {
+    throw new Error("A task is already running. Please wait for it to finish.");
+  }
   agentRunning = true;
   currentTaskUserId = userId || currentTaskUserId || null;
   currentTaskChatId = chatId || null;
@@ -8824,6 +9141,8 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
   let lastAttemptedPlanSignature = "";
   let extractedTextBuffer = "";
   let taskHeartbeatTimer = null;
+  let elementMapTimer = null;
+  let elementMapInFlight = false;
   const goalMem = buildGoalMemory(goal);
   const originalQuery = goalMem.query || getOriginalQuery(goal);
   const searchEngineCompareGoal = isSearchEngineComparisonGoal(goal);
@@ -8838,8 +9157,30 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     lastType: "",
     lastFailedAction: "",
     lastFailedSelector: "",
-    lastTriggeredStep: 0,
+    lastTriggeredsStep: 0,
     mapsEscaped: false
+  };
+
+  const scheduleElementMapTick = (initialDelayMs = null) => {
+    if (elementMapTimer) {
+      clearTimeout(elementMapTimer);
+      elementMapTimer = null;
+    }
+    if (!agentRunning) return;
+    const delayMs = Number.isFinite(Number(initialDelayMs))
+      ? Math.max(0, Number(initialDelayMs))
+      : Math.floor(ELEMENT_MAP_MIN_INTERVAL_MS + Math.random() * (ELEMENT_MAP_MAX_INTERVAL_MS - ELEMENT_MAP_MIN_INTERVAL_MS));
+    elementMapTimer = setTimeout(() => {
+      elementMapTimer = null;
+      if (!agentRunning || !page || elementMapInFlight) return;
+      elementMapInFlight = true;
+      const currentUrl = (() => { try { return page.url(); } catch { return null; } })();
+      if (!currentUrl) { elementMapInFlight = false; return; }
+      runElementMapForUrl(currentUrl, () => {
+        elementMapInFlight = false;
+        if (agentRunning) scheduleElementMapTick(); // reschedule only after child finishes
+      });
+    }, delayMs);
   };
 
   function resetPlannerAndPeerState() {
@@ -8932,6 +9273,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     startIdleHumanBehavior();
     startHumanBridgeWatchdog(models);
     await startTaskVisionPipeline(goal, models);
+    scheduleElementMapTick();
     broadcast("task_start", { goal });
     status("Starting task: " + goal);
     if (taskHeartbeatEnabled) {
@@ -8973,11 +9315,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       const state = await getPageState();
       finalState  = state;
       status(`URL: ${state.url}`);
-      // Trigger element-map helper once at task start so external tooling
-      // (element-map.js) can capture a page-level element map.
-      if (step === 1) {
-        try { runElementMapForUrl(state.url); } catch (err) { console.warn('runElementMapForUrl failed:', err?.message || err); }
-      }
       const currentHost = getHostFromUrl(state.url);
       simpleFastPathCandidate = false;
       if (step === 1 && shouldResetTaskContextToGoogle(state, goalMem, searchEngineCompareGoal)) {
@@ -9004,13 +9341,17 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       const directTargetUrl = searchEngineCompareGoal ? "" : resolveDirectNavigationTarget(goal);
       if (
         !searchEngineCompareGoal &&
-        step >= 4 &&
+        step >= DIRECT_NAV_MIN_STEP &&
         directTargetUrl &&
         isGoogleSearchResultsUrl(state.url)
       ) {
         const directHost = getHostFromUrl(directTargetUrl);
-        const recentLog = taskLog.slice(-6).join("\n").toLowerCase();
-        const hasSearchLoopSignal = recentLog.includes("submitform:ok") || recentLog.includes("getalltext:ok");
+        const recentLog = taskLog.slice(-12).join("\n").toLowerCase();
+        const hasSubmit = recentLog.includes("submitform:ok");
+        const hasGetAll = recentLog.includes("getalltext:ok");
+        // Require both a submitted search and a successful extraction to
+        // consider this a true "search loop" before jumping away.
+        const hasSearchLoopSignal = hasSubmit && hasGetAll;
         if (directHost && directHost !== "google.com" && hasSearchLoopSignal) {
           await triggerEscapeHatch(step, `Search loop detected on Google results. Jumping directly to ${directHost}.`, "DIRECT_NAV", { targetUrl: directTargetUrl });
           continue;
@@ -9798,9 +10139,33 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     }
     broadcast("task_done", { answer, completed: completed && !requiresHuman && !stoppedByGuidance, aborted: stoppedByGuidance });
     return answer;
+  } catch (err) {
+    // Guarantees every task run produces a "phase: end" telemetry record,
+    // even when a page crash / navigation error / uncaught exception aborts
+    // the loop early. Without this, failed runs vanish from the log instead
+    // of being counted — inflating apparent success rate and hiding the
+    // true failure/crash split.
+    const crashUrl = (() => { try { return page ? page.url() : finalState.url; } catch { return finalState.url; } })();
+    appendLearningEvent({
+      kind: "task",
+      phase: "end",
+      goal: String(goal || "").slice(0, 240),
+      host: getHostFromUrl(crashUrl),
+      completed: false,
+      error: true,
+      errorMessage: String(err && err.message || err || "unknown error").slice(0, 300),
+      steps: taskLog.length,
+      result: `Task aborted by an unhandled error: ${String(err && err.message || err || "unknown error").slice(0, 200)}`
+    });
+    broadcast("task_done", { answer: null, completed: false, error: true, aborted: false });
+    throw err;
   } finally {
     if (taskHeartbeatTimer) {
       clearInterval(taskHeartbeatTimer);
+    }
+    if (elementMapTimer) {
+      clearTimeout(elementMapTimer);
+      elementMapTimer = null;
     }
     const visionStats = stopTaskVisionPipeline();
     broadcast("vision_stats", {
@@ -10239,8 +10604,10 @@ async function handleRequest(req, res) {
       "Connection":    "keep-alive"
     });
     res.write("data: " + JSON.stringify({ type: "status", msg: "Connected" }) + "\n\n");
-    sseClients.push(res);
-    req.on("close", () => { sseClients = sseClients.filter(client => client !== res); });
+    const auth = getAuth(req);
+    const userId = auth?.userId || null;
+    sseClients.push({ res, userId });
+    req.on("close", () => { sseClients = sseClients.filter(client => client.res !== res); });
     return;
   }
 
@@ -10334,6 +10701,30 @@ async function handleRequest(req, res) {
       return;
     }
     sendJson(res, 200, { chat, selectedChatId: store.selectedChatId });
+    return;
+  }
+
+  // Server-side title generation endpoint (used by frontend to avoid CORS/third-party calls)
+  const genTitleMatch = pathname.match(/^\/api\/chats\/([^/]+)\/generate_title$/);
+  if (genTitleMatch && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      const chatAuth = getAuth(req);
+      const store = loadChatStore(chatAuth?.userId || null);
+      const chat = store.chats.find(item => item.id === genTitleMatch[1]);
+      if (!chat) { sendJson(res, 404, { error: "Chat not found" }); return; }
+      const text = String((body && body.text) || (chat.messages && chat.messages.slice().reverse().find(m=>m.role==="user") && chat.messages.slice().reverse().find(m=>m.role==="user").content) || "").trim();
+      if (!text) { sendJson(res, 400, { error: "No text provided" }); return; }
+      // Use reasoner-backed generator to produce a concise title
+      const result = await generateAndSaveTitleForChat(chat.id, text, chatAuth?.userId || null);
+      if (result && result.title) {
+        sendJson(res, 200, { chat, title: result.title });
+        return;
+      }
+      sendJson(res, 204, {});
+    } catch (err) {
+      sendJson(res, 400, { error: err.message });
+    }
     return;
   }
 
@@ -10662,6 +11053,27 @@ async function handleRequest(req, res) {
           return;
         }
 
+        if (agentRunning) {
+          sendJson(res, 409, { error: "A task is already running. Please wait for it to finish.", busy: true });
+          currentTaskUserId = null;
+          return;
+        }
+
+        const taskUser = findUserById(userId);
+        if (taskUser) {
+          const limit = await checkTaskLimit(taskUser);
+          if (!limit.allowed) {
+            sendJson(res, 402, {
+              error: `Monthly task limit reached (${limit.used}/${limit.maxTasks}). Upgrade your plan or wait for reset.`,
+              tier: limit.tier,
+              usage: limit,
+              busy: false
+            });
+            currentTaskUserId = null;
+            return;
+          }
+        }
+
         const autoReconTarget = getStriderReconTarget(browserGoal, command?.options?.url || "");
         const simpleBrowserMode = shouldUseSimpleBrowsingMode(browserGoal);
         currentStriderReconMemo = "";
@@ -10705,7 +11117,13 @@ async function handleRequest(req, res) {
         sendJson(res, 202, { ok: true, chatId, command: command.command, media: mediaAnalysisMeta });
         const { chat } = ensureCurrentChat(userId);
         const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
-        await runTask(browserGoal, models, chatId, browserRuntime, userId);
+        try {
+          await runTask(browserGoal, models, chatId, browserRuntime, userId);
+        } finally {
+          if (taskUser) {
+            await incrementTaskUsage(taskUser);
+          }
+        }
         broadcast("url", { url: page.url() });
         return;
       }
@@ -10882,6 +11300,229 @@ async function handleRequest(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 // BOOT
 // ─────────────────────────────────────────────────────────────────────────────
+
+let _browserHeadless = false;         // set once at boot, reused on restart
+let _browserRestartInProgress = false;
+let _browserRestartCount = 0;
+const BROWSER_RESTART_MAX = 5;        // give up after 5 consecutive crashes
+const BROWSER_RESTART_DELAY_MS = 2000;
+
+async function launchBrowser(headless) {
+  console.log(`🚀 ${_browserRestartCount > 0 ? "Re-l" : "L"}aunching browser (headless=${headless}, attempt=${_browserRestartCount + 1})...`);
+  fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
+
+  const newContext = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+    headless,
+    executablePath: require("playwright").chromium.executablePath(),
+    userAgent: FINGERPRINT_USER_AGENT,
+    locale: FINGERPRINT_LOCALE,
+    timezoneId: FINGERPRINT_TIMEZONE,
+    viewport: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
+    screen:   { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
+    args: [
+      "--no-sandbox","--disable-setuid-sandbox",
+      "--disable-infobars",
+      "--window-position=0,0",
+      `--window-size=${FINGERPRINT_VIEWPORT_WIDTH},${FINGERPRINT_VIEWPORT_HEIGHT}`
+    ]
+  });
+
+await newContext.addInitScript(({ platform, cpuCores }) => {
+  const applyOverride = (target, key, value) => {
+    try { Object.defineProperty(target, key, { get: () => value, configurable: true }); } catch {}
+  };
+
+  // ─────────────────────────────────────────────
+  // Navigator Spoofing
+  // ─────────────────────────────────────────────
+  applyOverride(window.Navigator.prototype, "platform", platform);
+  applyOverride(window.Navigator.prototype, "webdriver", false);
+  applyOverride(window.Navigator.prototype, "plugins", [1,2,3]);
+  applyOverride(window.Navigator.prototype, "languages", ["en-US", "en"]);
+  applyOverride(window.Navigator.prototype, "maxTouchPoints", 0);
+  applyOverride(window.Navigator.prototype, "hardwareConcurrency", cpuCores);
+  applyOverride(window, "chrome", { runtime: {} });
+
+  // ─────────────────────────────────────────────
+  // WebGL Spoofing
+  // ─────────────────────────────────────────────
+  const getParameterProxy = (original) => {
+    return function(parameter) {
+      if (parameter === 37445) return "Intel Inc.";                 // UNMASKED_VENDOR_WEBGL
+      if (parameter === 37446) return "Intel Iris OpenGL Engine";   // UNMASKED_RENDERER_WEBGL
+      return original.call(this, parameter);
+    };
+  };
+
+  const patchWebGL = (type) => {
+    const proto = type.prototype;
+    if (proto.getParameter) {
+      proto.getParameter = getParameterProxy(proto.getParameter);
+    }
+  };
+
+  patchWebGL(WebGLRenderingContext);
+  patchWebGL(WebGL2RenderingContext);
+
+  // ─────────────────────────────────────────────
+  // Canvas Fingerprint Noise
+  // ─────────────────────────────────────────────
+  const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+  HTMLCanvasElement.prototype.toDataURL = function(...args) {
+    const ctx = this.getContext("2d");
+    if (ctx) {
+      ctx.fillStyle = "rgba(0,0,0,0.01)";
+      ctx.fillRect(0, 0, 1, 1);
+    }
+    return originalToDataURL.apply(this, args);
+  
+  };
+  // ─────────────────────────────────────────────
+  // Audio Fingerprint Spoofing
+  // ─────────────────────────────────────────────
+  const originalGetChannelData = AudioBuffer.prototype.getChannelData;
+  AudioBuffer.prototype.getChannelData = function(...args) {
+    const data = originalGetChannelData.apply(this, args);
+   // Add tiny noise to avoid identical fingerprints
+   const noise = 0.000001 * (Math.random() - 0.5);
+   for (let i = 0; i < data.length; i += 100) {
+     data[i] = data[i] + noise;
+   }
+    return data;
+  };
+
+  const originalSampleRate = AudioContext.prototype.sampleRate;
+  Object.defineProperty(AudioContext.prototype, "sampleRate", {
+    get() {
+      return originalSampleRate + 0.0001; // tiny offset
+    }
+  });
+
+}, { platform: FINGERPRINT_PLATFORM, cpuCores: FINGERPRINT_CPU_CORES });
+
+
+  await installVoidElementMapInitScript(newContext).catch((err) => {
+    console.warn("⚠️  VOID element-map init script install failed:", err.message);
+  });
+
+  const newBrowser = newContext.browser();
+  const newPage   = newContext.pages()[0] || await newContext.newPage();
+  await newPage.bringToFront().catch(() => {});
+
+  await newContext.setDefaultNavigationTimeout(90000);
+  await newContext.setDefaultTimeout(45000);
+  await newContext.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+  await newPage.setViewportSize({ width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT }).catch(() => {});
+  await newPage.setExtraHTTPHeaders({ "Accept-Language": "en-US,en;q=0.9" });
+
+  // ── Crash / disconnect handlers ───────────────────────────────────────────
+  // Covers every way Playwright/Chromium can die unexpectedly.
+
+  function wireCrashHandlersToPage(p) {
+    if (!p || p.__crashWired) return;
+    p.__crashWired = true;
+
+    // page.on("crash") — renderer process crashed (tab crash, OOM in renderer)
+    p.on("crash", () => handleBrowserCrash("page renderer crashed (tab crash / OOM)"));
+
+    // page.on("close") — page was closed unexpectedly (not by our own code)
+    // Only treat as crash if the context is still open — otherwise it's normal tab cleanup
+    p.on("close", () => {
+      const contextAlive = (() => { try { return newContext.pages().length >= 0; } catch { return false; } })();
+      if (!contextAlive) return; // context already dead — browser crash handler covers it
+      // If this was our primary page and nothing else is open, treat as crash
+      if (page === p) {
+        const remaining = (() => { try { return newContext.pages().filter(x => !x.isClosed()); } catch { return []; } })();
+        if (!remaining.length) handleBrowserCrash("primary page closed unexpectedly");
+      }
+    });
+  }
+
+  // Wire to the initial page
+  wireCrashHandlersToPage(newPage);
+
+  // Wire to any new pages opened mid-session (new tabs, popups)
+  newContext.on("page", (p) => wireCrashHandlersToPage(p));
+
+  // context "close" — entire browser context died (most common on kill -9 chrome)
+  newContext.on("close", () => handleBrowserCrash("browser context closed unexpectedly"));
+
+  // browser "disconnected" — WebSocket to Chromium dropped (Playwright lost contact)
+  if (newBrowser && newBrowser.on) {
+    newBrowser.on("disconnected", () => handleBrowserCrash("browser WebSocket disconnected (Playwright lost contact)"));
+  }
+
+  return { browser: newBrowser, context: newContext, page: newPage };
+}
+
+async function handleBrowserCrash(reason) {
+  if (_browserRestartInProgress) return; // already restarting
+  _browserRestartInProgress = true;
+  _browserRestartCount++;
+
+  console.error(`💥 Browser crashed: ${reason} (restart #${_browserRestartCount})`);
+  broadcast("status", { msg: `⚠️ Browser crashed — restarting (attempt ${_browserRestartCount})...` });
+
+  // If a task was running, mark it as aborted cleanly
+  if (agentRunning) {
+    agentRunning = false;
+    broadcast("task_done", { answer: "Task interrupted — browser crashed and is restarting.", completed: false, aborted: true });
+    if (currentTaskChatId) {
+      appendChatMessage(currentTaskChatId, "assistant",
+        "⚠️ The browser crashed mid-task and is restarting. Please retry your request once it's back.",
+        { completed: false, error: true }, currentTaskUserId);
+      broadcast("chat_sync", { chatId: currentTaskChatId });
+    }
+    currentTaskUserId = null;
+    currentTaskChatId = null;
+  }
+
+  if (_browserRestartCount > BROWSER_RESTART_MAX) {
+    console.error(`❌ Browser crashed ${_browserRestartCount} times — giving up. Restart the server.`);
+    broadcast("status", { msg: "❌ Browser failed to restart after multiple attempts. Please restart the server." });
+    _browserRestartInProgress = false;
+    return;
+  }
+
+  // Brief delay before restarting so the OS can reclaim resources
+  await new Promise(r => setTimeout(r, BROWSER_RESTART_DELAY_MS * Math.min(_browserRestartCount, 3)));
+
+  try {
+    // Null out globals so ensureActivePage doesn't try to use the dead context
+    browser = null; context = null; page = null;
+
+    const launched = await launchBrowser(_browserHeadless);
+    browser = launched.browser;
+    context = launched.context;
+    page    = launched.page;
+
+    if (striderIntegration) striderIntegration.setPage(page);
+
+    // Navigate back to the last stable page before the crash, or START_URL as fallback
+    const stableUrl = loadStablePage();
+    const recoveryUrl = stableUrl || process.env.START_URL || "https://www.google.com";
+    console.log(`↩️  Restoring to last stable page: ${recoveryUrl}`);
+    broadcast("status", { msg: `↩️ Restoring to last stable page: ${recoveryUrl}` });
+    await page.goto(recoveryUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch((err) => {
+      console.warn(`⚠️  Could not restore stable page (${err.message}) — falling back to Google`);
+      return page.goto("https://www.google.com", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+    });
+
+    _browserRestartCount = 0; // reset streak on successful restart
+    _browserRestartInProgress = false;
+
+    console.log("✅ Browser restarted successfully.");
+    broadcast("status", { msg: "✅ Browser restarted and ready." });
+    broadcast("url", { url: page.url() });
+  } catch (err) {
+    _browserRestartInProgress = false;
+    console.error("❌ Browser restart failed:", err.message);
+    broadcast("status", { msg: `❌ Browser restart failed: ${err.message}` });
+    // Try again after a longer delay
+    setTimeout(() => handleBrowserCrash("restart failed, retrying"), BROWSER_RESTART_DELAY_MS * 5);
+  }
+}
+
 (async () => {
   try {
     if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
@@ -10891,76 +11532,26 @@ async function handleRequest(req, res) {
     await runCloudflareStartupPreflight();
 
     const browserHeadlessEnv = String(process.env.PUPPETERR_HEADLESS || "").trim().toLowerCase();
-    let browserHeadless;
     if (browserHeadlessEnv === "false" || browserHeadlessEnv === "0" || browserHeadlessEnv === "no") {
-      browserHeadless = false;
+      _browserHeadless = false;
     } else if (browserHeadlessEnv === "true" || browserHeadlessEnv === "1" || browserHeadlessEnv === "yes") {
-      browserHeadless = true;
+      _browserHeadless = true;
     } else {
-      browserHeadless = !process.env.DISPLAY;
+      _browserHeadless = !process.env.DISPLAY;
     }
 
-    if (!process.env.DISPLAY && browserHeadless === false) {
+    if (!process.env.DISPLAY && _browserHeadless === false) {
       console.warn("⚠️  No DISPLAY detected; forcing headless browser mode.");
-      browserHeadless = true;
+      _browserHeadless = true;
     }
 
-    console.log(`🚀 Launching browser (headless=${browserHeadless})...`);
-    fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
-    context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      headless: browserHeadless,
-      executablePath: require("playwright").chromium.executablePath(),
-      userAgent: FINGERPRINT_USER_AGENT,
-      locale: FINGERPRINT_LOCALE,
-      timezoneId: FINGERPRINT_TIMEZONE,
-      viewport: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
-      screen: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
-      args: [
-        "--no-sandbox","--disable-setuid-sandbox",
-        "--disable-infobars",
-        "--window-position=0,0",
-        `--window-size=${FINGERPRINT_VIEWPORT_WIDTH},${FINGERPRINT_VIEWPORT_HEIGHT}`
-      ]
-    });
-    await context.addInitScript(({ platform, cpuCores }) => {
-      const applyOverride = (target, key, value) => {
-        try {
-          Object.defineProperty(target, key, {
-            get: () => value,
-            configurable: true
-          });
-        } catch {}
-      };
-
-      applyOverride(window.Navigator.prototype, "platform", platform);
-      applyOverride(window.Navigator.prototype, "hardwareConcurrency", cpuCores);
-    }, { platform: FINGERPRINT_PLATFORM, cpuCores: FINGERPRINT_CPU_CORES });
-    await installVoidElementMapInitScript(context).catch((err) => {
-      console.warn("⚠️  VOID element-map init script install failed:", err.message);
-    });
-
-    browser = context.browser();
-    page = context.pages()[0] || await context.newPage();
-    await page.bringToFront().catch(() => {});
-
-    if (striderIntegration) {
-      striderIntegration.setPage(page);
-    }
-
-    await context.setDefaultNavigationTimeout(90000);
-    await context.setDefaultTimeout(45000);
-    await context.setExtraHTTPHeaders({
-      "Accept-Language": "en-US,en;q=0.9"
-    });
-
-    await page.setViewportSize({ width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT }).catch(() => {});
-    await page.setExtraHTTPHeaders({
-      "Accept-Language": "en-US,en;q=0.9"
-    });
+    const launched = await launchBrowser(_browserHeadless);
+    browser = launched.browser;
+    context = launched.context;
+    page    = launched.page;
 
     const sessionState = await loadSessionState({ localPath: SESSION_FILE });
     if (sessionState) console.log("📋 Found legacy storage state file: " + SESSION_FILE);
-
     await context.addCookies([]).catch(() => {});
     if (sessionState) {
       try {
@@ -10989,20 +11580,21 @@ async function handleRequest(req, res) {
     const startUrl = process.env.START_URL || "https://www.google.com";
     if (!currentUrl || currentUrl === "about:blank") {
       await page.goto(startUrl, { waitUntil: "domcontentloaded" });
+      saveStablePage(startUrl);
     } else {
       console.log("↩️ Reusing persistent page: " + currentUrl);
+      saveStablePage(currentUrl);
     }
-    ensureCurrentChat(null); // startup: use legacy admin store
+    ensureCurrentChat(null);
     loadLearningLog();
 
     server.listen(PORT, HOST, () => {
       console.log(`\n✅ AGI Terminal running!`);
       console.log(`   Open: http://localhost:${PORT}`);
       console.log(`   (Codespaces: forward port ${PORT})\n`);
-
-      // Initialize Strider crawler
       try {
         striderIntegration = new StriderIntegration({ broadcast });
+        striderIntegration.setPage(page);
         console.log(`✅ Strider crawler ready\n`);
       } catch (err) {
         console.warn(`⚠️  Strider initialization failed: ${err.message}`);
@@ -11010,13 +11602,21 @@ async function handleRequest(req, res) {
     });
 
     setInterval(async () => {
-      if (page) broadcast("url", { url: page.url() });
+      if (page) {
+        try {
+          const currentUrl = page.url();
+          broadcast("url", { url: currentUrl });
+          // Checkpoint the last stable URL — written only when page.url() succeeds
+          // (meaning the page is alive and not mid-crash)
+          saveStablePage(currentUrl);
+        } catch {}
+      }
     }, 2000);
 
     await new Promise(() => {});
 
   } catch (err) {
-    console.error("💥 Fatal:", err);
+    console.error("Oh shit I died; Fatal:", err);
     process.exit(1);
   }
 })();

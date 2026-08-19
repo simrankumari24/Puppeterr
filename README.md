@@ -1,5 +1,5 @@
 ### Puppeterr
-PROJECT OVERVIEW
+PROJECT OVERVIEW!!!
 This project implements a browser‑automation agent composed of four cooperating modules: Planner, Instinct, Reasoner, and Vision. The system is designed to execute tasks inside a browser environment while providing real‑time reasoning, human guidance, and runtime logging. The goal is to approximate a guided autonomous workflow similar to Devin-style agents. If you wish to see what going to be patched/added you may wish to view TODO.md
 
 MODULES
@@ -222,7 +222,7 @@ sudo apt-get install -y \
 
 to run the program itself you need to run this cmd
 "npm start"
-if its not 'INSTALLED' do this
+if xvfb (it fails because of a module issue) not 'INSTALLED' do this
 
 "
 sudo apt-get update
