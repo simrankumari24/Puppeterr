@@ -43,6 +43,11 @@ const fetchImpl = globalThis.fetch || undiciFetch;
 // log can always be traced back to exactly which prompt produced it.
 // ---------------------------------------------------------------------------
 const PROMPT_BANK = [
+  { tier: "A", text: `go to archive.org and search for "public domain images"` },
+  { tier: "A", text: `go to docs.python.org and find the page for the "list" type` },
+  { tier: "A", text: `go to reddit.com/r/programming and get the top post title` },
+  { tier: "A", text: `go to britannica.com and search for "Ada Lovelace"` },
+
   { tier: "B", text: `go to wikipedia.org, search "Saturn V", and extract the launch date` },
   { tier: "B", text: `go to npmjs.com, search "express", click the top result, and report the latest version` },
   { tier: "B", text: `go to github.com, search "playwright", open the top repo, and report the star count` },
