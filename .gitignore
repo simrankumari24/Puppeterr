@@ -1,11 +1,21 @@
-.env
-# Big generated/runtime folders
-/.puppeterr-profile
-.strider-frontier.json
-sync.sh
-.tmp
-fallback.fallback
 node_modules/
-view.png
+.puppeterr-profile/
+
+# Runtime state / session data / generated artifacts — never commit
+session.json
 element-map-output.json
 stable-page.json
+stress-tester-runs.jsonl
+stress-tester-summary.json
+view.png
+fallback.fallback
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+*.log
+npm-debug.log*
