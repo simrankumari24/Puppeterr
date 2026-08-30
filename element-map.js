@@ -10,14 +10,18 @@ const FINGERPRINT_VIEWPORT_HEIGHT = Math.max(600, Number(process.env.FINGERPRINT
 const POST_NAV_SETTLE_MS = Math.max(0, Number(process.env.VOID_POST_NAV_SETTLE_MS || 1200));
 const HOLD_OPEN_MS = Math.max(0, Number(process.env.VOID_HOLD_OPEN_MS || 1000));
 
-function installVoidElementMapInitScript(context) {
-  if (!context || typeof context.addInitScript !== "function") return Promise.resolve();
+// The actual browser-side installer, extracted as its own named function
+// (not just inlined in installVoidElementMapInitScript's addInitScript call)
+// so it can ALSO be invoked directly via page.evaluate() against an
+// already-loaded page. addInitScript only takes effect on future
+// navigations/reloads — it cannot retroactively install anything into a
+// page that's already sitting there, which is exactly the case when
+// capturing against Puppeterr's live, already-navigated page.
+function voidElementMapBrowserInstaller() {
+  if (typeof window.__VOID_CAPTURE_ELEMENT_MAP__ === "function") return;
 
-  return context.addInitScript(() => {
-    if (typeof window.__VOID_CAPTURE_ELEMENT_MAP__ === "function") return;
-
-    window.__VOID_CAPTURE_ELEMENT_MAP__ = (options = {}) => {
-      const includeWithoutId = options.includeWithoutId !== false;
+  window.__VOID_CAPTURE_ELEMENT_MAP__ = (options = {}) => {
+    const includeWithoutId = options.includeWithoutId !== false;
       const maxElements = Number.isFinite(Number(options.maxElements)) ? Math.max(0, Number(options.maxElements)) : 0;
       const includeText = options.includeText !== false;
       const textLimit = Number.isFinite(Number(options.textLimit)) ? Math.max(0, Number(options.textLimit)) : 500;
@@ -271,7 +275,11 @@ const record = {
       window.__VOID_ELEMENT_MAP_CAPTURED_AT__ = payload.capturedAt;
       return payload;
     };
-  });
+}
+
+function installVoidElementMapInitScript(context) {
+  if (!context || typeof context.addInitScript !== "function") return Promise.resolve();
+  return context.addInitScript(voidElementMapBrowserInstaller);
 }
 
 async function captureVoidElementMapFromPage(page, options = {}) {
@@ -371,6 +379,7 @@ async function main() {
 module.exports = {
   installVoidElementMapInitScript,
   captureVoidElementMapFromPage,
+  voidElementMapBrowserInstaller,
 };
 
 if (require.main === module) {

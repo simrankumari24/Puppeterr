@@ -1,2 +1,3 @@
-2026/07/21-16:28:34.337 18d1d Creating DB /workspaces/Puppeterr/.puppeterr-profile/Default/Extension Rules since it was missing.
-2026/07/21-16:28:34.388 18d1d Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Extension Rules/MANIFEST-000001
+2026/08/21-00:37:41.681 2bd01 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Extension Rules/MANIFEST-000001
+2026/08/21-00:37:41.681 2bd01 Recovering log #3
+2026/08/21-00:37:41.682 2bd01 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Extension Rules/000003.log 
