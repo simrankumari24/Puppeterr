@@ -566,7 +566,7 @@ const DEFAULT_MODELS = {
   // vision/image: dynamic routes exist but use a different transport
   // (Workers AI /ai/run/, binary + multipart) that dynamic routing doesn't
   // support as-is — not wired here regardless of the above.
-  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/zai-org/glm-5.2",
+  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/qwen/qwen2.5-coder-32b-instruct",
   planner:  process.env.DEFAULT_PLANNER_MODEL  || "@cf/zai-org/glm-5.2",
   reasoner: process.env.DEFAULT_REASONER_MODEL || "@cf/zai-org/glm-5.2",
   vision:   process.env.DEFAULT_VISION_MODEL   || "@cf/meta/llama-3.2-11b-vision-instruct",
@@ -597,7 +597,7 @@ function pickModelId(catalog, preferredIds, wantVision) {
 }
 
 function resolveDefaultModels(catalog) {
-  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/zai-org/glm-5.2"], false) || DEFAULT_MODELS.router;
+  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/qwen/qwen3-30b-a3b-fp8"], false) || DEFAULT_MODELS.router;
   const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/zai-org/glm-5.2", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
@@ -2741,8 +2741,13 @@ async function summarizeAndAppendLogs(chatId) {
     if (!buf.length) return;
     // Build a short prompt for the reasoner to create a user-facing summary
     const recent = buf.map(b => `- ${new Date(b.ts).toISOString()}: ${b.msg}`).join("\n");
-    // Clear buffer immediately to avoid duplicate work
-    taskLogBuffers.set(chatId, []);
+    // Delete rather than reset to [] — a reset left the chatId key in the
+    // Map forever (just with an empty array value), meaning long server
+    // uptime with many distinct chats grows this Map without bound. Deleting
+    // is equivalent for every future .get() call here, since line 2740's
+    // `|| []` fallback already handles a missing key identically to an
+    // empty array.
+    taskLogBuffers.delete(chatId);
 
     const system = `You are an assistant that summarizes internal agent diagnostics into a concise, non-technical, user-facing summary and a short actionable recommendation. Do NOT include raw logs or stack traces. Keep it to 1-2 sentences for summary and 1 short suggestion.`;
     const user = `Summarize these recent internal planner/runtime logs for the user. Return exactly two lines: first line = concise summary (1-2 sentences). Second line = a short actionable suggestion (imperative). Do not include raw logs, warnings, or timestamps.
@@ -7620,7 +7625,19 @@ async function executeActionPlan(plan, goal, models, throttle = {}, supervisorCo
 async function summarizeResult(goal, state, taskLog, visionFeedback, completed, models, extractedText = "") {
   status("Reasoner composing answer...");
   try {
-    const extractedSnippet = compactPromptValue(extractedText, 4000) || "(none)";
+    // Ground on whichever text source actually has content. extractedText
+    // starts empty and only fills in if the task explicitly ran getText/
+    // getAllText/getHTML — a bare "go to X" task that completes without one
+    // of those reaches this function with "(none)" to work with, while the
+    // prompt below still demanded specific facts. Falling back to state.text
+    // (the page's own text, now using the dynamic head+tail budget from
+    // earlier) means there's usually SOMETHING real to ground on even when
+    // no explicit extraction action ran.
+    const hasExplicitExtraction = String(extractedText || "").trim().length > 0;
+    const groundingText = hasExplicitExtraction ? extractedText : (state.text || "");
+    const extractedSnippet = compactPromptValue(groundingText, 4000) || "(none)";
+    const hasAnyGrounding = extractedSnippet !== "(none)";
+
     const compareFormatHint = isSearchEngineComparisonGoal(goal)
       ? "Output exactly 3 paragraphs. Paragraph 1: what Google emphasized. Paragraph 2: what Bing emphasized. Paragraph 3: compare/contrast and synthesize."
       : "Write a natural, intelligent, specific answer (2-6 sentences).";
@@ -7631,11 +7648,12 @@ Result: ${completed ? "COMPLETED" : "INCOMPLETE"}
 Final URL: ${state.url}
 Final title: ${state.title}
 Vision last saw: ${visionFeedback ? visionFeedback.slice(0, 500) : "(none)"}
-Extracted text snippet: ${extractedSnippet}
+Extracted text snippet (source: ${hasExplicitExtraction ? "explicit getText/getAllText call" : "page text fallback"}): ${extractedSnippet}
 Steps taken: ${taskLog.join("\n")}
 
 ${compareFormatHint}
-If completed: report exactly what you found/did with specific details (numbers, names, URLs, text).
+GROUNDING RULE — this is critical: only state a specific fact (a date, number, name, version, quote) if it is LITERALLY present in the "Extracted text snippet" above. ${hasAnyGrounding ? "" : "No page text was captured for this task — you MUST NOT invent any specific facts, dates, or numbers. "}If a specific detail was not captured in what's shown above, say plainly "the extracted content didn't include that detail" instead of guessing or inferring a plausible-sounding value. Reaching the correct URL/title is a real, separate success from having extracted its content — do not blur the two by inventing content to sound complete.
+If completed: report exactly what you found/did, using only details grounded in the text above.
 If incomplete: explain honestly what happened and what would be needed to complete it.
 feel free to use emoji's and markdown formatting to express your intent make sure to be clear about what was found and what was not found.`
     }], 600, 2, getRuntimeTemperature(models));
