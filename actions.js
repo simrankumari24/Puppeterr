@@ -5,6 +5,7 @@
 
 // Valid Playwright load states — "complete" is NOT valid and causes hard errors.
 const VALID_LOAD_STATES = new Set(["load", "domcontentloaded", "networkidle", "commit"]);
+const Human = require("./Human.js");
 
 const TRANSIENT_DOM_ERROR_RE = /(Execution context was destroyed|Target closed|Navigation failed|Node is detached|Element is not attached|detached from document|most likely because of a navigation|frame was detached|Timeout \d+ms exceeded)/i;
 
@@ -93,6 +94,23 @@ const actions = {
       throw new Error("type requires a selector");
     }
 
+    // Real per-keystroke entropy (variable speed, word pauses, occasional
+    // backspace-correct "typos") instead of a fixed 35ms-per-char delay —
+    // see Human.js generateTypingPlan. Only meaningful here because `type`
+    // dispatches real key events one at a time; `fill` below sets the DOM
+    // value directly and has no per-keystroke moment to humanize.
+    async function typeHumanlike(locator, str) {
+      const plan = Human.generateTypingPlan(str);
+      for (const step of plan) {
+        await locator.page().waitForTimeout(step.delayBeforeMs);
+        if (step.backspace) {
+          await locator.press("Backspace");
+        } else {
+          await locator.pressSequentially(step.char, { delay: 0 });
+        }
+      }
+    }
+
     let lastErr = null;
     for (const candidate of selectorCandidates) {
       try {
@@ -100,7 +118,7 @@ const actions = {
         await locator.waitFor({ state: "visible", timeout: 3500 });
         await locator.scrollIntoViewIfNeeded().catch(() => {});
         await locator.click({ timeout: 3000 }).catch(() => {});
-        await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
+        await typeHumanlike(locator, String(text || ""));
         return "typed";
       } catch (err) {
         lastErr = err;
@@ -114,7 +132,7 @@ const actions = {
         await locator.waitFor({ state: "attached", timeout: 2500 });
         await locator.scrollIntoViewIfNeeded().catch(() => {});
         await locator.click({ timeout: 2500 }).catch(() => {});
-        await locator.type(String(text || ""), { delay: 35, timeout: 12000 });
+        await typeHumanlike(locator, String(text || ""));
         return "typed";
       } catch (err) {
         lastErr = err;
@@ -206,7 +224,16 @@ const actions = {
   mouseDblclick: async ({ page, x, y }) => page.mouse.dblclick(Number(x), Number(y)),
   mouseDown: async ({ page }) => page.mouse.down(),
   mouseUp: async ({ page }) => page.mouse.up(),
-  mouseWheel: async ({ page, deltaX, deltaY }) => page.mouse.wheel(Number(deltaX) || 0, Number(deltaY) || 0),
+  mouseWheel: async ({ page, deltaX, deltaY }) => {
+    // Accelerate -> steady -> decelerate -> occasional overshoot + correction,
+    // instead of one flat wheel event — see Human.js generateScrollPhysics.
+    const chunks = Human.generateScrollPhysics(Number(deltaY) || 0, Number(deltaX) || 0);
+    for (const chunk of chunks) {
+      await page.mouse.wheel(chunk.deltaX, chunk.deltaY);
+      await page.waitForTimeout(chunk.delayMs);
+    }
+    return `scrolled ${Number(deltaY) || 0}px (physics-based, ${chunks.length} chunks)`;
+  },
 
   // 📸 SCREENSHOTS
   screenshot: async ({ page, path }) => page.screenshot({ path }),
