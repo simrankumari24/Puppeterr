@@ -1,104 +1,138 @@
+### ⚡ 1. PLATFORM & BILLING SYSTEM
+ 
 
-  ===========================
-# IDEA FOR PATCHES AND NEW STUFF, ADD WHATEVER IS SENSIBLE PLZ
+Usage‑based billing
 
+Free Tier: 50 tasks/month
 
+Core Tier: 1000 tasks/month
 
+Ultimate: Unlimited
 
-
-
-
-START HERE
-
-
-*** DUN DUN DUN ***
-
----
-
-oooh lets umm add uhhh... umm lets umm usage based.. too soo when umm the user go above the
-50 free tasks monthy
-1000 tasks core monthly
-(no for unlimited cause... unlimited. No holding back unless they umm do 18+ stuff then just stop their account)
-then they have to pay 0.001 per task
-Free Tier
-
-Includes 50 tasks/month
-
-Extra tasks: $0.001 each
+Overages: $0.001 per task
 
 Safety rules apply
 
-Core
+Transparent usage meter in dashboard
 
-Includes 1000 tasks/month
+Premium benefits
 
-Extra tasks: $0.001 each
+Faster pipelines
 
-Safety rules apply
+Priority browser queue
 
-Ultimate
+More RAM allocation
 
-Unlimited tasks
+Task replay
 
-No overage fees
+Pipeline visualizer
 
-Safety rules apply
+Personality packs
 
-This keeps everything transparent.
+Voice mode
 
+Theme engine v2
 
+### ⚡ 2. PIPELINE FIXES & ENGINEERING PATCHES
+ 
 
----
+Image analysis pipeline fix
 
+Half-working → needs full stabilization
 
+Improve OCR + vision alignment
 
-Patch up the image anyisis pipeline (half fixed-half broken rn)
----
+Fix element-map → vision sync
 
-Add more  benifits to the paid plans to make it feel more... 'prenium'
+Auto-improve loop renovation
 
+Patch self-correction logic
 
+Add failure memory
 
----
+Add “retry with different strategy”
 
+Add pipeline-level learning
 
+Title auto-gen + manual rename fix
 
+Smart Title Generator v3
 
+AI suggestions
 
-remove unnessessary files to umm keep repo clean
+Manual override
 
----
+Title history
 
+Lock title mode
 
+Crash recovery system
 
-some how make this project run on a web link or something preferably, 'Puppeterr.dev or something'
+Restart browser on crash
 
+Restore last safe page
 
----
+Guard against null page/context
 
+Clean stale Chrome profile locks
 
+Remove unnecessary files
 
+Repo hygiene
 
-renovate the auto-improve-loop to max funtionality *allready created just needs lots of patching*
+Remove dead modules
 
+Consolidate agent.js into modules
 
+### ⚡ 3. WEB PLATFORM & UI/UX
+ 
 
----
+Landing page redesign
 
+Home → Login button → Login page → Dashboard
 
+Modern AI chat interface
 
+Premium-feeling UI
 
+Orbitron + Geist Mono theme support
 
+Theme Engine v2
 
-# !REQUIRED! FIX THE TITLE AUTO GEN && TITLE RENAME (MANUAL)
+Orbitron
 
+Geist
 
-ooooh... what if... we umm make umm the umm thing like... restart on crash... and do goto to the last safe page before it crashed
+Geist Mono
 
----
+JetBrains Mono
+
+Terminal Green
+
+Neon Purple
+
+Solarized
+
+High Contrast
+
+Puppeterr Dark
+
+AI chooses theme if user wants
+
+Voice mode
+
+Read out loud
+
+User speaks
+
+Puppeterr responds vocally
+
+Full multimodal conversation
+
+### ⚡ 4. AGENT EXPERIENCE & PERSONALIZATION
+ 
 
 Agent Personality Packs
-Let users choose:
 
 Chaotic
 
@@ -108,81 +142,87 @@ Developer Mode
 
 Minimalist
 
-Hyper‑friendly
+Hyper-friendly
 
-Terminal‑only
+Terminal-only
 
 Puppeterr Classic
 
-This makes paid tiers feel fun.
-
-
 Task Replay System
-Replay any previous task with:
 
-same input
+Replay previous tasks
 
-same settings
+Same input
 
-same agent
+Same settings
 
-same pipeline
+Same agent
 
-Useful for debugging and premium users.
+Same pipeline
 
-
-Pipeline Visualizer
-Show the user:
-
-what step is running
-
-what step failed
-
-what step succeeded
-
-how long each step took
-
-This is extremely premium.
-
-
+Premium debugging feature
 
 Task Categories + Analytics
-Track:
 
-image tasks
+Image tasks
 
-text tasks
+Text tasks
 
-browsing tasks
+Browsing tasks
 
-agent tasks
+Agent tasks
 
-pipeline tasks
+Pipeline tasks
 
-Show usage graphs (premium only).
+Usage graphs (premium only)
 
+### ⚡ 5. DEPLOYMENT & DOMAIN
+ 
 
-Smart Title Generator v3
-Your idea: fix auto‑gen + manual rename.
+Deploy Puppeterr to a real domain
 
-Let’s expand:
+puppeterr.dev
 
-AI title suggestions
+puppeterr.ai
 
-manual override
+puppeterr.app
 
-auto‑rename on task type
+Cloudflare Pages or Vercel
 
-“title history”
+Backend via Cloudflare Workers / Node
 
-“lock title” mode
+### ⚡ 6. FUTURE FEATURES & EXPERIMENTAL IDEAS
+ 
 
+AI-controlled tunables
 
+AI chooses theme
 
-allow the AI to choose what the themes are and other turnables at the user's request and such
+AI chooses personality
 
-make webpage like... u know how many ai's umm have a landing page when you go to their homepage... yeah homepage rn my homepage leads stright to the umm login page... like thats not tuff... its got to be home-loginbutton-loginpage-dash 
-and the dash rn has aaa-a-a-a... the umm chat interfearence it should have umm the modern ai umm new chat interfereance...
+AI adjusts pipeline settings
 
+AI optimizes browser flags
 
-## Hopeful you reached this part... make the option to read outloud and... anddd.... also allow a vocal convo (user speaks, puppeterr readoutloud's)
+Modern dashboard redesign
+
+New chat interface
+
+Task history
+
+Replay
+
+Analytics
+
+Settings
+
+Themes
+
+Voice mode
+
+### ⚡ 7. REQUIRED FIXES (HIGH PRIORITY)
+ 
+
+Fix auto-improve loop
+
+Fix browser restart race condition

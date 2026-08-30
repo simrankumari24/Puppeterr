@@ -4,3 +4,8 @@
 .strider-frontier.json
 sync.sh
 .tmp
+fallback.fallback
+node_modules/
+view.png
+element-map-output.json
+stable-page.json

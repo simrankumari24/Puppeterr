@@ -1,64 +1,64 @@
 {
-  "generatedAt": "2026-08-19T00:00:50.213Z",
+  "generatedAt": "2026-08-21T21:39:19.228Z",
   "promptSource": "bank",
-  "totalRuns": 619,
-  "completedRuns": 28,
-  "incompleteRuns": 591,
-  "successRate": 0.0452,
+  "totalRuns": 113,
+  "completedRuns": 5,
+  "incompleteRuns": 108,
+  "successRate": 0.0442,
   "tierBreakdown": [
     {
       "tier": "A",
-      "total": 79,
-      "completed": 6,
-      "successRate": 0.0759
+      "total": 15,
+      "completed": 4,
+      "successRate": 0.2667
     },
     {
       "tier": "B",
-      "total": 90,
-      "completed": 2,
-      "successRate": 0.0222
+      "total": 38,
+      "completed": 1,
+      "successRate": 0.0263
     },
     {
       "tier": "C",
-      "total": 84,
+      "total": 36,
       "completed": 0,
       "successRate": 0
     },
     {
       "tier": "D",
-      "total": 56,
+      "total": 24,
       "completed": 0,
       "successRate": 0
     }
   ],
   "diagnosticsCoverage": {
-    "structuredSelfDiagnosisRuns": 582,
-    "missingOrUnparsableRuns": 37
+    "structuredSelfDiagnosisRuns": 96,
+    "missingOrUnparsableRuns": 17
   },
   "recurringProblems": [
     {
       "type": "other",
-      "count": 574
+      "count": 94
     },
     {
       "type": "uncertainty_or_fallback",
-      "count": 29
-    },
-    {
-      "type": "navigation_failure",
-      "count": 17
-    },
-    {
-      "type": "selector_error",
-      "count": 13
+      "count": 5
     },
     {
       "type": "timing_drift",
-      "count": 7
+      "count": 3
+    },
+    {
+      "type": "selector_error",
+      "count": 3
     },
     {
       "type": "retry_loop",
-      "count": 5
+      "count": 2
+    },
+    {
+      "type": "navigation_failure",
+      "count": 2
     }
   ],
   "bugFindings": [
@@ -67,70 +67,22 @@
       "title": "Infrastructure or uncategorized failure",
       "whyLikely": "Likely service/session/concurrency issue outside standard browser action categories.",
       "category": "other",
-      "count": 288,
+      "count": 94,
       "sampleRuns": [
         {
           "cycle": 2,
-          "timestamp": "2026-08-18T21:34:22.225Z",
+          "timestamp": "2026-08-21T20:29:11.189Z",
           "evidence": "A task is already running. Please wait for it to finish."
-        },
-        {
-          "cycle": 3,
-          "timestamp": "2026-08-18T21:34:26.451Z",
-          "evidence": "A task is already running. Please wait for it to finish."
-        },
-        {
-          "cycle": 6,
-          "timestamp": "2026-08-18T21:41:17.288Z",
-          "evidence": "A task is already running. Please wait for it to finish."
-        }
-      ]
-    },
-    {
-      "id": "concurrency_conflict_agent_busy",
-      "title": "Stress cycle started while previous task still running",
-      "whyLikely": "Harness submitted new run before Puppeterr finished active task, producing immediate 409 busy responses.",
-      "category": "other",
-      "count": 159,
-      "sampleRuns": [
-        {
-          "cycle": 1,
-          "timestamp": "2026-07-23T18:41:27.427Z",
-          "evidence": "Agent is already running a task"
-        },
-        {
-          "cycle": 2,
-          "timestamp": "2026-07-23T18:41:30.439Z",
-          "evidence": "Agent is already running a task"
-        },
-        {
-          "cycle": 3,
-          "timestamp": "2026-07-23T18:41:33.449Z",
-          "evidence": "Agent is already running a task"
-        }
-      ]
-    },
-    {
-      "id": "transport_fetch_failure",
-      "title": "Transport request failure between harness and Puppeterr",
-      "whyLikely": "Likely server restart/network interruption while stress loop was active.",
-      "category": "other",
-      "count": 127,
-      "sampleRuns": [
-        {
-          "cycle": 2,
-          "timestamp": "2026-07-23T18:26:19.835Z",
-          "evidence": "fetch failed"
-        },
-        {
-          "cycle": 3,
-          "timestamp": "2026-07-23T18:26:22.844Z",
-          "evidence": "fetch failed"
         },
         {
           "cycle": 4,
-          "timestamp": "2026-07-23T18:26:25.863Z",
-          "evidence": "fetch failed"
+          "timestamp": "2026-08-21T20:29:52.100Z",
+          "evidence": "A task is already running. Please wait for it to finish."
+        },
+        {
+          "cycle": 5,
+          "timestamp": "2026-08-21T20:29:55.219Z",
+          "evidence": "A task is already running. Please wait for it to finish."
         }
       ]
     },
@@ -139,21 +91,21 @@
       "title": "Self-diagnosis block missing or unparsable",
       "whyLikely": "Prompt requested structured diagnosis markers, but final response did not emit valid JSON in expected tags.",
       "category": "other",
-      "count": 37,
+      "count": 17,
       "sampleRuns": [
         {
           "cycle": 1,
-          "timestamp": "2026-07-23T18:21:57.124Z",
+          "timestamp": "2026-08-21T20:29:07.678Z",
           "evidence": "selfDiagnosis.summary indicates marker/parse failure"
         },
         {
-          "cycle": 5,
-          "timestamp": "2026-07-23T18:29:15.052Z",
+          "cycle": 3,
+          "timestamp": "2026-08-21T20:29:46.246Z",
           "evidence": "selfDiagnosis.summary indicates marker/parse failure"
         },
         {
-          "cycle": 6,
-          "timestamp": "2026-07-23T18:31:24.484Z",
+          "cycle": 1,
+          "timestamp": "2026-08-21T20:42:16.410Z",
           "evidence": "selfDiagnosis.summary indicates marker/parse failure"
         }
       ]
@@ -163,118 +115,22 @@
       "title": "Fallback/uncertainty path triggered",
       "whyLikely": "Likely primary strategy failed and fallback engaged; quality depends on fallback relevance.",
       "category": "uncertainty_or_fallback",
-      "count": 29,
+      "count": 5,
       "sampleRuns": [
         {
           "cycle": 1,
-          "timestamp": "2026-07-23T18:21:57.124Z",
+          "timestamp": "2026-08-21T20:42:16.410Z",
           "evidence": "Matched pattern /fallback/i in self_diagnosis"
-        },
-        {
-          "cycle": 5,
-          "timestamp": "2026-07-23T18:29:15.052Z",
-          "evidence": "Matched pattern /fallback/i in self_diagnosis"
-        },
-        {
-          "cycle": 6,
-          "timestamp": "2026-07-23T18:31:24.484Z",
-          "evidence": "Matched pattern /fallback/i in self_diagnosis"
-        }
-      ]
-    },
-    {
-      "id": "captcha_false_positive_non_challenge_page",
-      "title": "CAPTCHA detector fires on normal content pages",
-      "whyLikely": "Challenge heuristics likely over-weight text/weak signals and trigger solve flow without a real gate.",
-      "category": "navigation_failure",
-      "count": 21,
-      "sampleRuns": [
-        {
-          "cycle": 7,
-          "timestamp": "2026-07-23T18:32:19.586Z",
-          "evidence": "challenge detected on non-challenge host"
-        },
-        {
-          "cycle": 8,
-          "timestamp": "2026-07-23T18:33:40.307Z",
-          "evidence": "challenge detected on non-challenge host"
-        },
-        {
-          "cycle": 10,
-          "timestamp": "2026-07-23T18:35:14.368Z",
-          "evidence": "challenge detected on non-challenge host"
-        }
-      ]
-    },
-    {
-      "id": "issue_navigation_failure",
-      "title": "Navigation path fails or target page unreachable",
-      "whyLikely": "Likely DNS/domain issue, blocked destination, or planner recovery choosing non-progress navigation.",
-      "category": "navigation_failure",
-      "count": 17,
-      "sampleRuns": [
-        {
-          "cycle": 5,
-          "timestamp": "2026-07-23T18:29:15.052Z",
-          "evidence": "Matched pattern /navigation/i in self_diagnosis"
-        },
-        {
-          "cycle": 9,
-          "timestamp": "2026-07-23T18:34:35.113Z",
-          "evidence": "Matched pattern /navigation/i in self_diagnosis"
-        },
-        {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "goto failed: error"
-        }
-      ]
-    },
-    {
-      "id": "issue_selector_error",
-      "title": "Selector resolution errors during actions",
-      "whyLikely": "Likely stale selectors, hidden elements, or page state changed before interaction completed.",
-      "category": "selector_error",
-      "count": 13,
-      "sampleRuns": [
-        {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "fill selector issue: #APjFqb, textarea[name='q'], input[name='q'], input[type='search']"
-        },
-        {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "scrollIntoView selector issue: #abortcontroller"
-        },
-        {
-          "cycle": 12,
-          "timestamp": "2026-07-23T19:05:10.545Z",
-          "evidence": "fill selector issue: #APjFqb, textarea[name='q'], input[name='q'], input[type='search']"
-        }
-      ]
-    },
-    {
-      "id": "url_change_wait_mismatch",
-      "title": "URL-change wait condition fails after click actions",
-      "whyLikely": "Click succeeded but waited on URL transition that did not occur, leading to repeated non-progress loops.",
-      "category": "timing_drift",
-      "count": 10,
-      "sampleRuns": [
-        {
-          "cycle": 11,
-          "timestamp": "2026-07-23T18:41:22.160Z",
-          "evidence": "waitForURLChange errors without navigation"
-        },
-        {
-          "cycle": 5,
-          "timestamp": "2026-07-23T18:51:54.441Z",
-          "evidence": "waitForURLChange errors without navigation"
         },
         {
           "cycle": 1,
-          "timestamp": "2026-08-18T21:34:17.194Z",
-          "evidence": "waitForURLChange errors without navigation"
+          "timestamp": "2026-08-21T20:57:34.893Z",
+          "evidence": "Matched pattern /fallback/i in self_diagnosis"
+        },
+        {
+          "cycle": 3,
+          "timestamp": "2026-08-21T21:13:41.834Z",
+          "evidence": "Task ended incomplete: Task aborted by an unhandled error: Cannot read properties of null (reading 'pages')"
         }
       ]
     },
@@ -283,22 +139,46 @@
       "title": "Timeout/wait sequencing mismatch",
       "whyLikely": "Likely waits tied to wrong condition (e.g., URL change) or async state settling slower than thresholds.",
       "category": "timing_drift",
-      "count": 7,
+      "count": 3,
       "sampleRuns": [
         {
-          "cycle": 11,
-          "timestamp": "2026-07-23T18:41:22.160Z",
+          "cycle": 2,
+          "timestamp": "2026-08-21T20:56:51.186Z",
           "evidence": "Matched pattern /timed out/i in final_answer"
         },
         {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
+          "cycle": 3,
+          "timestamp": "2026-08-21T21:13:41.834Z",
           "evidence": "Matched pattern /timed out/i in final_answer"
+        },
+        {
+          "cycle": 3,
+          "timestamp": "2026-08-21T21:17:55.305Z",
+          "evidence": "Matched pattern /timed out/i in final_answer"
+        }
+      ]
+    },
+    {
+      "id": "issue_selector_error",
+      "title": "Selector resolution errors during actions",
+      "whyLikely": "Likely stale selectors, hidden elements, or page state changed before interaction completed.",
+      "category": "selector_error",
+      "count": 3,
+      "sampleRuns": [
+        {
+          "cycle": 2,
+          "timestamp": "2026-08-21T20:58:48.677Z",
+          "evidence": "fill selector issue: #__86fa6f3a-d7ad-4348-9e4d-c47bf57e8d94"
+        },
+        {
+          "cycle": 2,
+          "timestamp": "2026-08-21T20:58:48.677Z",
+          "evidence": "press selector issue: #__86fa6f3a-d7ad-4348-9e4d-c47bf57e8d94"
         },
         {
           "cycle": 1,
-          "timestamp": "2026-07-23T19:40:41.663Z",
-          "evidence": "Matched pattern /timed out/i in final_answer"
+          "timestamp": "2026-08-21T21:16:14.376Z",
+          "evidence": "press selector issue: #search-box"
         }
       ]
     },
@@ -307,79 +187,64 @@
       "title": "Agent repeats same action without progress",
       "whyLikely": "Likely loop detection too weak or recovery policy re-issuing equivalent steps.",
       "category": "retry_loop",
-      "count": 5,
+      "count": 2,
       "sampleRuns": [
         {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "Repeated action signature goto| x4"
+          "cycle": 3,
+          "timestamp": "2026-08-21T20:29:46.246Z",
+          "evidence": "Repeated action signature goto| x3"
         },
         {
-          "cycle": 5,
-          "timestamp": "2026-07-23T18:51:54.441Z",
-          "evidence": "Matched pattern /loop/i in final_answer"
-        },
-        {
-          "cycle": 11,
-          "timestamp": "2026-07-23T19:02:39.053Z",
+          "cycle": 2,
+          "timestamp": "2026-08-21T20:43:11.212Z",
           "evidence": "Repeated action signature goto| x3"
         }
       ]
     },
     {
-      "id": "invalid_timeout_configuration",
-      "title": "Unrealistic timeout configuration masks actionable timing behavior",
-      "whyLikely": "Timeout was set to an extreme value, so runs appear hung instead of expiring at a practical window.",
-      "category": "timing_drift",
-      "count": 2,
-      "sampleRuns": [
-        {
-          "cycle": 11,
-          "timestamp": "2026-07-23T18:41:22.160Z",
-          "evidence": "Stress Tester timed out after 6e+59ms waiting for Puppeterr to finish this run."
-        },
-        {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "Stress Tester timed out after 6e+59ms waiting for Puppeterr to finish this run."
-        }
-      ]
-    },
-    {
-      "id": "bad_direct_domain_resolution",
-      "title": "Direct navigation uses invalid or non-resolving domain",
-      "whyLikely": "Heuristic direct target selected an incorrect hostname (e.g., node.js) causing DNS failures.",
+      "id": "issue_navigation_failure",
+      "title": "Navigation path fails or target page unreachable",
+      "whyLikely": "Likely DNS/domain issue, blocked destination, or planner recovery choosing non-progress navigation.",
       "category": "navigation_failure",
       "count": 2,
       "sampleRuns": [
         {
-          "cycle": 30,
-          "timestamp": "2026-07-23T18:44:40.652Z",
-          "evidence": "net::ERR_NAME_NOT_RESOLVED"
+          "cycle": 3,
+          "timestamp": "2026-08-21T21:17:55.305Z",
+          "evidence": "goto failed: error"
         },
         {
-          "cycle": 1,
-          "timestamp": "2026-07-23T19:40:41.663Z",
-          "evidence": "net::ERR_NAME_NOT_RESOLVED"
+          "cycle": 3,
+          "timestamp": "2026-08-21T21:17:55.305Z",
+          "evidence": "Matched pattern /navigation/i in log.json"
         }
       ]
     },
     {
-      "id": "infra_service_transient",
-      "title": "Transient infrastructure/service instability",
-      "whyLikely": "Likely temporary server or network instability during stress cycles.",
-      "category": "other",
-      "count": 2,
+      "id": "url_change_wait_mismatch",
+      "title": "URL-change wait condition fails after click actions",
+      "whyLikely": "Click succeeded but waited on URL transition that did not occur, leading to repeated non-progress loops.",
+      "category": "timing_drift",
+      "count": 1,
       "sampleRuns": [
         {
           "cycle": 1,
-          "timestamp": "2026-08-18T21:34:17.194Z",
-          "evidence": "transient network/service error signature"
-        },
+          "timestamp": "2026-08-21T21:16:14.376Z",
+          "evidence": "waitForURLChange errors without navigation"
+        }
+      ]
+    },
+    {
+      "id": "captcha_false_positive_non_challenge_page",
+      "title": "CAPTCHA detector fires on normal content pages",
+      "whyLikely": "Challenge heuristics likely over-weight text/weak signals and trigger solve flow without a real gate.",
+      "category": "navigation_failure",
+      "count": 1,
+      "sampleRuns": [
         {
-          "cycle": 19,
-          "timestamp": "2026-08-18T22:24:47.822Z",
-          "evidence": "transient network/service error signature"
+          "cycle": 1,
+          "timestamp": "2026-08-21T21:18:41.745Z",
+          "evidence": "challenge detected on non-challenge host"
         }
       ]
     }
@@ -390,27 +255,27 @@
       "title": "Infrastructure or uncategorized failure",
       "whyLikely": "Likely service/session/concurrency issue outside standard browser action categories.",
       "category": "other",
-      "count": 288,
+      "count": 94,
       "sampleRuns": [
         {
           "cycle": 2,
-          "timestamp": "2026-08-18T21:34:22.225Z",
+          "timestamp": "2026-08-21T20:29:11.189Z",
           "evidence": "A task is already running. Please wait for it to finish."
         },
         {
-          "cycle": 3,
-          "timestamp": "2026-08-18T21:34:26.451Z",
+          "cycle": 4,
+          "timestamp": "2026-08-21T20:29:52.100Z",
           "evidence": "A task is already running. Please wait for it to finish."
         },
         {
-          "cycle": 6,
-          "timestamp": "2026-08-18T21:41:17.288Z",
+          "cycle": 5,
+          "timestamp": "2026-08-21T20:29:55.219Z",
           "evidence": "A task is already running. Please wait for it to finish."
         }
       ]
     },
-    "infraFailureSignals": 613,
+    "infraFailureSignals": 111,
     "recommendation": "Address top bugFinding entries first; they include likely causes and sample evidence to reproduce."
   },
-  "latestRunTimestamp": "2026-08-19T00:00:50.179Z"
+  "latestRunTimestamp": "2026-08-21T21:39:19.208Z"
 }

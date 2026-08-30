@@ -43,11 +43,6 @@ const fetchImpl = globalThis.fetch || undiciFetch;
 // log can always be traced back to exactly which prompt produced it.
 // ---------------------------------------------------------------------------
 const PROMPT_BANK = [
-  { tier: "A", text: `go to archive.org and search for "public domain images"` },
-  { tier: "A", text: `go to docs.python.org and find the page for the "list" type` },
-  { tier: "A", text: `go to reddit.com/r/programming and get the top post title` },
-  { tier: "A", text: `go to britannica.com and search for "Ada Lovelace"` },
-
   { tier: "B", text: `go to wikipedia.org, search "Saturn V", and extract the launch date` },
   { tier: "B", text: `go to npmjs.com, search "express", click the top result, and report the latest version` },
   { tier: "B", text: `go to github.com, search "playwright", open the top repo, and report the star count` },
@@ -273,6 +268,20 @@ function buildScenarioInstructions(options) {
 }
 
 const cliScenario = parseScenarioCliArgs(process.argv.slice(2));
+
+// Concurrency: how many cycles run in parallel per batch. Default 1 keeps
+// existing sequential behavior unchanged; set STRESS_TESTER_CONCURRENCY=5
+// (etc.) to stress the browser pool / planner / recovery logic under load.
+const ENV_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.STRESS_TESTER_CONCURRENCY) || 1));
+
+// Session tier: nudges generateTemplatePrompt's target step count so runs
+// can stress short vs. long action chains on demand.
+// short=4-6 (default/unchanged), medium=~20, long=~50, marathon=~100.
+const SESSION_TIER_STEPS = { short: [4, 6], medium: [16, 24], long: [40, 60], marathon: [80, 120] };
+const ENV_SESSION_TIER = SESSION_TIER_STEPS[String(process.env.STRESS_TESTER_SESSION_TIER || "short").toLowerCase()]
+  ? String(process.env.STRESS_TESTER_SESSION_TIER || "short").toLowerCase()
+  : "short";
+
 const runtimeConfig = {
   pollMs: DEFAULT_POLL_MS,
   timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -284,6 +293,8 @@ const runtimeConfig = {
   maxRuns: ENV_MAX_RUNS,
   logIntervalSec: cliScenario.logIntervalSec,
   heartbeat: !!cliScenario.heartbeat,
+  concurrency: ENV_CONCURRENCY,
+  sessionTier: ENV_SESSION_TIER,
   scenario: cliScenario,
   scenarioInstructions: buildScenarioInstructions(cliScenario)
 };
@@ -720,7 +731,8 @@ function generateTemplatePrompt(cycleNumber) {
   const start = pick(blueprint.starts);
   const ending = pick(blueprint.endings);
   const constraints = shuffle(EXTRA_CONSTRAINTS).slice(0, randomInt(3, EXTRA_CONSTRAINTS.length));
-  const stepCount = randomInt(4, 6);
+  const [tierMin, tierMax] = SESSION_TIER_STEPS[runtimeConfig.sessionTier] || SESSION_TIER_STEPS.short;
+  const stepCount = randomInt(tierMin, tierMax);
   const stressFlavor = pick([
     "If the first path is blocked, reroute without waiting.",
     "Use at least one page transition and one content extraction step.",
@@ -729,8 +741,12 @@ function generateTemplatePrompt(cycleNumber) {
   ]);
 
   const scenarioSuffix = buildScenarioPromptSuffix(cycleNumber);
+  const isLongTier = runtimeConfig.sessionTier !== "short";
+  const bodyInstruction = isLongTier
+    ? `Start from ${start}. Investigate ${subject}. Target roughly ${stepCount} total browser steps by chaining multiple sub-goals in sequence: locate the best relevant page, extract a concrete fact, follow at least ${Math.max(2, Math.round(stepCount / 15))} meaningful links across pages, cross-reference facts between them, ${ending}, and then give a concise final result. Do not stop early — keep progressing through additional sub-goals until the step target is roughly met or the task is genuinely exhausted.`
+    : `Start from ${start}. Investigate ${subject}. Complete roughly ${stepCount} browser steps: locate the best relevant page, extract a concrete fact, follow one meaningful link, ${ending}, and then give a concise result.`;
   return [
-    `/browser Start from ${start}. Investigate ${subject}. Complete roughly ${stepCount} browser steps: locate the best relevant page, extract a concrete fact, follow one meaningful link, ${ending}, and then give a concise result.`,
+    `/browser ${bodyInstruction}`,
     stressFlavor,
     constraints.join(" "),
     scenarioSuffix,
@@ -1405,24 +1421,26 @@ async function main() {
   await ensureServerAvailable();
 
   let cycle = 0;
-  while (!stopRequested && cycle < runtimeConfig.maxRuns) {
-    cycle += 1;
+  const concurrency = Math.max(1, runtimeConfig.concurrency || 1);
+  console.log(`[stress-tester] Concurrency: ${concurrency} cycle(s) in flight per batch | Session tier: ${runtimeConfig.sessionTier}`);
+
+  async function runSingleCycleSafely(cycleNum) {
     try {
-      await runOneCycle(cycle);
+      await runOneCycle(cycleNum);
     } catch (error) {
       if (isAgentBusyErrorLike(error) || isTransientNetworkErrorLike(error)) {
         const cooldownMs = isAgentBusyErrorLike(error) ? runtimeConfig.agentBusyRetryMs : (runtimeConfig.transientRetryBaseMs * 2);
-        console.warn(`[stress-tester] transient cycle failure (${classifyInfraFailure(error)}): ${error.message}. Cooling down ${cooldownMs}ms then retrying cycle ${cycle}.`);
-        cycle -= 1;
+        console.warn(`[stress-tester] transient cycle failure (${classifyInfraFailure(error)}): ${error.message}. Cooling down ${cooldownMs}ms then retrying cycle ${cycleNum}.`);
         await sleep(cooldownMs);
-        continue;
+        await runSingleCycleSafely(cycleNum); // one retry pass, same cycle number
+        return;
       }
       const failureRecord = {
-        cycle,
+        cycle: cycleNum,
         timestamp: new Date().toISOString(),
         baseUrl: BASE_URL,
         promptSource: PROMPT_SOURCE,
-        promptTier: PROMPT_SOURCE === "bank" ? PROMPT_BANK[(cycle - 1) % PROMPT_BANK.length].tier : null,
+        promptTier: PROMPT_SOURCE === "bank" ? PROMPT_BANK[(cycleNum - 1) % PROMPT_BANK.length].tier : null,
         prompt: null,
         completed: false,
         timedOut: false,
@@ -1442,10 +1460,24 @@ async function main() {
       storeRunResult(failureRecord);
       failureRecord.cumulativeLogEntry = summarizeAllRuns();
       console.error(JSON.stringify(failureRecord, null, 2));
-      if (stopRequested) break;
     }
+  }
 
-    if (!stopRequested && cycle < runtimeConfig.maxRuns && runtimeConfig.betweenRunMs > 0) {
+  while (!stopRequested && cycle < runtimeConfig.maxRuns) {
+    const batchSize = Math.min(concurrency, runtimeConfig.maxRuns - cycle);
+    const batchCycles = [];
+    for (let i = 0; i < batchSize; i += 1) {
+      cycle += 1;
+      batchCycles.push(cycle);
+    }
+    // Concurrent batch: each cycle gets its own chat/session on the
+    // Puppeterr side (runOneCycle creates a fresh chat per call), so
+    // parallel cycles exercise the browser pool / planner / element-map
+    // under real simultaneous load rather than serialized one-at-a-time.
+    await Promise.all(batchCycles.map(c => runSingleCycleSafely(c)));
+
+    if (stopRequested) break;
+    if (cycle < runtimeConfig.maxRuns && runtimeConfig.betweenRunMs > 0) {
       await sleep(runtimeConfig.betweenRunMs);
     }
   }

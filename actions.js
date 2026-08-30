@@ -242,7 +242,45 @@ const actions = {
     }
   },
   getAttribute: async ({ page, selector, name }) => await page.getAttribute(selector, name),
-  getAllText: async ({ page }) => await page.evaluate(() => document.body.innerText),
+  // Scoped to `selector` if given (defaults to whole page, same fallback
+  // chain as getText/getHTML). Uses a manual textContent walk instead of
+  // innerText: innerText is layout-dependent (applies CSS text-transform,
+  // can reflow/reorder around complex layouts) which was producing garbled
+  // output on some pages. textContent-in-DOM-order, with script/style/
+  // hidden nodes skipped, is a much closer match to "what's literally on
+  // the page" — closer to a Ctrl+A selection than a rendered-layout read.
+  getAllText: async ({ page, selector }) => {
+    const fallbackSelector = String(selector || "").trim() || "body";
+    try {
+      const locator = page.locator(fallbackSelector).first();
+      await locator.waitFor({ state: "attached", timeout: 6000 }).catch(() => {});
+      return await locator.evaluate((node) => {
+        const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+        const isHidden = (el) => {
+          if (!el || el.nodeType !== 1) return false;
+          if (el.hasAttribute("hidden") || el.getAttribute("aria-hidden") === "true") return true;
+          const style = window.getComputedStyle(el);
+          return style.display === "none" || style.visibility === "hidden";
+        };
+        const parts = [];
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, {
+          acceptNode(textNode) {
+            const parent = textNode.parentElement;
+            if (!parent || SKIP_TAGS.has(parent.tagName) || isHidden(parent)) return NodeFilter.FILTER_REJECT;
+            return textNode.textContent.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+          }
+        });
+        let current;
+        while ((current = walker.nextNode())) parts.push(current.textContent.trim().replace(/[ \t]+/g, " "));
+        return parts.join("\n").replace(/\n{3,}/g, "\n\n");
+      });
+    } catch {
+      return page.evaluate((sel) => {
+        const node = document.querySelector(sel) || document.body;
+        return String(node?.textContent || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+      }, fallbackSelector);
+    }
+  },
 
   // 🕒 WAITING — note: "complete" is NOT a valid Playwright load state (sanitized → "load")
   waitForSelector: async ({ page, selector, timeout = 8000 }) => withTransientRetry(async () => {

@@ -8,6 +8,7 @@ const path = require("path");
 const { execSync, exec, spawn } = require("child_process");
 const bcrypt = require("bcryptjs");
 const { fetch: undiciFetch } = require("undici");
+const Human = require("./Human.js");
 const nodemailer = require("nodemailer");
 const actions = require("./actions");
 const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
@@ -39,7 +40,6 @@ function writeJsonAtomic(filePath, value) {
   fs.renameSync(tempPath, target);
 }
 async function humanMove(page, x, y, telemetry = {}) {
-  const steps = 25 + Math.floor(Math.random() * 10);
   const start = await page.evaluate(() => ({
     x: window.__puppeterrMouseX || 0,
     y: window.__puppeterrMouseY || 0,
@@ -50,12 +50,14 @@ async function humanMove(page, x, y, telemetry = {}) {
   const telemetryKind = String(telemetry?.kind || "move");
   const emitEvery = Math.max(1, Number(telemetry?.emitEvery || 3));
 
-  for (let i = 0; i < steps; i++) {
-    const nx = start.x + (x - start.x) * (i / steps) + (Math.random() * 3 - 1.5);
-    const ny = start.y + (y - start.y) * (i / steps) + (Math.random() * 3 - 1.5);
+  // Ease-in-out curve + slight bow + occasional overshoot-and-correct,
+  // instead of constant-velocity linear interpolation — see Human.js.
+  const path = Human.generateMovementPathWithOvershoot(start.x, start.y, x, y);
 
+  for (let i = 0; i < path.length; i++) {
+    const { x: nx, y: ny, delayMs } = path[i];
     await page.mouse.move(nx, ny);
-    if (i % emitEvery === 0 || i === steps - 1) {
+    if (i % emitEvery === 0 || i === path.length - 1) {
       broadcast("mouse_move", {
         x: Math.round(nx),
         y: Math.round(ny),
@@ -64,7 +66,7 @@ async function humanMove(page, x, y, telemetry = {}) {
         kind: telemetryKind
       });
     }
-    await page.waitForTimeout(5 + Math.random() * 15);
+    await page.waitForTimeout(delayMs);
   }
 
   await page.evaluate(({ mx, my, viewportWidth, viewportHeight }) => {
@@ -80,9 +82,30 @@ async function humanMove(page, x, y, telemetry = {}) {
   }).catch(() => {});
 }
 async function humanClick(page, x, y) {
+  // Search-pattern wander: a brief, tightening wander near the target
+  // before committing to it, rather than beelining with perfect precision
+  // every time — mimics a last-moment visual/motor search near the
+  // roughly-right spot.
+  if (Math.random() < 0.5) {
+    const wander = Human.generateSearchWander(x, y, 2);
+    for (const w of wander) {
+      await page.mouse.move(w.x, w.y);
+      await page.waitForTimeout(w.delayMs);
+    }
+  }
+
   await humanMove(page, x + (Math.random() * 10 - 5), y + (Math.random() * 10 - 5), { kind: "preclick" });
   await humanMove(page, x, y, { kind: "preclick" });
-  await page.mouse.click(x, y, { delay: 50 + Math.random() * 150 });
+  // Brief dwell with micro-tremor before the click fires — a real hand
+  // isn't perfectly still in the instant before clicking.
+  const tremor = Human.microTremor(1.1);
+  await page.mouse.move(x + tremor.dx, y + tremor.dy);
+  await page.waitForTimeout(Human.sampleHumanDelay(45, 0.5, 10));
+  await page.mouse.move(x, y);
+  // Hover hesitation: pointer has arrived but doesn't click instantly —
+  // a real human pauses 80-200ms once "aimed" before committing.
+  await page.waitForTimeout(Human.hoverHesitationMs());
+  await page.mouse.click(x, y, { delay: Human.sampleHumanDelay(100, 0.4, 30) });
 
   const viewport = await page.evaluate(() => ({
     width: Math.max(1, Math.round(window.__puppeterrViewportWidth || window.innerWidth || 1920)),
@@ -139,8 +162,110 @@ function checkXvfbOnce(cb) {
   });
 }
 
+// Lazy-required so a missing/broken element-map.js doesn't crash agent.js
+// startup — same defensive posture as the old subprocess path's existsSync
+// guard. require.main here is agent.js's own entry point, not
+// element-map.js, so its `if (require.main === module) main()` guard at
+// the bottom of that file correctly does NOT fire when required like this.
+let _elementMapModule = null;
+function getElementMapModule() {
+  if (_elementMapModule) return _elementMapModule;
+  try {
+    const scriptPath = path.join(process.cwd(), "element-map.js");
+    if (!fs.existsSync(scriptPath)) return null;
+    _elementMapModule = require(scriptPath);
+    return _elementMapModule;
+  } catch (err) {
+    console.warn("element-map module load failed:", err?.message || err);
+    return null;
+  }
+}
+
+// In-process element-map capture against Puppeterr's OWN live page — no
+// subprocess, no second browser, no re-navigation from scratch. This fixes
+// two real problems with the old spawn-based path (still available below
+// as runElementMapForUrl, kept for any caller that genuinely needs a URL
+// that ISN'T the current live page):
+//   1. Performance: a full second Chrome launch + fresh page load on every
+//      single element-map tick, just to read DOM state Puppeterr already
+//      has open, was pure waste.
+//   2. Correctness: the spawned subprocess used its own temp profile dir
+//      with no cookies/session — if the real page was logged in, mid-scroll,
+//      or showing dynamic content, the subprocess's fresh, sessionless
+//      reload could see a genuinely DIFFERENT page than what the agent was
+//      actually looking at. Capturing against the live page object can't
+//      diverge like that — it's the exact same page, same state.
+// Hard cooldown independent of the caller/scheduler — a belt-and-suspenders
+// guard so in-process element-map captures physically cannot fire more
+// often than this, even if something upstream (a scheduling bug, an
+// unexpected second call site) tries to. Needed because in-process capture
+// is dramatically faster than the old subprocess (no browser launch, no
+// fresh page navigation) — anything that assumed "this naturally takes a
+// few seconds" as an implicit rate limit no longer gets that for free.
+let _lastElementMapCaptureAt = 0;
+const ELEMENT_MAP_HARD_COOLDOWN_MS = 8000;
+
+async function runElementMapOnCurrentPage(livePage, onDone) {
+  const done = typeof onDone === "function" ? onDone : () => {};
+  const now = Date.now();
+  if (now - _lastElementMapCaptureAt < ELEMENT_MAP_HARD_COOLDOWN_MS) {
+    done(null); // silently skip — too soon since the last capture, no matter who called this
+    return;
+  }
+  _lastElementMapCaptureAt = now;
+  try {
+    const mod = getElementMapModule();
+    if (!mod || typeof mod.captureVoidElementMapFromPage !== "function") {
+      status && status("element-map module unavailable; skipping in-process capture.");
+      done(null);
+      return;
+    }
+    if (!livePage) { done(null); return; }
+
+    const currentUrl = (() => { try { return livePage.url(); } catch { return "unknown"; } })();
+    console.log(`🔧 Triggering in-process element-map for: ${currentUrl}`);
+    broadcast && broadcast("status", { msg: `element-map (in-process) triggered for ${currentUrl}` });
+
+    // Ensure the capture function is installed on this page's context —
+    // addInitScript only affects FUTURE navigations, so for the current,
+    // already-loaded page we inject the browser-side installer directly.
+    try {
+      const hasCapture = await livePage.evaluate(() => typeof window.__VOID_CAPTURE_ELEMENT_MAP__ === "function").catch(() => false);
+      if (!hasCapture && typeof mod.voidElementMapBrowserInstaller === "function") {
+        await livePage.evaluate(mod.voidElementMapBrowserInstaller).catch(() => {});
+      }
+    } catch {}
+
+    const extraction = await mod.captureVoidElementMapFromPage(livePage, {
+      includeWithoutId: true,
+      includeText: true,
+      includeStyleBits: true,
+      includeShadowDescendants: true,
+      includeIframes: true,
+      includeCanvas: true,
+      maxElements: 1200,
+      textLimit: 220
+    });
+
+    if (extraction) {
+      status && status("element-map (in-process) completed");
+      think && think(`element-map output: VOID_ELEMENT_MAP_CAPTURE_SUMMARY ${JSON.stringify(extraction.summary || {}).slice(0, 800)}`);
+    } else {
+      status && status("element-map (in-process) returned no data — capture script may not be installed on this page.");
+    }
+    done(null);
+  } catch (err) {
+    console.warn("element-map (in-process) failed:", err?.message || err);
+    status && status(`element-map (in-process) error: ${err?.message || err}`);
+    done(err);
+  }
+}
+
 // Spawn element-map helper for a URL (non-blocking). Tries xvfb-run if present.
 // onDone(err) is called when the child process finishes (or immediately on skip).
+// Kept for any caller needing a URL that is NOT the current live page (the
+// scheduled per-tick capture below uses runElementMapOnCurrentPage instead,
+// since it always targets the already-open page's own URL).
 function runElementMapForUrl(url, onDone) {
   const done = typeof onDone === "function" ? onDone : () => {};
   try {
@@ -201,6 +326,14 @@ function runElementMapForUrl(url, onDone) {
 
 const CF_API_TOKEN  = process.env.CF_API_TOKEN;
 const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+// Dynamic Routes (the "dynamic/{name}" models configured in the AI Gateway
+// dashboard) are invoked through the /compat/chat/completions endpoint and
+// require a *gateway* auth header (cf-aig-authorization), which is separate
+// from the Workers AI account token used for direct @cf/... model calls.
+// Falls back to CF_API_TOKEN if a dedicated gateway token isn't set, since
+// many accounts use the same token for both — but a real cf-aig token should
+// be set here for production use.
+const CF_AIG_TOKEN = process.env.CF_AIG_TOKEN || CF_API_TOKEN;
 const CF_GATEWAY_CHAT_COMPLETIONS_URL = String(
   process.env.CF_GATEWAY_CHAT_COMPLETIONS_URL ||
   `https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/default/compat/chat/completions`
@@ -420,10 +553,20 @@ const MODEL_ROLES = ["router", "planner", "reasoner", "vision"];
 const ROUTER_LOCK_MODEL = String(process.env.ROUTER_LOCK_MODEL || "false").toLowerCase() === "true";
 const ROUTER_THINKING_DEFAULT = String(process.env.ROUTER_THINKING_DEFAULT || "true").toLowerCase() !== "false";
 const DEFAULT_MODELS = {
-  // router/reasoner/vision: Cloudflare-hosted (ai/run/) — confirmed working
-  // planner: third-party via ai/v1/chat/completions — requires unified billing credits
-  // image: flux-2-klein-9b confirmed working via multipart on this account (~2s generation)
-  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/qwen/qwen2.5-coder-32b-instruct",
+  // 2026-08-XX: reverted router/planner from dynamic/* back to direct @cf/...
+  // defaults. The dynamic route wiring is causing live "Provider not found"
+  // (AiGatewayError code 2002) failures on every router/reasoner call —
+  // almost certainly CF_AIG_TOKEN not being a valid gateway-scoped token
+  // (silently falling back to CF_API_TOKEN) and/or the gateway id in
+  // CF_GATEWAY_CHAT_COMPLETIONS_URL ("default") not matching wherever the
+  // dynamic/Router, dynamic/Planner, dynamic/Supervisor routes actually live.
+  // Set DEFAULT_ROUTER_MODEL / DEFAULT_PLANNER_MODEL env vars to "dynamic/..."
+  // explicitly (with CF_AIG_TOKEN verified working) to re-enable — don't
+  // flip these back as the hardcoded default until that's confirmed fixed.
+  // vision/image: dynamic routes exist but use a different transport
+  // (Workers AI /ai/run/, binary + multipart) that dynamic routing doesn't
+  // support as-is — not wired here regardless of the above.
+  router:   process.env.DEFAULT_ROUTER_MODEL   || "@cf/zai-org/glm-5.2",
   planner:  process.env.DEFAULT_PLANNER_MODEL  || "@cf/zai-org/glm-5.2",
   reasoner: process.env.DEFAULT_REASONER_MODEL || "@cf/zai-org/glm-5.2",
   vision:   process.env.DEFAULT_VISION_MODEL   || "@cf/meta/llama-3.2-11b-vision-instruct",
@@ -454,7 +597,7 @@ function pickModelId(catalog, preferredIds, wantVision) {
 }
 
 function resolveDefaultModels(catalog) {
-  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/qwen/qwen3-30b-a3b-fp8"], false) || DEFAULT_MODELS.router;
+  const router = pickModelId(catalog, [DEFAULT_MODELS.router, "@cf/zai-org/glm-5.2"], false) || DEFAULT_MODELS.router;
   const planner = pickModelId(catalog, [DEFAULT_MODELS.planner, "@cf/zai-org/glm-5.2", router], false) || router;
   const reasoner = pickModelId(catalog, [DEFAULT_MODELS.reasoner, router], false) || router;
   const vision = pickModelId(catalog, [DEFAULT_MODELS.vision, "@cf/meta/llama-3.2-11b-vision-instruct"], true) || DEFAULT_MODELS.vision;
@@ -3048,7 +3191,16 @@ async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temp
       const t    = setTimeout(() => ctrl.abort(), 35000);
       const res  = await fetch(hostedRunModel ? buildCloudflareRunUrl(modelName) : buildCloudflareChatCompletionsUrl(), {
         method:  "POST",
-        headers: { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" },
+        headers: hostedRunModel
+          ? { "Authorization": `Bearer ${CF_API_TOKEN}`, "Content-Type": "application/json" }
+          : {
+              // dynamic/{route} models are resolved by the gateway itself and
+              // require this header; harmless to include on ordinary
+              // (non-dynamic) chat-completions calls through the same endpoint.
+              "Authorization": `Bearer ${CF_API_TOKEN}`,
+              "cf-aig-authorization": `Bearer ${CF_AIG_TOKEN}`,
+              "Content-Type": "application/json"
+            },
         body:    JSON.stringify(requestBody),
         signal:  ctrl.signal
       });
@@ -4057,7 +4209,12 @@ function detectChatStyleRequest(rawMessage) {
   };
 }
 
-async function answerCasualChat(rawMessage, conversationHistory, models) {
+// Matches <<BROWSING_TASK>>...<<END_BROWSING_TASK>> emitted by the reasoner
+// when it decides it needs live page content to answer. Non-greedy so
+// multiple stray tag pairs in a malformed response don't merge into one match.
+const BROWSING_TASK_TAG_RE = /<<BROWSING_TASK>>([\s\S]*?)<<END_BROWSING_TASK>>/;
+
+async function answerCasualChat(rawMessage, conversationHistory, models, chatId = null, browserRuntime = null, userId = null) {
   if (isModelIdentityQuestion(rawMessage)) {
     return getCasualIdentityReply(models);
   }
@@ -4073,18 +4230,50 @@ async function answerCasualChat(rawMessage, conversationHistory, models) {
     .map(item => `${item.role === "user" ? "User" : "Assistant"}: ${item.content}`)
     .join("\n");
 
+  const SLANG_GLOSSARY = "Slang glossary (for understanding user tone/intent — do not lecture or over-explain these back to the user):\n" +
+    "acoustic=algospeak for 'autistic', clueless insult | aura=vibe/reputation | ate=did great | baddie=confident attractive woman | based=being unapologetically yourself | bffr='be for real' | brain rot=overstimulation from online content | bruh=bro/disbelief | bussin=extremely good | cap=lie, no cap=truth | caught in 4K=caught with proof | crine=crying-laughing | cooked=in trouble/screwed | dead=hilarious | delulu=delusional (romantic fantasy) | drip=good fashion | edge=near-completion or sexual context | face card=attractiveness | fanum tax=stealing a friend's food | finna=about to | fit=outfit | gagged=shocked | geeked=excited/hyped | glaze=overpraise | glow-up=major improvement | GOAT=greatest of all time | gyatt=attractive butt | hits different=uniquely better | ick=sudden disgust/turn-off | icl='I can't lie' | IJBOL='I just burst out laughing' | it's giving=describes a vibe | iykyk='if you know you know' | jit=young/inexperienced person | Karen=entitled person | L=loss/failure, L+ratio=you lost badly | lit=fun/exciting | locked in=focused | mid=mediocre | mog=outshine someone | moots=mutual followers | nepo baby=child of a famous/connected parent | oomf='one of my followers' | out of pocket=wild/inappropriate | periodt=emphatic final statement | pick-me=seeking validation via approval-seeking behavior | pookie=affectionate nickname | pushing P=acting with style/success | ratio=replies outnumber likes (a dunk) | rage-bait=content meant to provoke anger | rizz=charisma/flirting skill | salty=bitter | sheesh=praise/impressed | sigma=lone-wolf archetype | simp=overly eager for someone's attention | situationship=undefined romantic relationship | skibidi=nonsense meme word | slay=did something well | touch grass=go outside, get perspective | ts='this'/'type shit' | twin=close friend | rawdog=doing something with no aids/prep (e.g. a flight with no phone) | mewing=jaw-exercise meme trend | npc=someone acting robotic/unoriginal | girl dinner=a small/mismatched improvised meal | main character energy=acting confidently central to the moment | beige flag=a quirky, neutral personality trait | chronically online=too online, out of touch with offline norms | ghost=stop responding/disappear | menty b=mental breakdown (used casually) | rent free=can't stop thinking about something | vibe check=informal read on someone's mood/energy | W=win.\n" +
+    "Sensitive-term note: KMS/KYS/'unalive' appear in youth slang sometimes as exaggerated dark humor (e.g. reacting to embarrassment) and sometimes as a genuine expression of distress. Recognize both meanings, but never use these terms yourself, never mirror them back playfully, and if the context reads as genuine distress rather than joking, drop the casual tone and respond with care instead of banter.\n\n";
+
+  const CASUAL_CHAT_SYSTEM = SLANG_GLOSSARY + "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them.\n\n" +
+    "Context escalation: you may NOT browse on your own initiative for memes, casual link-dropping, or vague reactions (\"lol look at this\", \"bro this link is wild\") — just react normally to those. ONLY when the user explicitly asks you to evaluate, summarize, or describe something you have no cached context for (e.g. \"is this repo good?\", \"what does this project do?\", \"is this site legit?\") AND a URL or clearly identifiable target is present, you may request one — and only one — browsing task instead of guessing or hallucinating. To do this, respond with ONLY this block and nothing else:\n<<BROWSING_TASK>>\n/browser go to <url>\n<<END_BROWSING_TASK>>\nDo not add any other text alongside that block. Never emit it a second time in the same reply.";
+
   try {
     const raw = await callCFAI(models.reasoner || models.router, [
-      {
-        role: "system",
-        content: "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. Do not turn the message into a browser task unless the user explicitly uses /browser. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them."
-      },
-      {
-        role: "user",
-        content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}`
-      }
+      { role: "system", content: CASUAL_CHAT_SYSTEM },
+      { role: "user", content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}` }
     ], 500, 1, getRuntimeTemperature(models));
-    const plain = stripThinking(raw) || "Error: no response from current model, please try again.";
+    let plain = stripThinking(raw) || "";
+
+    const tagMatch = plain.match(BROWSING_TASK_TAG_RE);
+    if (tagMatch) {
+      const browserGoal = tagMatch[1].trim().replace(/^\/browser\s+/i, "");
+      appendLearningEvent({
+        kind: "auto_escalation",
+        goal: browserGoal.slice(0, 240),
+        trigger: String(rawMessage || "").slice(0, 240)
+      });
+
+      let browsedAnswer = "";
+      try {
+        browsedAnswer = await runTask(browserGoal, models, chatId, browserRuntime, userId);
+      } catch (taskErr) {
+        // Single, non-looping error path — never re-escalates.
+        errLog("Auto-escalation browsing task failed: " + (taskErr?.message || taskErr));
+        return applyChatStyleFormatting("I couldn't access that page — want me to try something else?", styleRequest);
+      }
+
+      // Exactly one follow-up reasoner call with the fetched context. This call's
+      // system prompt has no escalation instruction, so it structurally cannot
+      // emit another <<BROWSING_TASK>> tag — the loop is capped by construction,
+      // not just by convention.
+      const followUp = await callCFAI(models.reasoner || models.router, [
+        { role: "system", content: "You are Puppeterr. Answer the user's original message using the browsing result below. Be conversational, matching their tone. Do not mention tags, tools, or internal steps." },
+        { role: "user", content: `Original user message:\n${String(rawMessage || "")}\n\nBrowsing result:\n${String(browsedAnswer || "(no content returned)").slice(0, 4000)}` }
+      ], 500, 1, getRuntimeTemperature(models));
+      plain = stripThinking(followUp) || "I checked the page but couldn't put together a clear answer — want me to try again?";
+    }
+
+    if (!plain) plain = "Error: no response from current model, please try again.";
     return applyChatStyleFormatting(plain, styleRequest);
   } catch (err) {
     errLog("Casual chat fallback: " + err.message);
@@ -6388,7 +6577,12 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     .map(l => `"${compactPromptValue(l.text, 24)}"=>${compactUrlForPrompt(l.href)}`)
     .join(" | ") || "none";
   const compactTaskLog = taskLog.slice(-MAX_TASK_LOG_LINES_IN_PROMPT).map(line => compactPromptValue(line, 110)).join(" || ") || "none";
-  const compactPageText = compactPromptValue(state.text, 380);
+  const fullPageText = String(state.text || "").replace(/\s+/g, " ").trim();
+  // compactPageText is computed further below, once every other field in
+  // this prompt is known — see compactPageTextDynamic. It needs to be
+  // declared here (not assigned yet) because it's used in the userMsg
+  // template alongside these other fields.
+  let compactPageText = "";
   const compactRecon = compactPromptValue(currentStriderReconMemo || "none", 1400);
   const compactInputs = (state.inputs || []).filter(i => i.visible).slice(0, 6)
     .map(i => `${compactPromptValue(i.selector, 48)} (${i.type || "text"})`)
@@ -6402,7 +6596,56 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     ? compactUrlForPrompt(taskHints.directNavigationTarget)
     : "none";
 
-const userMsg = `Goal:${compactGoal}
+  // Dynamic page-text compaction: budget = however much room is actually
+  // left after every other field in this prompt, not a fixed guess. Also
+  // preserves HEAD + TAIL (not just head) — end-of-page content (footers,
+  // dates, final totals) is often exactly what a task needs and a
+  // head-only cut throws it away every time on long pages.
+  function compactPageTextDynamic(fullText, restOfPromptLength) {
+    const TOTAL_PROMPT_CHAR_CEILING = 6000; // leaves headroom for plannerHistory/system prompt beyond this one message
+    const MIN_BUDGET = 300;   // never starve it even if the rest of the prompt is unusually large
+    const MAX_BUDGET = 4000;  // cap even with lots of room — a full page dump rarely helps planning
+    const HEAD_RATIO = 0.65;  // main content/title tends to matter more than mid-page filler
+
+    const available = TOTAL_PROMPT_CHAR_CEILING - restOfPromptLength;
+    const budget = Math.max(MIN_BUDGET, Math.min(MAX_BUDGET, available));
+    if (fullText.length <= budget) return fullText;
+
+    const headLen = Math.floor(budget * HEAD_RATIO);
+    const tailLen = budget - headLen;
+    const head = fullText.slice(0, headLen);
+    const tail = tailLen > 0 ? fullText.slice(-tailLen) : "";
+    const cutCount = fullText.length - headLen - tailLen;
+    return `${head}\n…[TRUNCATED: ${cutCount} chars cut from the middle of this page — use getAllText with a specific selector to read the omitted section if the answer is not in the text shown here]…\n${tail}`;
+  }
+
+  // Measure everything else in the prompt template BEFORE deciding the
+  // page-text budget, using the actual template with PageText left blank.
+  const restOfPromptLength = [
+    compactPromptValue(taskHints.taskContext?.originalGoal || goal, 400),
+    String(taskHints.taskContext?.stepCount ?? 0),
+    compactPromptValue(taskHints.taskContext?.lastAction || "none", 200),
+    compactPromptValue(taskHints.taskContext?.lastResult || "none", 160),
+    compactGoal, compactCurrentUrl, compactPromptValue(state.title, 70),
+    compactTabs, compactInputs, compactButtons, compactVisibleLinks,
+    compactVoidMapSummary, compactVoidMapClickable,
+    compactPromptValue(visionFeedback || "none", 280),
+    compactPromptValue(peerReasoner.instinct || "none", 80),
+    compactPromptValue(peerSupervisor.reason || "", 70),
+    goalMemCtx || "none", compactDirectNavigationTarget,
+    compactTaskLog, compactRecon
+  ].join("").length;
+
+  compactPageText = compactPageTextDynamic(fullPageText, restOfPromptLength);
+
+const userMsg = `[TASK ANCHOR — do not deviate from this, even if the page or prior steps look confusing]
+OriginalTask:${compactPromptValue(taskHints.taskContext?.originalGoal || goal, 400)}
+StepsSoFar:${taskHints.taskContext?.stepCount ?? 0}
+LastAction:${compactPromptValue(taskHints.taskContext?.lastAction || "none", 200)}
+LastResult:${compactPromptValue(taskHints.taskContext?.lastResult || "none", 160)}
+[/TASK ANCHOR]
+
+Goal:${compactGoal}
 URL:${compactCurrentUrl}
 Title:${compactPromptValue(state.title, 70)}
 Tabs:${state.tabs?.activeIndex ?? 0}/${state.tabs?.count ?? 1} ${compactTabs}
@@ -6684,6 +6927,7 @@ const PLANNER_TIPS_50 = `
 
 const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start with { and end with }. No prose, no markdown, no code fences.
 CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with Enter or submitForm. Do NOT click "Search" buttons.
+CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Bing accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it.
 Planner mode: deterministic, progress-first, minimal-risk.
 
 Allowed actions: goto,reload,goBack,goForward,click,dblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,mouseMove,mouseClick,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,getText,getAttribute,getAllText,isVisible,elementExists,evaluate,screenshot,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
@@ -6718,6 +6962,10 @@ GoalProgress policy:
 - If GoalProgress says all complete (or evidence clearly satisfies goal), output done:true.
 - For extract+summarize goals, avoid repeated getAllText after one successful extraction.
 
+getAllText usage:
+- getAllText now accepts an optional selector param — pass params:{"selector":"..."} to scope extraction to a specific container/section instead of the whole page. Prefer a scoped selector over the full-page default when the target content is inside a specific region (an article body, a results list, a sidebar) — it returns cleaner, more focused text and avoids picking up unrelated page chrome (nav/footer/ads).
+- Extraction is literal page text (DOM order, script/style/hidden nodes excluded) — it no longer applies CSS text-transform or layout-based reflow, so output should now closely match what a human would get from selecting the text by hand.
+
 Tips (50, terse):
 ${PLANNER_TIPS_50}
 
@@ -6745,9 +6993,40 @@ Rules:
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: EXECUTOR
 // ─────────────────────────────────────────────────────────────────────────────
+// Named constants for recordOutcome's `path` field — used instead of raw
+// string literals so a typo can't silently stop counting toward
+// fallbackRate/retryRate in metrics.py without throwing or erroring.
+const ACTION_PATH = Object.freeze({
+  PRIMARY: "primary",
+  PRIMARY_HUMAN_POINTER: "primary-human-pointer",
+  PRIMARY_URL_CHANGE: "primary-url-change",
+  PRIMARY_URL_CHANGE_NEW_TAB: "primary-url-change-new-tab",
+  FALLBACK_GOTO_RETRY: "fallback-goto-retry",
+  FALLBACK_SCROLL_CLICK: "fallback-scroll-click",
+  FALLBACK_SUBMIT: "fallback-submit",
+  FALLBACK_ENTER: "fallback-enter",
+  FALLBACK_JS_CLICK: "fallback-js-click",
+  LEARNING_FAST_PATH: "learning-fast-path",
+  PSEUDO: "pseudo",
+  PSEUDO_PINCH: "pseudo-pinch"
+});
+
 async function runActionWithFallback(item, goal, models) {
   const action = item?.action;
   const params = { ...(item?.params || {}) };
+  if (!context || !page) {
+    // The browser can crash mid-task (not just between tasks) — handleBrowserCrash
+    // nulls context/page/browser asynchronously via the page "crash" event, which
+    // can fire while an action is already in flight. Several tab-management
+    // actions below (openNewTab/switchToTab/closeCurrentTab/listTabs) call
+    // context.pages() directly with no null check, which previously surfaced as
+    // an opaque "Cannot read properties of null (reading 'pages')" instead of a
+    // clear, retryable failure. Throw directly here rather than calling
+    // recordOutcome() — that helper reads `host`/`currentUrl`/`signature`,
+    // which are const-declared further down in this function and wouldn't
+    // exist yet at this point, so calling it this early would itself throw.
+    throw new Error("Browser context unavailable — it likely crashed mid-task and is restarting.");
+  }
   if (action === "waitForURLChange" && !params.currentURL) {
     params.currentURL = String(page?.url?.() || "");
   }
@@ -6776,6 +7055,9 @@ async function runActionWithFallback(item, goal, models) {
   }
 
   function recordOutcome(statusValue, details = {}) {
+    const pathTaken = String(details?.path || "primary");
+    const fallbackUsed = pathTaken.startsWith("fallback");
+    const isRetry = pathTaken.includes("retry");
     appendLearningEvent({
       kind: "action",
       goal: String(goal || "").slice(0, 240),
@@ -6785,6 +7067,11 @@ async function runActionWithFallback(item, goal, models) {
       selector: params?.selector || "",
       signature,
       status: statusValue,
+      // Explicit, pre-computed fields so metrics don't need to parse `path`
+      // strings later — makes stepSuccessRate / fallbackRate / retryRate
+      // directly aggregatable from raw log.json.
+      fallbackUsed,
+      isRetry,
       ...details
     });
 
@@ -6831,7 +7118,7 @@ async function runActionWithFallback(item, goal, models) {
       saveStablePage(page.url());
     }
     const resultText = `opened tab ${context.pages().length - 1}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO });
     return { action, status: "ok", result: resultText };
   }
 
@@ -6845,20 +7132,20 @@ async function runActionWithFallback(item, goal, models) {
       });
     }
     if (targetIndex === null || targetIndex < 0 || targetIndex >= pages.length) {
-      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(tabParams || {})}`, path: "pseudo" });
+      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(tabParams || {})}`, path: ACTION_PATH.PSEUDO });
       throw new Error(`switchToTab failed: invalid index/urlIncludes (${JSON.stringify(tabParams || {})})`);
     }
     page = pages[targetIndex];
     await page.bringToFront().catch(() => {});
     const resultText = `switched to tab ${targetIndex}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO });
     return { action, status: "ok", result: resultText };
   }
 
   if (action === "closeCurrentTab") {
     const pages = context.pages();
     if (pages.length <= 1) {
-      recordOutcome("ok", { result: "single tab, skip close", path: "pseudo" });
+      recordOutcome("ok", { result: "single tab, skip close", path: ACTION_PATH.PSEUDO });
       return { action, status: "ok", result: "single tab, skip close" };
     }
     const currentIndex = pages.findIndex(p => p === page);
@@ -6867,7 +7154,7 @@ async function runActionWithFallback(item, goal, models) {
     page = remaining[Math.max(0, Math.min(currentIndex - 1, remaining.length - 1))] || remaining[0];
     await page.bringToFront().catch(() => {});
     const resultText = `closed tab ${currentIndex}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO });
     return { action, status: "ok", result: resultText };
   }
 
@@ -6879,14 +7166,14 @@ async function runActionWithFallback(item, goal, models) {
       return `${idx}:${currentUrl}`;
     });
     const resultText = items.join(" | ");
-    recordOutcome("ok", { result: resultText, path: "pseudo" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO });
     return { action, status: "ok", result: resultText };
   }
 
   if (action === "pinchListTickets") {
     const tickets = await pinchListTickets();
     const resultText = `pinch tickets: ${tickets.length}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO_PINCH });
     return { action, status: "ok", result: resultText, data: tickets };
   }
 
@@ -6895,26 +7182,26 @@ async function runActionWithFallback(item, goal, models) {
     const body = String(params?.body || params?.message || "").trim();
     if (!ticketId || !body) {
       const missing = !ticketId ? "ticketId" : "body";
-      recordOutcome("error", { error: `${missing} required`, path: "pseudo-pinch" });
+      recordOutcome("error", { error: `${missing} required`, path: ACTION_PATH.PSEUDO_PINCH });
       return { action, status: "error", error: `${missing} required` };
     }
     const sent = await pinchSendTicketMessage(ticketId, body);
     const resultText = `pinch message sent to ticket ${ticketId}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO_PINCH });
     return { action, status: "ok", result: resultText, data: sent };
   }
 
   if (action === "pinchListWebhooks") {
     const webhooks = await pinchListWebhooks();
     const resultText = `pinch webhooks: ${webhooks.length}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO_PINCH });
     return { action, status: "ok", result: resultText, data: webhooks };
   }
 
   if (action === "pinchListWebhookTypes") {
     const types = await pinchListWebhookTypes();
     const resultText = `pinch webhook types: ${types.length}`;
-    recordOutcome("ok", { result: resultText, path: "pseudo-pinch" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PSEUDO_PINCH });
     return { action, status: "ok", result: resultText, data: types };
   }
 
@@ -6923,7 +7210,7 @@ async function runActionWithFallback(item, goal, models) {
     try {
       think(`Learning fast-path: skipping direct click and trying submitForm first for ${params.selector}`);
       await actions.submitForm({ page, context, selector: params.selector });
-      recordOutcome("ok", { result: "learning submitForm fast-path", path: "learning-fast-path" });
+      recordOutcome("ok", { result: "learning submitForm fast-path", path: ACTION_PATH.LEARNING_FAST_PATH });
       return { action, status: "ok", result: "learning submitForm fast-path" };
     } catch (err) {
       // Continue into the normal ladder below.
@@ -6935,7 +7222,7 @@ async function runActionWithFallback(item, goal, models) {
     try {
       await humanClick(page, Number(params.x), Number(params.y));
       const resultText = `human-click(${Math.round(Number(params.x))},${Math.round(Number(params.y))})`;
-      recordOutcome("ok", { result: resultText, path: "primary-human-pointer" });
+      recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY_HUMAN_POINTER });
       return { action, status: "ok", result: resultText };
     } catch (err) {
       errLog(`${action} human-click failed: ${err.message}`);
@@ -6958,7 +7245,7 @@ async function runActionWithFallback(item, goal, models) {
         kind: "dblclick"
       });
       const resultText = `human-dblclick(${Math.round(Number(params.x))},${Math.round(Number(params.y))})`;
-      recordOutcome("ok", { result: resultText, path: "primary-human-pointer" });
+      recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY_HUMAN_POINTER });
       return { action, status: "ok", result: resultText };
     } catch (err) {
       errLog(`${action} human-dblclick failed: ${err.message}`);
@@ -6995,7 +7282,7 @@ async function runActionWithFallback(item, goal, models) {
 
       if (targetMatches(activeUrl)) {
         const resultText = activeUrl ? `url changed: ${activeUrl}` : "url changed";
-        recordOutcome("ok", { result: resultText, path: "primary-url-change" });
+        recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY_URL_CHANGE });
         return { action, status: "ok", result: resultText };
       }
 
@@ -7011,7 +7298,7 @@ async function runActionWithFallback(item, goal, models) {
           await page.bringToFront().catch(() => {});
           if (targetMatches(newestUrl) || !targetRaw) {
             const resultText = `url changed in new tab: ${newestUrl}`;
-            recordOutcome("ok", { result: resultText, path: "primary-url-change-new-tab" });
+            recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY_URL_CHANGE_NEW_TAB });
             return { action, status: "ok", result: resultText };
           }
         }
@@ -7021,7 +7308,7 @@ async function runActionWithFallback(item, goal, models) {
     }
 
     const timeoutError = `URL did not change within ${timeoutMs}ms`;
-    recordOutcome("error", { error: timeoutError, path: "primary-url-change" });
+    recordOutcome("error", { error: timeoutError, path: ACTION_PATH.PRIMARY_URL_CHANGE });
     return { action, status: "error", error: timeoutError };
   }
 
@@ -7036,7 +7323,7 @@ async function runActionWithFallback(item, goal, models) {
         ? JSON.stringify(result)
         : String(result ?? "");
     const resultText = rawResultText.slice(0, 200);
-    recordOutcome("ok", { result: resultText, path: "primary" });
+    recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY });
     const response = { action, status: "ok", result: resultText };
     if (["getText", "getAllText", "getHTML"].includes(String(action || "")) && rawResultText.trim()) {
       response.extractedText = rawResultText.slice(0, 12000);
@@ -7073,7 +7360,7 @@ async function runActionWithFallback(item, goal, models) {
         think(`Fallback: retry goto once -> ${params.url}`);
         await sleep(900);
         await actions.goto({ page, context, url: String(params.url) });
-        recordOutcome("ok", { result: "goto retry success", path: "fallback-goto-retry" });
+        recordOutcome("ok", { result: "goto retry success", path: ACTION_PATH.FALLBACK_GOTO_RETRY });
         return { action, status: "ok", result: "goto retry success" };
       } catch {}
     }
@@ -7088,7 +7375,7 @@ async function runActionWithFallback(item, goal, models) {
         await actions.scrollIntoView({ page, selector: sel });
         await sleep(300);
         await actions.click({ page, context, selector: sel });
-        recordOutcome("ok", { result: "scroll-click fallback", path: "fallback-scroll-click" });
+        recordOutcome("ok", { result: "scroll-click fallback", path: ACTION_PATH.FALLBACK_SCROLL_CLICK });
         return { action, status: "ok", result: "scroll-click fallback" };
       } catch {}
 
@@ -7096,7 +7383,7 @@ async function runActionWithFallback(item, goal, models) {
       try {
         think(`Fallback 2: submitForm on ${sel}`);
         await actions.submitForm({ page, context, selector: sel });
-        recordOutcome("ok", { result: "submitForm fallback", path: "fallback-submit" });
+        recordOutcome("ok", { result: "submitForm fallback", path: ACTION_PATH.FALLBACK_SUBMIT });
         return { action, status: "ok", result: "submitForm fallback" };
       } catch {}
 
@@ -7104,7 +7391,7 @@ async function runActionWithFallback(item, goal, models) {
       try {
         think(`Fallback 3: Enter keypress on ${sel}`);
         await page.press(sel, "Enter");
-        recordOutcome("ok", { result: "Enter-key fallback", path: "fallback-enter" });
+        recordOutcome("ok", { result: "Enter-key fallback", path: ACTION_PATH.FALLBACK_ENTER });
         return { action, status: "ok", result: "Enter-key fallback" };
       } catch {}
 
@@ -7120,12 +7407,12 @@ async function runActionWithFallback(item, goal, models) {
           }
           throw new Error("not clickable");
         });
-        recordOutcome("ok", { result: "js-evaluate fallback", path: "fallback-js-click" });
+        recordOutcome("ok", { result: "js-evaluate fallback", path: ACTION_PATH.FALLBACK_JS_CLICK });
         return { action, status: "ok", result: "js-evaluate fallback" };
       } catch {}
     }
 
-    recordOutcome("error", { error: primaryErr.message, path: "primary" });
+    recordOutcome("error", { error: primaryErr.message, path: ACTION_PATH.PRIMARY });
     return { action, status: "error", error: primaryErr.message };
   }
 }
@@ -7311,6 +7598,13 @@ async function executeActionPlan(plan, goal, models, throttle = {}, supervisorCo
 
     const actionPause = Math.max(60, Math.round(ACTION_PACING_DELAY_MS * pacingMultiplier));
     await sleepLikeHuman(actionPause, page);
+
+    // Decision pause: a real user doesn't act instantly right after a page
+    // finishes navigating — there's a beat to skim/orient before the next
+    // move. Only applied after actions that actually change the page.
+    if (["goto", "waitForURLChange", "reload", "goBack", "goForward"].includes(action)) {
+      await sleepLikeHuman(Human.decisionPauseMs("postNavigation"), page);
+    }
 
     if (Number.isFinite(burstLimit) && burstCount >= burstLimit && microBreakMs > 0) {
       await sleepLikeHuman(microBreakMs, page);
@@ -7613,19 +7907,25 @@ function compactUrlForPrompt(rawUrl) {
   }
 }
 
-function buildSearchResultsUrl(queryText, engine = "bing") {
+function buildSearchResultsUrl(queryText, engine = "google") {
   const q = String(queryText || "").trim();
-  if (!q) return engine === "google" ? "https://www.google.com/" : "https://www.bing.com/";
-  if (engine === "google") return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
-  return `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+  if (!q) return engine === "bing" ? "https://www.bing.com/" : "https://www.google.com/";
+  if (engine === "bing") return `https://www.bing.com/search?q=${encodeURIComponent(q)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(q)}`;
 }
 
 function pickRecoveryUrl(goalText, fallbackQuery = "") {
   const explicit = sanitizeNavigationUrl(extractExplicitNavigationTarget(goalText));
   if (explicit) return explicit;
   const query = extractSearchQuery(goalText) || String(fallbackQuery || "").trim();
-  if (query) return buildSearchResultsUrl(query, "bing");
-  return "https://www.bing.com/news";
+  // Google over Bing here specifically: this path runs when the task is
+  // already recovering from a failure, and Bing accounts for the large
+  // majority of observed CAPTCHA walls (measured ~44% of all CAPTCHA hits
+  // vs Google's much smaller share) — routing a fragile recovery attempt
+  // through the higher-risk engine compounds the failure instead of
+  // resolving it.
+  if (query) return buildSearchResultsUrl(query, "google");
+  return "https://www.google.com/";
 }
 
 function sanitizeExtractedSearchQuery(rawQuery) {
@@ -8041,7 +8341,7 @@ async function performConfusionResearch(goal, state, visionFeedback, taskLog, fa
     };
   }
 
-  const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(researchPlan.query)}`;
+  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(researchPlan.query)}`;
   broadcast("research_started", {
     msg: `Confusion research: searching for ${researchPlan.query}`,
     query: researchPlan.query,
@@ -9095,6 +9395,14 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
   if (agentRunning) {
     throw new Error("A task is already running. Please wait for it to finish.");
   }
+  if (_browserRestartInProgress || !page) {
+    // The browser just crashed and is mid-restart (globals nulled in
+    // handleBrowserCrash before the new launch resolves). Without this
+    // check, a task dispatched during that window falls straight through
+    // to page.url()/page.goto() on a null page — surfacing as an opaque
+    // "Cannot read properties of null" error instead of a clear message.
+    throw new Error("The browser crashed and is currently restarting. Please try again in a few seconds.");
+  }
   agentRunning = true;
   currentTaskUserId = userId || currentTaskUserId || null;
   currentTaskChatId = chatId || null;
@@ -9114,6 +9422,19 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     : BASE_NAVIGATION_COOLDOWN_MS;
   const plannerHistory = [{ role: "system", content: PLANNER_SYSTEM_PROMPT }];
   const taskLog   = [];
+  // Task Context Object — a small, always-current anchor for "what was the
+  // original ask" and "what just happened," kept separate from the dense
+  // per-turn state block so it can't get buried or truncated away like the
+  // compactGoal field can on long/complex tasks. Passed into planNextSteps
+  // every turn and rendered first, before anything else, so the model has
+  // to see it before it sees the noise.
+  const taskContext = {
+    originalGoal: String(goal || "").trim(),
+    startedAt: Date.now(),
+    lastAction: null,   // e.g. "fill(#identifierId, 'vstd.help@gmail.com')"
+    lastResult: null,   // e.g. "ok" | "error: selector not found"
+    stepCount: 0
+  };
   let visionFeedback = null;
   let lastAction     = null;
   let completed      = false;
@@ -9176,7 +9497,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       elementMapInFlight = true;
       const currentUrl = (() => { try { return page.url(); } catch { return null; } })();
       if (!currentUrl) { elementMapInFlight = false; return; }
-      runElementMapForUrl(currentUrl, () => {
+      runElementMapOnCurrentPage(page, () => {
         elementMapInFlight = false;
         if (agentRunning) scheduleElementMapTick(); // reschedule only after child finishes
       });
@@ -9659,7 +9980,8 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       try {
         plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals, {
           simpleFastPathCandidate,
-          directNavigationTarget
+          directNavigationTarget,
+          taskContext
         }));
       } catch (err) {
         errLog("Planning failed: " + err.message);
@@ -9908,6 +10230,15 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       taskLog.push(logLine);
       stepLogMsg(logLine);
 
+      // Keep the Task Context Object current — this is what gets pinned to
+      // the top of every planner prompt so "what was I doing again?" has a
+      // cheap, un-truncatable answer even deep into a long task.
+      taskContext.lastAction = summary.slice(0, 200);
+      taskContext.lastResult = results.some(r => String(r?.status) === "error")
+        ? `error: ${results.find(r => String(r?.status) === "error")?.error || "unknown"}`.slice(0, 160)
+        : "ok";
+      taskContext.stepCount = step;
+
       const extractedNow = getExtractedTextFromResults(results);
       if (extractedNow) {
         extractedTextBuffer = extractedNow;
@@ -10123,14 +10454,35 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       : requiresHuman
       ? `I hit a CAPTCHA/challenge on ${finalState.url} and paused for manual help after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts. Please complete the challenge in the browser, then retry the task.`
       : await summarizeResult(goal, finalState, taskLog, visionFeedback, completed, models, extractedTextBuffer);
+    const agentClaimedSuccess = !!(completed && !requiresHuman && !stoppedByGuidance);
+    // `completed` above comes from verifyGoalCompletion(), an LLM self-check —
+    // i.e. the agent grading its own homework. actualSuccess is a cheap,
+    // independent cross-check using signals the LLM didn't produce: the raw
+    // failure-streak counter, whether the run ended in a captcha/human handoff,
+    // and whether it was cut short by operator guidance rather than reaching
+    // the goal on its own.
+    const actualSuccess = agentClaimedSuccess && failures === 0;
+    const discrepancy = agentClaimedSuccess && !actualSuccess;
     appendLearningEvent({
       kind: "task",
       phase: "end",
       goal: String(goal || "").slice(0, 240),
       host: getHostFromUrl(finalState.url),
-      completed: !!(completed && !requiresHuman && !stoppedByGuidance),
+      completed: agentClaimedSuccess,
       steps: taskLog.length,
       result: String(answer || "").slice(0, 260)
+    });
+    appendLearningEvent({
+      kind: "diagnosis",
+      goal: String(goal || "").slice(0, 240),
+      host: getHostFromUrl(finalState.url),
+      agentClaimedSuccess,
+      actualSuccess,
+      discrepancy,
+      finalFailureStreak: failures,
+      requiresHuman: !!requiresHuman,
+      stoppedByGuidance: !!stoppedByGuidance,
+      steps: taskLog.length
     });
     saveMemory({ goal, result: answer.slice(0, 200), completed, steps: taskLog.length });
     if (chatId) {
@@ -11279,7 +11631,7 @@ async function handleRequest(req, res) {
 
       const { chat } = ensureCurrentChat(userId);
       const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
-      const chatReply = await answerCasualChat(message, sessionHistory, models);
+      const chatReply = await answerCasualChat(message, sessionHistory, models, effectiveChatId, null, userId);
       appendChatMessage(effectiveChatId, "assistant", chatReply, { completed: true }, userId);
       agentMsg(chatReply);
       broadcast("chat_sync", { chatId: effectiveChatId });
@@ -11307,25 +11659,126 @@ let _browserRestartCount = 0;
 const BROWSER_RESTART_MAX = 5;        // give up after 5 consecutive crashes
 const BROWSER_RESTART_DELAY_MS = 2000;
 
+// Named network condition presets for CDP-based throttling. fast-3g and
+// slow-3g match the commonly-published Chrome DevTools request-level
+// throttling values (1.6Mbps/750Kbps/562.5ms and 50Kbps/50Kbps/2000ms
+// respectively) — verified against multiple current sources. "4g" below is
+// intentionally NOT claimed as an exact DevTools preset match: naming and
+// figures for "Slow 4G" vs "Fast 3G" are inconsistent across Chrome/DevTools
+// versions and tools, so this is a reasonable approximate custom profile,
+// not a verified canonical figure.
+const NETWORK_THROTTLE_PRESETS = Object.freeze({
+  "slow-3g": { offline: false, downloadThroughput: 50 * 1024 / 8, uploadThroughput: 50 * 1024 / 8, latency: 2000 },
+  "fast-3g": { offline: false, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8, latency: 562.5 },
+  "4g-approx": { offline: false, downloadThroughput: 4 * 1024 * 1024 / 8, uploadThroughput: 3 * 1024 * 1024 / 8, latency: 170 },
+  "offline": { offline: true, downloadThroughput: 0, uploadThroughput: 0, latency: 0 }
+});
+
+/**
+ * Opt-in CPU/network throttling via a raw CDP session — the actual
+ * controllable mechanism, distinct from (and not blocked by) Playwright's
+ * default launch args. Those defaults only stop Chrome's own automatic
+ * background-tab throttling; they don't provide a real dial, and removing
+ * them wouldn't give you one either. This does.
+ *
+ * Env vars (both optional, no-op if unset — never affects a normal run
+ * unless explicitly requested):
+ *   PUPPETEERR_CPU_THROTTLE_RATE   e.g. "4" = 4x slowdown (1 = disabled/normal)
+ *   PUPPETEERR_NETWORK_PROFILE     one of NETWORK_THROTTLE_PRESETS keys above
+ */
+async function applyDevToolsThrottling(page) {
+  const cpuRate = Number(process.env.PUPPETEERR_CPU_THROTTLE_RATE || 1);
+  const networkProfile = String(process.env.PUPPETEERR_NETWORK_PROFILE || "").trim().toLowerCase();
+
+  if ((!cpuRate || cpuRate <= 1) && !networkProfile) return; // nothing requested, skip entirely
+
+  const client = await page.context().newCDPSession(page);
+
+  if (cpuRate && cpuRate > 1) {
+    await client.send("Emulation.setCPUThrottlingRate", { rate: cpuRate });
+    console.log(`🐢 CDP CPU throttling active: ${cpuRate}x slowdown`);
+  }
+
+  if (networkProfile) {
+    const preset = NETWORK_THROTTLE_PRESETS[networkProfile];
+    if (!preset) {
+      console.warn(`⚠️  Unknown PUPPETEERR_NETWORK_PROFILE "${networkProfile}" — known: ${Object.keys(NETWORK_THROTTLE_PRESETS).join(", ")}`);
+    } else {
+      await client.send("Network.emulateNetworkConditions", preset);
+      console.log(`🐢 CDP network throttling active: ${networkProfile}`);
+    }
+  }
+}
+
 async function launchBrowser(headless) {
   console.log(`🚀 ${_browserRestartCount > 0 ? "Re-l" : "L"}aunching browser (headless=${headless}, attempt=${_browserRestartCount + 1})...`);
   fs.mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
 
-  const newContext = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+  // A crashed/killed Chrome process can leave Chromium's singleton lock
+  // files behind, which makes the NEXT launch attempt against this same
+  // profile dir fail immediately with "Opening in existing browser session"
+  // — even though nothing is actually running. This was silently forcing
+  // every crash-restart to waste time on a doomed real-Chrome attempt
+  // before falling back to Chromium. Clear them before every launch attempt;
+  // harmless if they don't exist, and safe here specifically because
+  // launchBrowser is only ever called when we've already decided the
+  // previous browser instance (if any) is dead (globals nulled first in
+  // handleBrowserCrash, or this is a fresh startup).
+  for (const lockFile of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
+    try { fs.rmSync(path.join(BROWSER_PROFILE_DIR, lockFile), { force: true }); } catch {}
+  }
+
+  // Prefer real Google Chrome over bundled Chromium: Chrome carries a genuine
+  // client/TLS/JA3 signature that anti-bot systems (Gmail's sign-in wall being
+  // a prime example — see the /signin/rejected loop) treat very differently
+  // from an obviously-automated Chromium binary. Playwright's `channel: "chrome"`
+  // drives the actual installed Chrome instead of the bundled build; if Chrome
+  // isn't installed on this machine, fall back to bundled Chromium rather than
+  // crashing the whole launch.
+  const launchOpts = {
     headless,
-    executablePath: require("playwright").chromium.executablePath(),
     userAgent: FINGERPRINT_USER_AGENT,
     locale: FINGERPRINT_LOCALE,
     timezoneId: FINGERPRINT_TIMEZONE,
     viewport: { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
     screen:   { width: FINGERPRINT_VIEWPORT_WIDTH, height: FINGERPRINT_VIEWPORT_HEIGHT },
+    // Array form (NOT `true`): excludes only these 3 flags from Playwright's
+    // defaults, keeping everything else — including --disable-dev-shm-usage
+    // (prevents renderer OOM crashes on small /dev/shm, exactly the crash
+    // pattern diagnosed earlier tonight) and Playwright's own sandbox/pipe
+    // handling. `ignoreDefaultArgs: true` (strip everything, rebuild by
+    // hand) was tried and reverted — it dropped --disable-dev-shm-usage,
+    // which is a real regression risk given this environment's tight RAM/
+    // zero swap, for a benefit (foreground-tab background-throttling flags)
+    // that likely doesn't even apply, since Puppeterr's page stays
+    // foregrounded via bringToFront() during real task execution.
+    ignoreDefaultArgs: [
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding"
+    ],
     args: [
       "--no-sandbox","--disable-setuid-sandbox",
       "--disable-infobars",
       "--window-position=0,0",
       `--window-size=${FINGERPRINT_VIEWPORT_WIDTH},${FINGERPRINT_VIEWPORT_HEIGHT}`
     ]
-  });
+  };
+
+  let newContext;
+  try {
+    newContext = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+      ...launchOpts,
+      channel: "chrome"
+    });
+    console.log("🟢 Launched using real Google Chrome (channel: chrome).");
+  } catch (chromeErr) {
+    console.log(`⚠️ Real Chrome unavailable (${chromeErr?.message || chromeErr}). Falling back to bundled Chromium.`);
+    newContext = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+      ...launchOpts,
+      executablePath: require("playwright").chromium.executablePath()
+    });
+  }
 
 await newContext.addInitScript(({ platform, cpuCores }) => {
   const applyOverride = (target, key, value) => {
@@ -11341,7 +11794,48 @@ await newContext.addInitScript(({ platform, cpuCores }) => {
   applyOverride(window.Navigator.prototype, "languages", ["en-US", "en"]);
   applyOverride(window.Navigator.prototype, "maxTouchPoints", 0);
   applyOverride(window.Navigator.prototype, "hardwareConcurrency", cpuCores);
-  applyOverride(window, "chrome", { runtime: {} });
+  // Real chrome.runtime has actual shape — an empty {} is itself a known
+  // automation tell some detection scripts check for directly.
+  applyOverride(window, "chrome", {
+    runtime: {
+      connect: () => {},
+      sendMessage: () => {},
+      onMessage: { addListener: () => {}, removeListener: () => {} },
+      id: undefined
+    },
+    csi: () => {},
+    loadTimes: () => ({})
+  });
+
+  // navigator.permissions.query({name:'notifications'}) mismatch is a
+  // well-known automation tell: real Chrome keeps this in sync with
+  // Notification.permission, automated browsers often report it out of
+  // sync (e.g. always "prompt" regardless of actual state).
+  try {
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => {
+      if (parameters && parameters.name === "notifications") {
+        return Promise.resolve({
+          state: (typeof Notification !== "undefined" ? Notification.permission : "default") === "default"
+            ? "prompt"
+            : Notification.permission,
+          onchange: null
+        });
+      }
+      return originalQuery(parameters);
+    };
+  } catch {}
+
+  // outerWidth/outerHeight stuck at 0 while inner* is set is a known
+  // headless/CDP artifact — real browser windows never have this gap.
+  try {
+    if (!window.outerWidth || window.outerWidth === 0) {
+      applyOverride(window, "outerWidth", window.innerWidth);
+    }
+    if (!window.outerHeight || window.outerHeight === 0) {
+      applyOverride(window, "outerHeight", window.innerHeight + 85); // + approx chrome UI height
+    }
+  } catch {}
 
   // ─────────────────────────────────────────────
   // WebGL Spoofing
@@ -11408,6 +11902,17 @@ await newContext.addInitScript(({ platform, cpuCores }) => {
   const newBrowser = newContext.browser();
   const newPage   = newContext.pages()[0] || await newContext.newPage();
   await newPage.bringToFront().catch(() => {});
+
+  // Opt-in CPU/network throttling via CDP — this is the actual controllable
+  // mechanism, not fighting Playwright's default anti-throttling launch
+  // flags (--disable-background-timer-throttling etc., which only stop
+  // Chrome's automatic background-tab throttling and don't provide a real
+  // dial anyway). Gated behind env vars so normal task runs are unaffected
+  // unless explicitly requested — useful for stress-testing under degraded
+  // conditions (see PUPPETEERR_CPU_THROTTLE_RATE / PUPPETEERR_NETWORK_PROFILE).
+  await applyDevToolsThrottling(newPage).catch(err => {
+    console.warn("⚠️  CDP throttling setup failed (non-fatal):", err.message);
+  });
 
   await newContext.setDefaultNavigationTimeout(90000);
   await newContext.setDefaultTimeout(45000);

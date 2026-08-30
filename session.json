@@ -439,7 +439,7 @@
   "strider": {
     "workerCount": 1,
     "seedUrls": [
-      "https://google.com/"
+      "https://docs.python.org/"
     ],
     "randomWalk": false,
     "runtimeOptions": {
@@ -448,7 +448,7 @@
       "challengeHandling": "observe"
     },
     "status": "running",
-    "updatedAt": "2026-07-29T23:25:06.882Z",
+    "updatedAt": "2026-08-21T21:35:14.582Z",
     "startedAt": "2026-07-29T23:25:06.882Z",
     "stoppedAt": null
   }
