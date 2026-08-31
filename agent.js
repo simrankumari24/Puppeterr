@@ -1387,7 +1387,15 @@ function readJsonBody(req) {
     req.on("end", () => {
       if (!body) return resolve({});
       try { resolve(JSON.parse(body)); }
-      catch (err) { reject(err); }
+      catch (err) {
+        // Tag clearly as a client-request problem (malformed JSON), not a
+        // server-side failure — callers can check .isBadRequest to return
+        // 400 with an actionable message instead of a generic 500 wrapping
+        // a cryptic V8-internal parse error string.
+        const wrapped = new Error(`Request body is not valid JSON: ${err.message}`);
+        wrapped.isBadRequest = true;
+        reject(wrapped);
+      }
     });
     req.on("error", reject);
   });
@@ -4271,8 +4279,15 @@ async function answerCasualChat(rawMessage, conversationHistory, models, chatId 
       // system prompt has no escalation instruction, so it structurally cannot
       // emit another <<BROWSING_TASK>> tag — the loop is capped by construction,
       // not just by convention.
+      const hasRealBrowsedContent = String(browsedAnswer || "").trim().length > 0;
       const followUp = await callCFAI(models.reasoner || models.router, [
-        { role: "system", content: "You are Puppeterr. Answer the user's original message using the browsing result below. Be conversational, matching their tone. Do not mention tags, tools, or internal steps." },
+        {
+          role: "system",
+          content: "You are Puppeterr. Answer the user's original message using ONLY the browsing result below. Be conversational, matching their tone. Do not mention tags, tools, or internal steps.\n" +
+            "GROUNDING RULE — critical: only state a specific fact (a date, number, name, version, quote) if it is literally present in the browsing result below. " +
+            (hasRealBrowsedContent ? "" : "The browsing result is empty or returned no usable content — you MUST NOT invent any specific facts to fill the gap. ") +
+            "If a detail the user might expect isn't present in the browsing result, say plainly that it wasn't found, rather than guessing or inferring a plausible-sounding value."
+        },
         { role: "user", content: `Original user message:\n${String(rawMessage || "")}\n\nBrowsing result:\n${String(browsedAnswer || "(no content returned)").slice(0, 4000)}` }
       ], 500, 1, getRuntimeTemperature(models));
       plain = stripThinking(followUp) || "I checked the page but couldn't put together a clear answer — want me to try again?";
@@ -5638,6 +5653,31 @@ Return JSON only:
     return params;
   }
 
+  // Lightweight static syntax check — catches the most common failure mode
+  // in LLM-generated selectors: truncated/unbalanced brackets or quotes
+  // (e.g. a selector cut off mid-generation as "[data-bid='"). This is a
+  // real, previously-unvalidated gap: sanitizePlannerSelector only repaired
+  // a few known-specific bad patterns above and returned everything else
+  // unchecked, letting genuinely malformed CSS reach Playwright and burn a
+  // guaranteed-fail action attempt before any fallback kicked in.
+  function hasBalancedSelectorSyntax(sel) {
+    const s = String(sel || "");
+    let paren = 0, bracket = 0, inSingle = false, inDouble = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inSingle) { if (c === "'" && s[i - 1] !== "\\") inSingle = false; continue; }
+      if (inDouble) { if (c === '"' && s[i - 1] !== "\\") inDouble = false; continue; }
+      if (c === "'") { inSingle = true; continue; }
+      if (c === '"') { inDouble = true; continue; }
+      if (c === "(") paren++;
+      else if (c === ")") paren--;
+      else if (c === "[") bracket++;
+      else if (c === "]") bracket--;
+      if (paren < 0 || bracket < 0) return false;
+    }
+    return paren === 0 && bracket === 0 && !inSingle && !inDouble;
+  }
+
   function sanitizePlannerSelector(rawSelector, actionName = "") {
     let selector = String(rawSelector || "").trim();
     if (!selector) return selector;
@@ -5660,6 +5700,27 @@ Return JSON only:
         }
         return `:text(${JSON.stringify(text)})`;
       }
+    }
+
+    // Final validation: if the selector (after all repairs above) is still
+    // syntactically broken, don't hand it to Playwright as-is — that's a
+    // guaranteed-fail action attempt. Try to salvage any quoted text from
+    // within it as a text-based fallback selector; otherwise flag it
+    // clearly so the caller/log shows WHY it failed, instead of an opaque
+    // Playwright syntax error several layers away from the real cause.
+    if (!hasBalancedSelectorSyntax(selector)) {
+      const salvageQuote = selector.match(/['"]([^'"]{2,80})['"]/);
+      if (salvageQuote && salvageQuote[1].trim()) {
+        const text = salvageQuote[1].trim();
+        return ["click", "dblclick", "hover"].includes(String(actionName || ""))
+          ? `button:has-text(${JSON.stringify(text)}), a:has-text(${JSON.stringify(text)}), [role='button']:has-text(${JSON.stringify(text)})`
+          : `:text(${JSON.stringify(text)})`;
+      }
+      // No salvageable text — return a selector that's syntactically valid
+      // but matches nothing, so the caller's normal fallback/retry logic
+      // (which already exists for "selector not found") handles this
+      // cleanly instead of throwing an unrelated CSS syntax error.
+      return "__invalid_selector_no_match__";
     }
 
     return selector;
@@ -6935,7 +6996,14 @@ CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with 
 CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Bing accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it.
 Planner mode: deterministic, progress-first, minimal-risk.
 
-Allowed actions: goto,reload,goBack,goForward,click,dblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,mouseMove,mouseClick,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,getText,getAttribute,getAllText,isVisible,elementExists,evaluate,screenshot,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
+Allowed actions: goto,reload,goBack,goForward,click,dblclick,mouseDblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,keyboardDown,keyboardUp,mouseMove,mouseClick,mouseDown,mouseUp,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,waitForNavigation,getText,getAttribute,getAllText,getHTML,getTitle,getURL,countElements,isVisible,elementExists,expectVisible,expectHidden,expectText,expectURL,evaluate,screenshot,fullPageScreenshot,setViewport,uploadFile,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
+
+Lesser-known but real actions worth knowing about:
+- getTitle / getURL: instant, cheap checks — use these instead of getAllText when you only need the page title or current URL, not the full content.
+- countElements: returns how many elements match a selector (e.g. counting search results, list items) without extracting their text.
+- expectVisible / expectHidden / expectText / expectURL: combined wait+verify in one action — use these for verification steps instead of a separate waitForSelector followed by a manual comparison.
+- uploadFile: requires a real, already-existing local file path in "filePath" — do not invent a path that doesn't exist.
+- getHTML: raw HTML of a selector/page when text extraction alone (getText/getAllText) loses structure you need (e.g. table layout, attributes).
 
 Hard rules:
 - Output only valid JSON using schema below.
@@ -10764,7 +10832,7 @@ async function handleRequest(req, res) {
       });
       sendJson(res, 200, { ok: true, queued: guidanceQueue.length, priority: policy.priority, stopRequested: policy.stopRequested });
     } catch (err) {
-      sendJson(res, 500, { error: err.message });
+      sendJson(res, err?.isBadRequest ? 400 : 500, { error: err.message });
     }
     return;
   }
@@ -11489,12 +11557,27 @@ async function handleRequest(req, res) {
         const models = attachModelRuntimeParams(getActiveModels(chat), getActiveModelParams(chat));
         try {
           await runTask(browserGoal, models, chatId, browserRuntime, userId);
+          broadcast("url", { url: page ? page.url() : null });
+        } catch (err) {
+          // The HTTP response above was already sent (202 Accepted) before
+          // runTask runs, so a thrown error here has nowhere to go except a
+          // global unhandledRejection handler that only logs server-side —
+          // the user watching the chat UI would see nothing at all and the
+          // task would just appear to hang forever. Surface it into the
+          // chat explicitly, matching how the /image command handler
+          // already reports its own failures.
+          console.error("Background /browser task failed:", err?.message || err);
+          try {
+            appendChatMessage(chatId, "assistant", `Task failed: ${err?.message || "unknown error"}`, { completed: false, command: command.command, error: true }, userId);
+            broadcast("chat_sync", { chatId });
+          } catch (notifyErr) {
+            console.error("Failed to notify chat of task failure:", notifyErr?.message || notifyErr);
+          }
         } finally {
           if (taskUser) {
             await incrementTaskUsage(taskUser);
           }
         }
-        broadcast("url", { url: page.url() });
         return;
       }
 
