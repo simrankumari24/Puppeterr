@@ -368,7 +368,24 @@ const actions = {
   uploadFile: async ({ page, selector, filePath }) => page.setInputFiles(selector, filePath),
 
   // 🧩 JS EXECUTION
-  evaluate: async ({ page, script }) => page.evaluate(script),
+  // Wrap in new Function() rather than passing the raw string to
+  // page.evaluate() directly. The planner frequently generates scripts like
+  // "return document.title;" — a bare top-level return, which is a
+  // SyntaxError ("Illegal return statement") when evaluated as a raw
+  // string/expression, since a return statement is only valid inside a
+  // function body. new Function(script) makes the script text INTO a
+  // function body, so bare returns become valid; scripts that already
+  // wrap themselves in an IIFE, or that are just a plain expression with
+  // no return at all, continue to work unchanged either way.
+  evaluate: async ({ page, script }) => {
+    let fn;
+    try {
+      fn = new Function(String(script || ""));
+    } catch (err) {
+      throw new Error(`evaluate script has a syntax error: ${err.message}`);
+    }
+    return page.evaluate(fn);
+  },
 
   // 🧪 ASSERTIONS
   expectVisible: async ({ page, selector, timeout = 6000 }) => page.waitForSelector(selector, { state: "visible", timeout }),
