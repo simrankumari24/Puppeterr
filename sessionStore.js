@@ -65,11 +65,15 @@ async function loadSessionState(options = {}) {
     const remoteState = await remoteRequest("GET", key);
     if (remoteState) {
       if (localPath) {
-        try { writeLocalSession(localPath, remoteState); } catch {}
+        try { writeLocalSession(localPath, remoteState); } catch (err) {
+          console.warn(`sessionStore: local write failed for ${localPath}: ${err?.message || err}`);
+        }
       }
       return remoteState;
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`sessionStore: remote load failed for ${key}: ${err?.message || err}`);
+  }
 
   return readLocalSession(localPath);
 }
@@ -80,14 +84,20 @@ async function saveSessionState(options = {}, state) {
   let remoteSaved = false;
 
   if (localPath) {
-    writeLocalSession(localPath, state);
-    localSaved = true;
+    try {
+      writeLocalSession(localPath, state);
+      localSaved = true;
+    } catch (err) {
+      console.warn(`sessionStore: local save failed for ${localPath}: ${err?.message || err}`);
+    }
   }
 
   try {
     const remoteResult = await remoteRequest("PUT", key, state);
     remoteSaved = !!remoteResult;
-  } catch {}
+  } catch (err) {
+    console.warn(`sessionStore: remote save failed for ${key}: ${err?.message || err}`);
+  }
 
   return { localSaved, remoteSaved };
 }
@@ -95,12 +105,16 @@ async function saveSessionState(options = {}, state) {
 async function deleteSessionState(options = {}) {
   const { localPath, key = normalizeSessionKey(localPath) } = options;
   if (localPath && fs.existsSync(localPath)) {
-    try { fs.unlinkSync(localPath); } catch {}
+    try { fs.unlinkSync(localPath); } catch (err) {
+      console.warn(`sessionStore: local delete failed for ${localPath}: ${err?.message || err}`);
+    }
   }
 
   try {
     await remoteRequest("DELETE", key);
-  } catch {}
+  } catch (err) {
+    console.warn(`sessionStore: remote delete failed for ${key}: ${err?.message || err}`);
+  }
 }
 
 async function hasSessionState(options = {}) {

@@ -324,8 +324,10 @@ function runElementMapForUrl(url, onDone) {
   }
 }
 
-const CF_API_TOKEN  = process.env.CF_API_TOKEN;
-const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const { cloudflareModeFromEnv } = require("./startupConfig");
+const cloudflareMode = cloudflareModeFromEnv(process.env);
+const CF_API_TOKEN  = cloudflareMode.token;
+const CF_ACCOUNT_ID = cloudflareMode.accountId;
 // Dynamic Routes (the "dynamic/{name}" models configured in the AI Gateway
 // dashboard) are invoked through the /compat/chat/completions endpoint and
 // require a *gateway* auth header (cf-aig-authorization), which is separate
@@ -358,6 +360,12 @@ const SMTP_FROM    = process.env.SMTP_FROM || `"Puppeterr" <${process.env.SMTP_U
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const { loadSessionState } = require("./sessionStore");
+const {
+  MAX_MODEL_INPUT_CHARS,
+  CAPTCHA_TEXT_SCAN_LIMIT,
+  chunkTextForSummary,
+  sanitizeTextForCaptchaScan
+} = require("./modelTextUtils");
 const BROWSER_PROFILE_DIR = process.env.BROWSER_PROFILE_DIR || path.join(process.cwd(), ".puppeterr-profile");
 const FINGERPRINT_USER_AGENT = process.env.FINGERPRINT_USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const FINGERPRINT_LOCALE = process.env.FINGERPRINT_LOCALE || "en-US";
@@ -374,6 +382,9 @@ const MODEL_CACHE_MS = 15 * 60 * 1000;
 const CAPTCHA_HUMAN_CHECK_LIMIT = Math.max(1, Number(process.env.CAPTCHA_HUMAN_CHECK_LIMIT || 10));
 const CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES = Math.max(1, Number(process.env.CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES || 3));
 const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 6000);
+const CAPTCHA_TEXT_NOISE_GUARD_CHARS = 12000;
+const PAGE_TEXT_MEMORY_LIMIT = 12;
+const PAGE_TEXT_MEMORY_TTL_MS = 20 * 60 * 1000;
 const CAPTCHA_GENTLE_MODE_MS = Math.max(30000, Number(process.env.CAPTCHA_GENTLE_MODE_MS || 180000));
 const CAPTCHA_GENTLE_PACING_MULTIPLIER = Math.max(1, Number(process.env.CAPTCHA_GENTLE_PACING_MULTIPLIER || 1.8));
 const CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS = Math.max(200, Number(process.env.CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS || 900));
@@ -894,6 +905,7 @@ let sessionHistory  = [];
 let agentRunning    = false;
 let currentTaskUserId = null; // tracks which user triggered the active task
 let currentTaskChatId = null; // tracks the active task's chat for runtime error and summary messages
+let pageTextMemory = [];
 
 async function ensureActivePage() {
   if (page) {
@@ -3180,13 +3192,53 @@ async function runCloudflareStartupPreflight() {
   }
 }
 
+async function summarizeOversizedModelInput(modelName, messages, maxTokens = 512) {
+  const candidateText = (Array.isArray(messages) ? messages : [])
+    .map((message) => {
+      if (typeof message?.content === "string") return message.content;
+      if (Array.isArray(message?.content)) return message.content.map(block => typeof block?.text === "string" ? block.text : "").join("\n");
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (!candidateText || candidateText.length <= MAX_MODEL_INPUT_CHARS) {
+    return { messages, summaryUsed: false };
+  }
+
+  const chunks = chunkTextForSummary(candidateText, 12000);
+  const summaries = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const prompt = `Summarize the following text faithfully for a later model call. Keep the meaning, key facts, entities, and action items, but compress it to a concise summary. Do not invent missing facts.\n\nText chunk ${i + 1}/${chunks.length}:\n${chunk.slice(0, 12000)}`;
+    const summary = await callCFAI(modelName, [{ role: "user", content: prompt }], maxTokens, 1, getRuntimeTemperature({ reasoner: modelName, planner: modelName }));
+    summaries.push(summary);
+  }
+
+  const summaryText = summaries.filter(Boolean).join("\n\n---\n\n");
+  return {
+    messages: [{ role: "user", content: `The original user input was too large for a single model call. Here is a condensed summary of the content to preserve meaning while reducing context usage:\n\n${summaryText}` }],
+    summaryUsed: true
+  };
+}
+
 async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null, options = null) {
   const requireNonEmpty = !!(options && options.requireNonEmpty);
   const nonEmptyLabel = String((options && options.nonEmptyLabel) || modelName || "model");
   const hostedRunModel = isCloudflareHostedRunModel(modelName);
+  const oversized = Array.isArray(messages)
+    ? messages.reduce((sum, message) => sum + String(typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.map(block => typeof block?.text === "string" ? block.text : "").join("\n") : "").length, 0)
+    : 0;
+
+  let resolvedMessages = messages;
+  if (oversized > MAX_MODEL_INPUT_CHARS) {
+    const prepared = await summarizeOversizedModelInput(modelName, messages, Math.min(maxTokens, 512));
+    resolvedMessages = prepared.messages;
+  }
+
   const safeMessages = hostedRunModel
-    ? adaptMessagesForHostedRun(normalizeMessages(messages))
-    : normalizeMessages(messages);
+    ? adaptMessagesForHostedRun(normalizeMessages(resolvedMessages))
+    : normalizeMessages(resolvedMessages);
   const hostedRoleSafeMessages = hostedRunModel
     ? safeMessages.map((message) => ({
         ...message,
@@ -4701,14 +4753,55 @@ async function pinchListWebhookTypes() {
     }
   }
 
+  function rememberPageTextForReasoning(label, text) {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim();
+    if (!normalized) return;
+    const entry = { label, text: normalized.slice(0, 16000), ts: Date.now() };
+    pageTextMemory = pageTextMemory.filter(item => Date.now() - item.ts < PAGE_TEXT_MEMORY_TTL_MS);
+    pageTextMemory.push(entry);
+    if (pageTextMemory.length > PAGE_TEXT_MEMORY_LIMIT) pageTextMemory.shift();
+  }
+
+  function getPageTextMemoryForPrompt() {
+    const now = Date.now();
+    pageTextMemory = pageTextMemory.filter(item => now - item.ts < PAGE_TEXT_MEMORY_TTL_MS);
+    return pageTextMemory.map((entry, idx) => `Memory ${idx + 1} [${entry.label}]: ${entry.text.slice(0, 2500)}`).join("\n\n");
+  }
+
+  function shouldForcePageTextExtraction(goalText, state, taskLog, extractedBuffer) {
+    const g = String(goalText || "").toLowerCase();
+    const pageLike = /\b(page|website|site|repo|repository|document|article|content|text|read|summarize|summary|extract|scrape|get text|get all text)\b/.test(g);
+    if (!pageLike) return false;
+    const recentGetAllText = (taskLog || []).slice(-8).filter(line => String(line).toLowerCase().includes("getalltext:ok")).length;
+    if (recentGetAllText > 0) return false;
+    const hasFreshBuffer = String(extractedBuffer || "").trim().length >= 200;
+    return !hasFreshBuffer && !!(state?.url || state?.text);
+  }
+
   async function detectCaptchaChallenge(state) {
-    const lowerText = `${state?.title || ""}\n${state?.text || ""}`.toLowerCase();
+    const rawText = `${state?.title || ""}\n${state?.text || ""}`;
+    const largeTextVolume = String(rawText || "").length > CAPTCHA_TEXT_NOISE_GUARD_CHARS;
+    const lowerText = sanitizeTextForCaptchaScan(rawText, CAPTCHA_TEXT_SCAN_LIMIT).toLowerCase();
     const currentUrl = String(state?.url || "").toLowerCase();
+    const githubSafeHost = isGithubSafeHost(state?.url || "");
+
+    if (githubSafeHost) {
+      return {
+        detected: false,
+        strongEvidence: false,
+        score: 0,
+        reason: "" 
+      };
+    }
 
     // Avoid false positives on normal auth routes like Google sign-in
     // where "challenge" can appear in the URL without any CAPTCHA widget.
+    // Also treat very large page text as noisy unless there is a strong,
+    // concrete CAPTCHA indicator: huge DOM dumps are often not actual bot-checks.
+    // When large text is present, only escalate if there is explicit DOM/url signal
+    // or a vision-confirmed CAPTCHA state.
     const strongTextHit = /(captcha|turnstile|hcaptcha|recaptcha|cf\s*challenge|cloudflare\s*challenge|cf-chl|ray\s+id)/.test(lowerText);
-    const weakTextHit = /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
+    const weakTextHit = !largeTextVolume && /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
     const urlHit = /(captcha|cf_chl|turnstile|hcaptcha|recaptcha|challenge-platform|__cf_chl_)/.test(currentUrl);
     const domSignals = await page.evaluate(() => {
       const vw = Math.max(1, window.innerWidth || 1920);
@@ -5618,6 +5711,16 @@ Return JSON only:
     const expected = String(expectedHost || "").toLowerCase().replace(/^www\./, "");
     if (!actual || !expected) return false;
     return actual === expected || actual.endsWith(`.${expected}`);
+  }
+
+  function isGithubSafeHost(rawUrl) {
+    try {
+      const host = String(rawUrl || "").toLowerCase();
+      const normalized = host.includes("//") ? new URL(rawUrl).hostname.toLowerCase() : host;
+      return hostMatchesExpectedHost(normalized, "github.com") || hostMatchesExpectedHost(normalized, "www.github.com");
+    } catch {
+      return String(rawUrl || "").toLowerCase().includes("github.com");
+    }
   }
 
   function buildActionSignature(action, params) {
@@ -6643,6 +6746,7 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     .map(l => `"${compactPromptValue(l.text, 24)}"=>${compactUrlForPrompt(l.href)}`)
     .join(" | ") || "none";
   const compactTaskLog = taskLog.slice(-MAX_TASK_LOG_LINES_IN_PROMPT).map(line => compactPromptValue(line, 110)).join(" || ") || "none";
+  const compactPageMemory = compactPromptValue(getPageTextMemoryForPrompt() || "none", 700);
   const fullPageText = String(state.text || "").replace(/\s+/g, " ").trim();
   // compactPageText is computed further below, once every other field in
   // this prompt is known — see compactPageTextDynamic. It needs to be
@@ -6728,6 +6832,7 @@ DirectNavigationHint:${taskHints.simpleFastPathCandidate ? "There is a direct na
 History:${compactTaskLog}
 Recon:${compactRecon}
 PageText:${compactPageText}
+PageTextMemory:${compactPageMemory}
 Learning:${compactPromptValue(learningContext, 200)}
 Failures:${failures};Stuck:${stuck ? "yes" : "no"}
 Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.`;
@@ -6994,6 +7099,7 @@ const PLANNER_TIPS_50 = `
 const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start with { and end with }. No prose, no markdown, no code fences.
 CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with Enter or submitForm. Do NOT click "Search" buttons.
 CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Bing accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it.
+CRITICAL: Github.com and its variants DO NOT have captcha's even if the text is strong.
 Planner mode: deterministic, progress-first, minimal-risk.
 
 Allowed actions: goto,reload,goBack,goForward,click,dblclick,mouseDblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,keyboardDown,keyboardUp,mouseMove,mouseClick,mouseDown,mouseUp,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,waitForNavigation,getText,getAttribute,getAllText,getHTML,getTitle,getURL,countElements,isVisible,elementExists,expectVisible,expectHidden,expectText,expectURL,evaluate,screenshot,fullPageScreenshot,setViewport,uploadFile,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
@@ -8179,9 +8285,10 @@ function shouldAcceptPlannerDoneDecision(goalText, state, extractedTextBuffer = 
 
 function isExtractionSummaryGoal(goalText) {
   const g = String(goalText || "").toLowerCase();
-  const wantsSummary = /\b(summarize|summary|summery|tldr|tl;dr)\b/.test(g);
-  const wantsExtract = /\b(extract|get text|get all text|current text|read page|page text|content)\b/.test(g);
-  return wantsSummary && wantsExtract;
+  const wantsSummary = new RegExp("\\b(summarize|summary|summery|tldr|tl;dr|brief|overview)\\b", "i").test(g);
+  const wantsExtract = new RegExp("\\b(extract|get text|get all text|current text|read page|page text|content|read this page|page content|full text|main content)\\b", "i").test(g);
+  const pageLikelyTask = new RegExp("\\b(page|website|webpage|site|document|article|repo|repository|read|look at|what's on this page|what is on this page|what does this page say|content of the page)\\b", "i").test(g);
+  return wantsSummary || wantsExtract || pageLikelyTask;
 }
 
 function getExtractedTextFromResults(results = []) {
@@ -10025,6 +10132,15 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
 
       // NARRATION: Describe what we're about to do in plain English
+      if (shouldForcePageTextExtraction(goal, state, taskLog, extractedTextBuffer)) {
+        const forcedText = await withExecutorWork(() => extractMainContent({ ...state, page }));
+        if (forcedText && forcedText.trim().length >= 200) {
+          extractedTextBuffer = forcedText;
+          rememberPageTextForReasoning("forced-page-extraction", forcedText);
+          think("Page-like task detected: forced page extraction so the planner has stable text to summarize from.");
+        }
+      }
+
       if (step === 1) narrate(`Starting task: "${goal}". Let me figure out the best approach...`);
       else if (stuck) narrate(`I seem to be going in circles. Let me try a completely different approach.`);
       else if (failures >= 2) narrate(`The last ${failures} attempts failed. Switching strategy now.`);
@@ -10328,6 +10444,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       const extractedNow = getExtractedTextFromResults(results);
       if (extractedNow) {
         extractedTextBuffer = extractedNow;
+        rememberPageTextForReasoning("result-page-text", extractedNow);
         if (searchEngineCompareGoal) {
           const hostNow = getHostFromUrl(state.url);
           if ((hostNow === "google.com" || hostNow.endsWith(".google.com")) && !compareSnapshots.google) {
@@ -10357,19 +10474,22 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
 
       // For extract+summarize goals, trigger smart extraction and complete immediately.
       const searchEvidenceReady = !extractSearchQuery(goal) || hasSearchGoalEvidence(goal, state);
-      if (isExtractionSummaryGoal(goal) && extractedTextBuffer && searchEvidenceReady) {
-        // If we haven't done smart extraction yet, do it now for cleaner summary content.
-        if (extractedTextBuffer.length < 2000) {
-          const smartText = await withExecutorWork(() => extractMainContent({ ...state, page }));
-          if (smartText && smartText.length > extractedTextBuffer.length) {
-            extractedTextBuffer = smartText;
-          }
+      if (isExtractionSummaryGoal(goal) && searchEvidenceReady) {
+        const forcedTextRequired = shouldForcePageTextExtraction(goal, state, taskLog, extractedTextBuffer);
+        const betterText = forcedTextRequired || !extractedTextBuffer || extractedTextBuffer.length < 2000
+          ? await withExecutorWork(() => extractMainContent({ ...state, page }))
+          : "";
+        if (betterText && betterText.length > String(extractedTextBuffer || "").length) {
+          extractedTextBuffer = betterText;
+          rememberPageTextForReasoning("forced-page-summary-text", betterText);
         }
-        const doneLine = `Step ${step}: DONE (text extracted for summary)`;
-        taskLog.push(doneLine);
-        stepLogMsg(doneLine);
-        completed = true;
-        break;
+        if (extractedTextBuffer && extractedTextBuffer.trim().length >= 200) {
+          const doneLine = `Step ${step}: DONE (text extracted for summary)`;
+          taskLog.push(doneLine);
+          stepLogMsg(doneLine);
+          completed = true;
+          break;
+        }
       }
 
       let recoveredByActionFailure = false;
@@ -12131,11 +12251,17 @@ async function handleBrowserCrash(reason) {
 
 (async () => {
   try {
-    if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
-      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID"); process.exit(1);
+    if (cloudflareMode.shouldExit) {
+      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID and PUPPETERR_REQUIRE_CF is enabled.");
+      process.exit(1);
     }
 
-    await runCloudflareStartupPreflight();
+    if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
+      console.warn("⚠️  Cloudflare credentials missing; running in degraded mode with text model fallbacks only.");
+      console.warn("   Set CF_API_TOKEN and CF_ACCOUNT_ID for full AI functionality, or set PUPPETERR_REQUIRE_CF=1 to enforce strict startup.");
+    } else {
+      await runCloudflareStartupPreflight();
+    }
 
     const browserHeadlessEnv = String(process.env.PUPPETERR_HEADLESS || "").trim().toLowerCase();
     if (browserHeadlessEnv === "false" || browserHeadlessEnv === "0" || browserHeadlessEnv === "no") {

@@ -351,7 +351,7 @@ If you hit a missing-browser or missing-library error on first run:
    ```
    For real Chrome specifically (preferred — see Known Issues on
    fingerprinting), use `npx playwright install chrome` instead.
-3. **Install required system libraries:**
+3. **Install required system libraries and XVFB in one pass:**
    ```bash
    sudo apt-get update
    sudo apt-get install -y \
@@ -361,17 +361,15 @@ If you hit a missing-browser or missing-library error on first run:
      libgbm1 \
      libnss3 \
      libxss1 \
-     libasound2t64
+     libasound2t64 \
+     xvfb
    ```
 4. **Run the program:**
    ```bash
    npm start
    ```
-5. **If `xvfb` is missing** (fails with a module-related error):
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y xvfb
-   ```
+
+> If a later run still complains about missing display support, rerun the same install command above and verify `xvfb-run` is available with `command -v xvfb-run`.
 
 ### Clearing leftover processes
 
