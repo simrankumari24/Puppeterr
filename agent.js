@@ -9,14 +9,199 @@ const { execSync, exec, spawn } = require("child_process");
 const bcrypt = require("bcryptjs");
 const { fetch: undiciFetch } = require("undici");
 const Human = require("./Human.js");
+
+// -----------------------------------------------------------------------
+// DocumentSummarizer (merged inline from DocumentSummarizer.js) —
+// hierarchical map-reduce summarization for documents too large for a
+// single model context window.
+//
+// Real capability, honestly scoped: this does NOT make context windows
+// "infinite" for free — it trades wall-clock time (via parallel chunk
+// processing) for coverage of arbitrarily large documents, at a real,
+// linear-ish token/cost cost per chunk. Cross-chunk references (a function
+// defined in chunk 3 called from chunk 47) are NOT resolved — each chunk
+// is summarized independently, then summaries are merged in a recursive
+// tree. This is the standard, well-known "map-reduce summarization"
+// pattern, not a novel trick.
+//
+// Dependency-free by design (no AST parser required) — uses brace/paren/
+// bracket depth tracking to find safe split points for code-like text,
+// so a chunk boundary doesn't land mid-function or mid-string literal
+// whenever a safe boundary is findable within budget.
+// -----------------------------------------------------------------------
+
+/**
+ * Split text into chunks of at most maxChunkChars, preferring to break at
+ * a point where brace/paren/bracket depth is 0 (top-level statement
+ * boundary) rather than mid-block. Falls back to the nearest newline, then
+ * to a hard cut, if no safe structural boundary exists within the budget.
+ */
+function chunkTextStructurally(text, maxChunkChars = 8000) {
+  const str = String(text || "");
+  if (str.length <= maxChunkChars) return str.length ? [str] : [];
+
+  const chunks = [];
+  let start = 0;
+
+  while (start < str.length) {
+    const hardEnd = Math.min(start + maxChunkChars, str.length);
+    if (hardEnd >= str.length) {
+      chunks.push(str.slice(start));
+      break;
+    }
+
+    // Scan from start to hardEnd tracking bracket depth and string state,
+    // remembering the LAST position where depth was 0 and we're not
+    // inside a string/comment — that's our best safe boundary candidate.
+    let depth = 0;
+    let inSingle = false, inDouble = false, inTemplate = false, inLineComment = false, inBlockComment = false;
+    let lastSafeBoundary = -1;
+    let lastNewline = -1;
+
+    for (let i = start; i < hardEnd; i++) {
+      const c = str[i];
+      const prev = str[i - 1];
+
+      if (inLineComment) { if (c === "\n") inLineComment = false; continue; }
+      if (inBlockComment) { if (c === "/" && prev === "*") inBlockComment = false; continue; }
+      if (inSingle) { if (c === "'" && prev !== "\\") inSingle = false; continue; }
+      if (inDouble) { if (c === '"' && prev !== "\\") inDouble = false; continue; }
+      if (inTemplate) { if (c === "`" && prev !== "\\") inTemplate = false; continue; }
+
+      if (c === "/" && str[i + 1] === "/") { inLineComment = true; continue; }
+      if (c === "/" && str[i + 1] === "*") { inBlockComment = true; continue; }
+      if (c === "'") { inSingle = true; continue; }
+      if (c === '"') { inDouble = true; continue; }
+      if (c === "`") { inTemplate = true; continue; }
+
+      if (c === "{" || c === "(" || c === "[") depth++;
+      else if (c === "}" || c === ")" || c === "]") depth = Math.max(0, depth - 1);
+
+      if (c === "\n") {
+        lastNewline = i;
+        if (depth === 0) lastSafeBoundary = i;
+      }
+    }
+
+    let cutAt;
+    if (lastSafeBoundary > start) cutAt = lastSafeBoundary + 1;
+    else if (lastNewline > start) cutAt = lastNewline + 1;
+    else cutAt = hardEnd; // no newline at all in this window — hard cut, unavoidable
+
+    chunks.push(str.slice(start, cutAt));
+    start = cutAt;
+  }
+
+  return chunks;
+}
+
+/**
+ * Run summarizeFn(chunk, index) over all chunks, at most `concurrency` in
+ * flight at once (batched, not a full Promise.all over everything at
+ * once — bounds simultaneous model-call load the same way
+ * STRESS_TESTER_CONCURRENCY does for task cycles).
+ */
+async function summarizeChunksInParallel(chunks, summarizeFn, concurrency = 4) {
+  const results = new Array(chunks.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < chunks.length) {
+      const i = cursor++;
+      try {
+        results[i] = await summarizeFn(chunks[i], i, chunks.length);
+      } catch (err) {
+        results[i] = { error: true, message: err?.message || String(err) };
+      }
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(concurrency, chunks.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
+/**
+ * Recursively merge a list of summaries down to one, batchSize at a time,
+ * via mergeFn(batchOfSummaries) => mergedSummary. Each recursion level is
+ * itself run with bounded concurrency. Returns the final single summary
+ * plus how many reduce levels it took (useful for logging/diagnostics —
+ * this should be visible, not a black box, matching how everything else
+ * measurable was built tonight).
+ */
+async function hierarchicalReduce(summaries, mergeFn, { batchSize = 5, concurrency = 4 } = {}) {
+  let level = 0;
+  let current = summaries.slice();
+
+  while (current.length > 1) {
+    level++;
+    const batches = [];
+    for (let i = 0; i < current.length; i += batchSize) {
+      batches.push(current.slice(i, i + batchSize));
+    }
+    current = await summarizeChunksInParallel(
+      batches,
+      (batch) => mergeFn(batch, level),
+      concurrency
+    );
+    // Unwrap any error placeholders from a failed merge so they don't
+    // silently poison the next level — surface as plain text instead.
+    current = current.map(r => (r && r.error) ? `[merge error: ${r.message}]` : r);
+  }
+
+  return { finalSummary: current[0] || "", reduceLevels: level };
+}
+
+/**
+ * summarizeLargeDocument(text, { chunkSummarizer, mergeSummarizer, ...opts })
+ *
+ * chunkSummarizer(chunkText, index, total) => Promise<string>  — required
+ * mergeSummarizer(arrayOfSummaries, level) => Promise<string>  — required
+ * (both injected so this logic has no dependency on any specific model
+ * API — the caller wires in whatever callCFAI/model call it wants)
+ *
+ * Returns { finalSummary, chunkCount, reduceLevels, chunkErrors }.
+ */
+async function summarizeLargeDocument(text, options = {}) {
+  const {
+    chunkSummarizer,
+    mergeSummarizer,
+    maxChunkChars = 8000,
+    mapConcurrency = 4,
+    reduceBatchSize = 5,
+    reduceConcurrency = 4
+  } = options;
+
+  if (typeof chunkSummarizer !== "function" || typeof mergeSummarizer !== "function") {
+    throw new Error("summarizeLargeDocument requires chunkSummarizer and mergeSummarizer functions");
+  }
+
+  const chunks = chunkTextStructurally(text, maxChunkChars);
+  if (chunks.length === 0) return { finalSummary: "", chunkCount: 0, reduceLevels: 0, chunkErrors: 0 };
+  if (chunks.length === 1) {
+    const only = await chunkSummarizer(chunks[0], 0, 1);
+    return { finalSummary: only, chunkCount: 1, reduceLevels: 0, chunkErrors: 0 };
+  }
+
+  const chunkSummaries = await summarizeChunksInParallel(chunks, chunkSummarizer, mapConcurrency);
+  const chunkErrors = chunkSummaries.filter(s => s && s.error).length;
+  const cleanSummaries = chunkSummaries.map(s => (s && s.error) ? `[chunk summarization failed: ${s.message}]` : s);
+
+  const { finalSummary, reduceLevels } = await hierarchicalReduce(
+    cleanSummaries,
+    mergeSummarizer,
+    { batchSize: reduceBatchSize, concurrency: reduceConcurrency }
+  );
+
+  return { finalSummary, chunkCount: chunks.length, reduceLevels, chunkErrors };
+}
+// --- end merged DocumentSummarizer ---
 const nodemailer = require("nodemailer");
 const actions = require("./actions");
 const { HUMAN_BRIDGE_HTML } = require("./humanBridge");
 const pinchApi = require("pinch-api");
 const pixelGridReasoner = require("./pixelGridReasoner");
 const StriderIntegration = require("./strider-integration");
-const { createKnowledgeBus } = require("./knowledgeBus");
-const { createKnowledgeModules } = require("./knowledgeModules");
 const { resolveChatWriteUserId, resolveChatIdForWrite } = require("./chat-scope");
 const {
   installVoidElementMapInitScript,
@@ -326,10 +511,8 @@ function runElementMapForUrl(url, onDone) {
   }
 }
 
-const { cloudflareModeFromEnv } = require("./startupConfig");
-const cloudflareMode = cloudflareModeFromEnv(process.env);
-const CF_API_TOKEN  = cloudflareMode.token;
-const CF_ACCOUNT_ID = cloudflareMode.accountId;
+const CF_API_TOKEN  = process.env.CF_API_TOKEN;
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
 // Dynamic Routes (the "dynamic/{name}" models configured in the AI Gateway
 // dashboard) are invoked through the /compat/chat/completions endpoint and
 // require a *gateway* auth header (cf-aig-authorization), which is separate
@@ -362,12 +545,6 @@ const SMTP_FROM    = process.env.SMTP_FROM || `"Puppeterr" <${process.env.SMTP_U
 const APP_BASE_URL = String(process.env.APP_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const { loadSessionState } = require("./sessionStore");
-const {
-  MAX_MODEL_INPUT_CHARS,
-  CAPTCHA_TEXT_SCAN_LIMIT,
-  chunkTextForSummary,
-  sanitizeTextForCaptchaScan
-} = require("./modelTextUtils");
 const BROWSER_PROFILE_DIR = process.env.BROWSER_PROFILE_DIR || path.join(process.cwd(), ".puppeterr-profile");
 const FINGERPRINT_USER_AGENT = process.env.FINGERPRINT_USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const FINGERPRINT_LOCALE = process.env.FINGERPRINT_LOCALE || "en-US";
@@ -384,9 +561,6 @@ const MODEL_CACHE_MS = 15 * 60 * 1000;
 const CAPTCHA_HUMAN_CHECK_LIMIT = Math.max(1, Number(process.env.CAPTCHA_HUMAN_CHECK_LIMIT || 10));
 const CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES = Math.max(1, Number(process.env.CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES || 3));
 const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 6000);
-const CAPTCHA_TEXT_NOISE_GUARD_CHARS = 12000;
-const PAGE_TEXT_MEMORY_LIMIT = 12;
-const PAGE_TEXT_MEMORY_TTL_MS = 20 * 60 * 1000;
 const CAPTCHA_GENTLE_MODE_MS = Math.max(30000, Number(process.env.CAPTCHA_GENTLE_MODE_MS || 180000));
 const CAPTCHA_GENTLE_PACING_MULTIPLIER = Math.max(1, Number(process.env.CAPTCHA_GENTLE_PACING_MULTIPLIER || 1.8));
 const CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS = Math.max(200, Number(process.env.CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS || 900));
@@ -907,7 +1081,6 @@ let sessionHistory  = [];
 let agentRunning    = false;
 let currentTaskUserId = null; // tracks which user triggered the active task
 let currentTaskChatId = null; // tracks the active task's chat for runtime error and summary messages
-let pageTextMemory = [];
 
 async function ensureActivePage() {
   if (page) {
@@ -2253,7 +2426,7 @@ function buildBrowserCommandGoal(command, enrichedMessage = "") {
   if (scrollDepth > 0) runtimeLines.push(`Scroll deeply up to approximately ${Math.max(200, Math.round(scrollDepth))} px where applicable.`);
   if (screenshotEveryMs > 0) runtimeLines.push(`Capture screenshots roughly every ${Math.max(1, Math.round(screenshotEveryMs / 1000))} seconds.`);
   if (jsEvalDirectives.length) {
-    runtimeLines.push("These JS evaluations will run automatically after the first browser step; include their outputs in the final answer:");
+    runtimeLines.push("Run these JS evaluations and include outputs:");
     jsEvalDirectives.forEach((script, index) => runtimeLines.push(`JS_EVAL_${index + 1}: ${script}`));
   }
   if (Number.isFinite(errorRetry) && errorRetry > 0) runtimeLines.push(`Retry transient action failures up to ${Math.max(1, Math.min(8, Math.round(errorRetry)))} times.`);
@@ -2292,12 +2465,11 @@ function buildBrowserRuntimeConfig(command) {
     logIntervalSec: Math.max(0, Number(getFirst("log-interval") || 0)),
     errorRetry: Number.isFinite(Number(getFirst("error-retry"))) ? Math.max(1, Math.min(8, Number(getFirst("error-retry")))) : null,
     errorBackoffMs: parseDurationToMs(getFirst("error-backoff"), 0),
-    jsEvalDirectives: collectCommandOptionValues(options, "js-eval").map(value => String(value).trim()).filter(Boolean),
     modelSwitch: modelSwitchValues,
     modelSwitchInterval: Math.max(1, Number(getFirst("model-switch-interval") || 1))
   };
 
-  const hasAny = runtime.open || runtime.tabs || runtime.heartbeat || runtime.stealth || !!runtime.antiBot || runtime.logIntervalSec > 0 || runtime.errorRetry !== null || runtime.errorBackoffMs > 0 || runtime.jsEvalDirectives.length > 0 || runtime.modelSwitch.length > 0;
+  const hasAny = runtime.open || runtime.tabs || runtime.heartbeat || runtime.stealth || !!runtime.antiBot || runtime.logIntervalSec > 0 || runtime.errorRetry !== null || runtime.errorBackoffMs > 0 || runtime.modelSwitch.length > 0;
   return hasAny ? runtime : null;
 }
 
@@ -3195,53 +3367,13 @@ async function runCloudflareStartupPreflight() {
   }
 }
 
-async function summarizeOversizedModelInput(modelName, messages, maxTokens = 512) {
-  const candidateText = (Array.isArray(messages) ? messages : [])
-    .map((message) => {
-      if (typeof message?.content === "string") return message.content;
-      if (Array.isArray(message?.content)) return message.content.map(block => typeof block?.text === "string" ? block.text : "").join("\n");
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n\n");
-
-  if (!candidateText || candidateText.length <= MAX_MODEL_INPUT_CHARS) {
-    return { messages, summaryUsed: false };
-  }
-
-  const chunks = chunkTextForSummary(candidateText, 12000);
-  const summaries = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const prompt = `Summarize the following text faithfully for a later model call. Keep the meaning, key facts, entities, and action items, but compress it to a concise summary. Do not invent missing facts.\n\nText chunk ${i + 1}/${chunks.length}:\n${chunk.slice(0, 12000)}`;
-    const summary = await callCFAI(modelName, [{ role: "user", content: prompt }], maxTokens, 1, getRuntimeTemperature({ reasoner: modelName, planner: modelName }));
-    summaries.push(summary);
-  }
-
-  const summaryText = summaries.filter(Boolean).join("\n\n---\n\n");
-  return {
-    messages: [{ role: "user", content: `The original user input was too large for a single model call. Here is a condensed summary of the content to preserve meaning while reducing context usage:\n\n${summaryText}` }],
-    summaryUsed: true
-  };
-}
-
 async function callCFAI(modelName, messages, maxTokens = 1024, retries = 2, temperature = null, options = null) {
   const requireNonEmpty = !!(options && options.requireNonEmpty);
   const nonEmptyLabel = String((options && options.nonEmptyLabel) || modelName || "model");
   const hostedRunModel = isCloudflareHostedRunModel(modelName);
-  const oversized = Array.isArray(messages)
-    ? messages.reduce((sum, message) => sum + String(typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.map(block => typeof block?.text === "string" ? block.text : "").join("\n") : "").length, 0)
-    : 0;
-
-  let resolvedMessages = messages;
-  if (oversized > MAX_MODEL_INPUT_CHARS) {
-    const prepared = await summarizeOversizedModelInput(modelName, messages, Math.min(maxTokens, 512));
-    resolvedMessages = prepared.messages;
-  }
-
   const safeMessages = hostedRunModel
-    ? adaptMessagesForHostedRun(normalizeMessages(resolvedMessages))
-    : normalizeMessages(resolvedMessages);
+    ? adaptMessagesForHostedRun(normalizeMessages(messages))
+    : normalizeMessages(messages);
   const hostedRoleSafeMessages = hostedRunModel
     ? safeMessages.map((message) => ({
         ...message,
@@ -4303,13 +4435,13 @@ async function answerCasualChat(rawMessage, conversationHistory, models, chatId 
     "Sensitive-term note: KMS/KYS/'unalive' appear in youth slang sometimes as exaggerated dark humor (e.g. reacting to embarrassment) and sometimes as a genuine expression of distress. Recognize both meanings, but never use these terms yourself, never mirror them back playfully, and if the context reads as genuine distress rather than joking, drop the casual tone and respond with care instead of banter.\n\n";
 
   const CASUAL_CHAT_SYSTEM = SLANG_GLOSSARY + "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them.\n\n" +
-    "Context escalation: you may NOT browse on your own initiative for memes, casual link-dropping, or vague reactions (\"lol look at this\", \"bro this link is wild\") — just react normally to those. ONLY when the user explicitly asks you to evaluate, summarize, or describe something you have no cached context for (e.g. \"is this repo good?\", \"what does this project do?\", \"is this site legit?\") AND a URL or clearly identifiable target is present, you may request one — and only one — browsing task instead of guessing or hallucinating. To do this, respond with ONLY this block and nothing else:\n<<BROWSING_TASK>>\n/browser go to <url>\n<<END_BROWSING_TASK>>\nDo not add any other text alongside that block. Never emit it a second time in the same reply.";
+    "Context escalation: you may NOT browse on your own initiative for memes, casual link-dropping, or vague reactions (\"lol look at this\", \"bro this link is wild\") — just react normally to those. ONLY when the user explicitly asks you to evaluate, summarize, or describe something you have no cached context for (e.g. \"is this repo good?\", \"what does this project do?\", \"is this site legit?\") AND a URL or clearly identifiable target is present, you may request one — and only one — browsing task instead of guessing or hallucinating. To do this, respond with ONLY this block and nothing else:\n<<BROWSING_TASK>>\n/browser go to <url>, then do <X> <additional tasks here> \n<<END_BROWSING_TASK>>\n.  Never emit it a second time in the same reply. X may be 'extract all text' or as simple as 'mark task as done' feel free to manipulate that Variable. you may add additional tasks based on the user's request, but you may not add any tasks that are not explicitly requested by the user. If you do not have enough information to complete the task, ask the user for clarification. If you cannot complete the task, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification. If the user asks you to do something that is outside of your capabilities, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification. (you can input it at the <addition tasks here>) I repeat you may FREELY manipulate variables 'X' and '<additional tasks here>' to suit the user's request, but you may not add any tasks that are not explicitly requested by the user. If you do not have enough information to complete the task, ask the user for clarification. If you cannot complete the task, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification.";
 
   try {
     const raw = await callCFAI(models.reasoner || models.router, [
       { role: "system", content: CASUAL_CHAT_SYSTEM },
       { role: "user", content: `Recent conversation:\n${convCtx || "(none)"}\n\nUser message:\n${String(rawMessage || "")}` }
-    ], 20000, 1, getRuntimeTemperature(models));
+    ], 500, 1, getRuntimeTemperature(models));
     let plain = stripThinking(raw) || "";
 
     const tagMatch = plain.match(BROWSING_TASK_TAG_RE);
@@ -4327,7 +4459,6 @@ async function answerCasualChat(rawMessage, conversationHistory, models, chatId 
       } catch (taskErr) {
         // Single, non-looping error path — never re-escalates.
         errLog("Auto-escalation browsing task failed: " + (taskErr?.message || taskErr));
-        console.error("[auto-escalation] browsing task stack:", taskErr?.stack || taskErr);
         return applyChatStyleFormatting("I couldn't access that page — want me to try something else?", styleRequest);
       }
 
@@ -4345,7 +4476,7 @@ async function answerCasualChat(rawMessage, conversationHistory, models, chatId 
             "If a detail the user might expect isn't present in the browsing result, say plainly that it wasn't found, rather than guessing or inferring a plausible-sounding value."
         },
         { role: "user", content: `Original user message:\n${String(rawMessage || "")}\n\nBrowsing result:\n${String(browsedAnswer || "(no content returned)").slice(0, 4000)}` }
-      ], 900, 1, getRuntimeTemperature(models));
+      ], 500, 1, getRuntimeTemperature(models));
       plain = stripThinking(followUp) || "I checked the page but couldn't put together a clear answer — want me to try again?";
     }
 
@@ -4757,55 +4888,14 @@ async function pinchListWebhookTypes() {
     }
   }
 
-  function rememberPageTextForReasoning(label, text) {
-    const normalized = String(text || "").replace(/\s+/g, " ").trim();
-    if (!normalized) return;
-    const entry = { label, text: normalized.slice(0, 16000), ts: Date.now() };
-    pageTextMemory = pageTextMemory.filter(item => Date.now() - item.ts < PAGE_TEXT_MEMORY_TTL_MS);
-    pageTextMemory.push(entry);
-    if (pageTextMemory.length > PAGE_TEXT_MEMORY_LIMIT) pageTextMemory.shift();
-  }
-
-  function getPageTextMemoryForPrompt() {
-    const now = Date.now();
-    pageTextMemory = pageTextMemory.filter(item => now - item.ts < PAGE_TEXT_MEMORY_TTL_MS);
-    return pageTextMemory.map((entry, idx) => `Memory ${idx + 1} [${entry.label}]: ${entry.text.slice(0, 2500)}`).join("\n\n");
-  }
-
-  function shouldForcePageTextExtraction(goalText, state, taskLog, extractedBuffer) {
-    const g = String(goalText || "").toLowerCase();
-    const pageLike = /\b(page|website|site|repo|repository|document|article|content|text|read|summarize|summary|extract|scrape|get text|get all text)\b/.test(g);
-    if (!pageLike) return false;
-    const recentGetAllText = (taskLog || []).slice(-8).filter(line => String(line).toLowerCase().includes("getalltext:ok")).length;
-    if (recentGetAllText > 0) return false;
-    const hasFreshBuffer = String(extractedBuffer || "").trim().length >= 200;
-    return !hasFreshBuffer && !!(state?.url || state?.text);
-  }
-
   async function detectCaptchaChallenge(state) {
-    const rawText = `${state?.title || ""}\n${state?.text || ""}`;
-    const largeTextVolume = String(rawText || "").length > CAPTCHA_TEXT_NOISE_GUARD_CHARS;
-    const lowerText = sanitizeTextForCaptchaScan(rawText, CAPTCHA_TEXT_SCAN_LIMIT).toLowerCase();
+    const lowerText = `${state?.title || ""}\n${state?.text || ""}`.toLowerCase();
     const currentUrl = String(state?.url || "").toLowerCase();
-    const githubSafeHost = isGithubSafeHost(state?.url || "");
-
-    if (githubSafeHost) {
-      return {
-        detected: false,
-        strongEvidence: false,
-        score: 0,
-        reason: "" 
-      };
-    }
 
     // Avoid false positives on normal auth routes like Google sign-in
     // where "challenge" can appear in the URL without any CAPTCHA widget.
-    // Also treat very large page text as noisy unless there is a strong,
-    // concrete CAPTCHA indicator: huge DOM dumps are often not actual bot-checks.
-    // When large text is present, only escalate if there is explicit DOM/url signal
-    // or a vision-confirmed CAPTCHA state.
     const strongTextHit = /(captcha|turnstile|hcaptcha|recaptcha|cf\s*challenge|cloudflare\s*challenge|cf-chl|ray\s+id)/.test(lowerText);
-    const weakTextHit = !largeTextVolume && /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
+    const weakTextHit = /(verify\s+you\s+are\s+human|verify\s+you\s+are\s+a\s+human|security\s+check|attention\s+required|just\s+a\s+moment|prove\s+you\s+are\s+human)/.test(lowerText);
     const urlHit = /(captcha|cf_chl|turnstile|hcaptcha|recaptcha|challenge-platform|__cf_chl_)/.test(currentUrl);
     const domSignals = await page.evaluate(() => {
       const vw = Math.max(1, window.innerWidth || 1920);
@@ -5715,16 +5805,6 @@ Return JSON only:
     const expected = String(expectedHost || "").toLowerCase().replace(/^www\./, "");
     if (!actual || !expected) return false;
     return actual === expected || actual.endsWith(`.${expected}`);
-  }
-
-  function isGithubSafeHost(rawUrl) {
-    try {
-      const host = String(rawUrl || "").toLowerCase();
-      const normalized = host.includes("//") ? new URL(rawUrl).hostname.toLowerCase() : host;
-      return hostMatchesExpectedHost(normalized, "github.com") || hostMatchesExpectedHost(normalized, "www.github.com");
-    } catch {
-      return String(rawUrl || "").toLowerCase().includes("github.com");
-    }
   }
 
   function buildActionSignature(action, params) {
@@ -6750,29 +6830,13 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     .map(l => `"${compactPromptValue(l.text, 24)}"=>${compactUrlForPrompt(l.href)}`)
     .join(" | ") || "none";
   const compactTaskLog = taskLog.slice(-MAX_TASK_LOG_LINES_IN_PROMPT).map(line => compactPromptValue(line, 110)).join(" || ") || "none";
-  const compactPageMemory = compactPromptValue(getPageTextMemoryForPrompt() || "none", 700);
   const fullPageText = String(state.text || "").replace(/\s+/g, " ").trim();
   // compactPageText is computed further below, once every other field in
   // this prompt is known — see compactPageTextDynamic. It needs to be
   // declared here (not assigned yet) because it's used in the userMsg
   // template alongside these other fields.
   let compactPageText = "";
-  let compactRecon = "none";
-  if (taskHints.knowledgeBus && (currentStriderReconMemo || taskHints.directNavigationTarget)) {
-    const knowledge = await taskHints.knowledgeBus.request({
-      target: "STRIDER",
-      request: `search: ${compactPromptValue(goal, 180)}`,
-      limit: 6
-    });
-    if (knowledge.ok && knowledge.results.length) {
-      compactRecon = compactPromptValue(JSON.stringify({
-        source: knowledge.source,
-        confidence: knowledge.confidence,
-        results: knowledge.results,
-        meta: knowledge.meta
-      }), 1400);
-    }
-  }
+  const compactRecon = compactPromptValue(currentStriderReconMemo || "none", 1400);
   const compactInputs = (state.inputs || []).filter(i => i.visible).slice(0, 6)
     .map(i => `${compactPromptValue(i.selector, 48)} (${i.type || "text"})`)
     .join(" | ") || "none";
@@ -6851,7 +6915,6 @@ DirectNavigationHint:${taskHints.simpleFastPathCandidate ? "There is a direct na
 History:${compactTaskLog}
 Recon:${compactRecon}
 PageText:${compactPageText}
-PageTextMemory:${compactPageMemory}
 Learning:${compactPromptValue(learningContext, 200)}
 Failures:${failures};Stuck:${stuck ? "yes" : "no"}
 Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.`;
@@ -7059,7 +7122,7 @@ Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitFor
     throw err;
   }
 }
-
+const CAPTCHA_DOMAINS = `https://github.com, https://en.wikipedia.org/, https://example.com`
 // The Planner's system prompt — defined once, pushed once at task start.
 // (Pulled out as its own constant so it's easy to find/edit, and so it's
 // unambiguous that this is the ONLY place that ever sets plannerHistory[0].)
@@ -7113,15 +7176,17 @@ const PLANNER_TIPS_50 = `
 47 watch page title
 48 watch visible links
 49 maintain progress
-50 finish decisively`;
+50 When you need to extract text from a sector or need to extract text use the following command: <<START OF COMMAND>> // Wait for the element to be present in the DOM await page.waitForSelector('$YOURSECTORHERE$'); // Get the visible text (similar to innerText in DevTools) const text = await page.innerText('$YOURSECTORHERE$'); <<END OF COMMAND>> $YOURSECTORHERE$ = to the sector of the text you wish to extract to complete the goal.
+51 The FOLLOWING DOMAINS DO NOT HAVE contain/use captchas: ${CAPTCHA_DOMAINS}. IF YOU SEE ANY OTHER DOMAIN that consistantly shows no captchas write that in you summary`;
 
 const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start with { and end with }. No prose, no markdown, no code fences.
 CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with Enter or submitForm. Do NOT click "Search" buttons.
-CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Bing accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it.
-CRITICAL: Github.com and its variants DO NOT have captcha's even if the text is strong.
+CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Google accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it (OR when GOOGLE's captchas become overbearing (eg. 6+)).
+HIGH-CRITICAL:  When you need to extract text from a sector or need to extract text use the following command: <<START OF COMMAND>> // Wait for the element to be present in the DOM await page.waitForSelector('$YOURSECTORHERE$'); // Get the visible text (similar to innerText in DevTools) const text = await page.innerText('$YOURSECTORHERE$'); <<END OF COMMAND>> $YOURSECTORHERE$ = to the sector of the text you wish to extract to complete the goal. The FOLLOWING DOMAINS DO NOT HAVE contain/use captchas: ${CAPTCHA_DOMAINS}. IF YOU SEE ANY OTHER DOMAIN that consistantly shows no captchas write that in you summary
+
 Planner mode: deterministic, progress-first, minimal-risk.
 
-Allowed actions: goto,reload,goBack,goForward,click,dblclick,mouseDblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,keyboardDown,keyboardUp,mouseMove,mouseClick,mouseDown,mouseUp,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,waitForNavigation,getText,getAttribute,getAllText,getHTML,getTitle,getURL,countElements,isVisible,elementExists,expectVisible,expectHidden,expectText,expectURL,evaluate,screenshot,fullPageScreenshot,setViewport,uploadFile,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
+Allowed actions: goto,reload,goBack,goForward,click,dblclick,mouseDblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,keyboardDown,keyboardUp,mouseMove,mouseClick,mouseDown,mouseUp,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,waitForNavigation,getText,getAttribute,getAllText,getHTML,getTitle,getURL,countElements,isVisible,elementExists,expectVisible,expectHidden,expectText,expectURL,evaluate,screenshot,fullPageScreenshot,setViewport,uploadFile,summarizeLargeDocument,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
 
 Lesser-known but real actions worth knowing about:
 - getTitle / getURL: instant, cheap checks — use these instead of getAllText when you only need the page title or current URL, not the full content.
@@ -7129,6 +7194,7 @@ Lesser-known but real actions worth knowing about:
 - expectVisible / expectHidden / expectText / expectURL: combined wait+verify in one action — use these for verification steps instead of a separate waitForSelector followed by a manual comparison.
 - uploadFile: requires a real, already-existing local file path in "filePath" — do not invent a path that doesn't exist.
 - getHTML: raw HTML of a selector/page when text extraction alone (getText/getAllText) loses structure you need (e.g. table layout, attributes).
+- summarizeLargeDocument: for text too large to reason about directly (e.g. a huge page, a large extracted file). Pass params:{"text": "<the full text, e.g. from a prior getAllText call>", "focus": "<optional: what to focus the summary on>"}. This splits the text into chunks, summarizes each independently, then merges the summaries — use it INSTEAD of trying to read/reason about a very large getAllText result directly. Only use this when the text is genuinely large (tens of thousands of characters or more); for normal-sized pages, getAllText plus your own reasoning is faster and cheaper.
 
 Hard rules:
 - Output only valid JSON using schema below.
@@ -7330,8 +7396,17 @@ async function runActionWithFallback(item, goal, models) {
       });
     }
     if (targetIndex === null || targetIndex < 0 || targetIndex >= pages.length) {
-      recordOutcome("error", { error: `invalid tab target ${JSON.stringify(tabParams || {})}`, path: ACTION_PATH.PSEUDO });
-      throw new Error(`switchToTab failed: invalid index/urlIncludes (${JSON.stringify(tabParams || {})})`);
+      // Soft-fail instead of throwing: the planner sometimes incorrectly
+      // believes a new tab opened (e.g. after a Google search, which
+      // normally loads results in the SAME tab, not a new one) and calls
+      // switchToTab on an index that was never real. Previously this threw
+      // and killed the entire task — disproportionate, since the current
+      // tab very likely already has the content the task actually needs.
+      // Stay on the current tab and report this as a recoverable notice,
+      // not a fatal error, so the task can keep going.
+      const notice = `switchToTab requested an index/target that doesn't exist (${JSON.stringify(tabParams || {})}) — only ${pages.length} tab(s) actually open. Staying on the current tab instead of failing the task.`;
+      recordOutcome("ok", { result: notice, path: ACTION_PATH.PSEUDO });
+      return { action, status: "ok", result: notice };
     }
     page = pages[targetIndex];
     await page.bringToFront().catch(() => {});
@@ -7508,6 +7583,61 @@ async function runActionWithFallback(item, goal, models) {
     const timeoutError = `URL did not change within ${timeoutMs}ms`;
     recordOutcome("error", { error: timeoutError, path: ACTION_PATH.PRIMARY_URL_CHANGE });
     return { action, status: "error", error: timeoutError };
+  }
+
+  // summarizeLargeDocument: hierarchical map-reduce summarization for text
+  // too large to fit in a single reasoner call. Special-cased here (rather
+  // than added to actions.js's generic map) because it needs `models` to
+  // drive the actual chunk/merge model calls — something the plain
+  // page-action handlers in actions.js don't receive.
+  if (action === "summarizeLargeDocument") {
+    try {
+      const sourceText = String(params?.text || "").trim();
+      if (!sourceText) {
+        const err = "summarizeLargeDocument requires a non-empty 'text' param (e.g. from a prior getAllText call)";
+        recordOutcome("error", { error: err, path: ACTION_PATH.PRIMARY });
+        return { action, status: "error", error: err };
+      }
+      const focusHint = String(params?.focus || "").trim();
+      const chunkSummarizer = async (chunk, i, total) => {
+        const raw = await callCFAI(models.reasoner || models.router, [{
+          role: "user",
+          content: `You are summarizing chunk ${i + 1} of ${total} from one larger document. Summarize ONLY what is literally in this chunk — do not assume content from other chunks. ${focusHint ? `Focus especially on: ${focusHint}. ` : ""}Be concise (2-5 sentences).\n\nChunk:\n${chunk.slice(0, 6000)}`
+        }], 300, 1, getRuntimeTemperature(models));
+        return stripThinking(raw) || "(no summary produced for this chunk)";
+      };
+      const mergeSummarizer = async (batch, level) => {
+        const raw = await callCFAI(models.reasoner || models.router, [{
+          role: "user",
+          content: `Merge these ${batch.length} partial summaries (reduce level ${level}) of one larger document into a single coherent summary. Only state facts present in the summaries below — do not invent connections between them that aren't stated. ${focusHint ? `Focus especially on: ${focusHint}. ` : ""}\n\n${batch.map((s, idx) => `[${idx + 1}] ${s}`).join("\n\n")}`
+        }], 400, 1, getRuntimeTemperature(models));
+        return stripThinking(raw) || "(merge produced no output)";
+      };
+
+      const summaryResult = await summarizeLargeDocument(sourceText, {
+        chunkSummarizer,
+        mergeSummarizer,
+        maxChunkChars: 8000,
+        mapConcurrency: 4,
+        reduceBatchSize: 5,
+        reduceConcurrency: 3
+      });
+
+      const resultText = summaryResult.finalSummary;
+      think(`summarizeLargeDocument: ${summaryResult.chunkCount} chunks, ${summaryResult.reduceLevels} reduce level(s), ${summaryResult.chunkErrors} chunk error(s)`);
+      recordOutcome("ok", {
+        result: resultText.slice(0, 500),
+        path: ACTION_PATH.PRIMARY,
+        chunkCount: summaryResult.chunkCount,
+        reduceLevels: summaryResult.reduceLevels,
+        chunkErrors: summaryResult.chunkErrors
+      });
+      return { action, status: "ok", result: resultText, extractedText: resultText };
+    } catch (err) {
+      const errMsg = err?.message || String(err);
+      recordOutcome("error", { error: errMsg, path: ACTION_PATH.PRIMARY });
+      return { action, status: "error", error: errMsg };
+    }
   }
 
   // Primary attempt
@@ -8304,10 +8434,9 @@ function shouldAcceptPlannerDoneDecision(goalText, state, extractedTextBuffer = 
 
 function isExtractionSummaryGoal(goalText) {
   const g = String(goalText || "").toLowerCase();
-  const wantsSummary = new RegExp("\\b(summarize|summary|summery|tldr|tl;dr|brief|overview)\\b", "i").test(g);
-  const wantsExtract = new RegExp("\\b(extract|get text|get all text|current text|read page|page text|content|read this page|page content|full text|main content)\\b", "i").test(g);
-  const pageLikelyTask = new RegExp("\\b(page|website|webpage|site|document|article|repo|repository|read|look at|what's on this page|what is on this page|what does this page say|content of the page)\\b", "i").test(g);
-  return wantsSummary || wantsExtract || pageLikelyTask;
+  const wantsSummary = /\b(summarize|summary|summery|tldr|tl;dr)\b/.test(g);
+  const wantsExtract = /\b(extract|get text|get all text|current text|read page|page text|content)\b/.test(g);
+  return wantsSummary && wantsExtract;
 }
 
 function getExtractedTextFromResults(results = []) {
@@ -9647,7 +9776,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     lastResult: null,   // e.g. "ok" | "error: selector not found"
     stepCount: 0
   };
-  let currentPageState = null;
   let visionFeedback = null;
   let lastAction     = null;
   let completed      = false;
@@ -9674,7 +9802,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
   let dynamicSignalStreak = 0;
   let lastAttemptedPlanSignature = "";
   let extractedTextBuffer = "";
-  let jsEvalCompleted = false;
   let taskHeartbeatTimer = null;
   let elementMapTimer = null;
   let elementMapInFlight = false;
@@ -9695,22 +9822,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     lastTriggeredsStep: 0,
     mapsEscaped: false
   };
-
-  const knowledgeBus = createKnowledgeBus({
-    modules: createKnowledgeModules({
-      striderReport: async ({ limit }) => {
-        if (!striderIntegration || typeof striderIntegration.getReconReport !== "function") return null;
-        const response = striderIntegration.getReconReport({ limit });
-        return response?.report || null;
-      },
-      pageState: () => currentPageState,
-      visionSnapshot: () => getTaskVisionSnapshot(),
-      memorySearch: (query, limit) => searchRelevantMemory(query, limit),
-      learningContext: () => buildLearningContext(goal, currentPageState || { url: "about:blank" }),
-      modelCatalog: () => modelCatalogCache.items,
-      supervisorState: () => lastSupervisorSignal
-    })
-  });
 
   const scheduleElementMapTick = (initialDelayMs = null) => {
     if (elementMapTimer) {
@@ -9849,8 +9960,10 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     let stoppedByGuidance = false;
     let stoppedGuidanceReason = "";
     let lastStriderReconRefreshStep = 0;
+    let finalStepReached = 0;
 
     for (let step = 1; step <= MAX_STEPS; step++) {
+      finalStepReached = step;
       const stepStartedAt = Date.now();
       broadcast("step_start", { step, max: MAX_STEPS });
       status(`Step ${step}/${MAX_STEPS}`);
@@ -9864,7 +9977,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
 
       const state = await getPageState();
-      currentPageState = state;
       finalState  = state;
       status(`URL: ${state.url}`);
       const currentHost = getHostFromUrl(state.url);
@@ -10170,15 +10282,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
 
       // NARRATION: Describe what we're about to do in plain English
-      if (shouldForcePageTextExtraction(goal, state, taskLog, extractedTextBuffer)) {
-        const forcedText = await withExecutorWork(() => extractMainContent({ ...state, page }));
-        if (forcedText && forcedText.trim().length >= 200) {
-          extractedTextBuffer = forcedText;
-          rememberPageTextForReasoning("forced-page-extraction", forcedText);
-          think("Page-like task detected: forced page extraction so the planner has stable text to summarize from.");
-        }
-      }
-
       if (step === 1) narrate(`Starting task: "${goal}". Let me figure out the best approach...`);
       else if (stuck) narrate(`I seem to be going in circles. Let me try a completely different approach.`);
       else if (failures >= 2) narrate(`The last ${failures} attempts failed. Switching strategy now.`);
@@ -10221,8 +10324,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
         plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals, {
           simpleFastPathCandidate,
           directNavigationTarget,
-          taskContext,
-          knowledgeBus
+          taskContext
         }));
       } catch (err) {
         errLog("Planning failed: " + err.message);
@@ -10465,21 +10567,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
         narrate("I halted the task because you issued a stop directive.");
         break;
       }
-
-      if (step === 1 && !jsEvalCompleted && runtime.jsEvalDirectives.length) {
-        for (const script of runtime.jsEvalDirectives) {
-          try {
-            const value = await withExecutorWork(() => actions.evaluate({ page, script }));
-            const serialized = typeof value === "string" ? value : JSON.stringify(value);
-            results.push({ action: "evaluate", status: "ok", result: String(serialized ?? "undefined").slice(0, 12000) });
-          } catch (err) {
-            const error = String(err?.message || err || "JavaScript evaluation failed");
-            results.push({ action: "evaluate", status: "error", error });
-            errLog(`Explicit JS evaluation failed: ${error}`);
-          }
-        }
-        jsEvalCompleted = true;
-      }
       lastAction    = plan.actions[plan.actions.length - 1];
       const summary = results.map(r => `${r.action}:${r.status}`).join(", ");
       const logLine = `Step ${step} [${plan.confidence ?? "?"}%]: ${summary} — ${(plan.reasoning || "").slice(0, 60)}`;
@@ -10498,7 +10585,6 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       const extractedNow = getExtractedTextFromResults(results);
       if (extractedNow) {
         extractedTextBuffer = extractedNow;
-        rememberPageTextForReasoning("result-page-text", extractedNow);
         if (searchEngineCompareGoal) {
           const hostNow = getHostFromUrl(state.url);
           if ((hostNow === "google.com" || hostNow.endsWith(".google.com")) && !compareSnapshots.google) {
@@ -10528,22 +10614,19 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
 
       // For extract+summarize goals, trigger smart extraction and complete immediately.
       const searchEvidenceReady = !extractSearchQuery(goal) || hasSearchGoalEvidence(goal, state);
-      if (isExtractionSummaryGoal(goal) && searchEvidenceReady) {
-        const forcedTextRequired = shouldForcePageTextExtraction(goal, state, taskLog, extractedTextBuffer);
-        const betterText = forcedTextRequired || !extractedTextBuffer || extractedTextBuffer.length < 2000
-          ? await withExecutorWork(() => extractMainContent({ ...state, page }))
-          : "";
-        if (betterText && betterText.length > String(extractedTextBuffer || "").length) {
-          extractedTextBuffer = betterText;
-          rememberPageTextForReasoning("forced-page-summary-text", betterText);
+      if (isExtractionSummaryGoal(goal) && extractedTextBuffer && searchEvidenceReady) {
+        // If we haven't done smart extraction yet, do it now for cleaner summary content.
+        if (extractedTextBuffer.length < 2000) {
+          const smartText = await withExecutorWork(() => extractMainContent({ ...state, page }));
+          if (smartText && smartText.length > extractedTextBuffer.length) {
+            extractedTextBuffer = smartText;
+          }
         }
-        if (extractedTextBuffer && extractedTextBuffer.trim().length >= 200) {
-          const doneLine = `Step ${step}: DONE (text extracted for summary)`;
-          taskLog.push(doneLine);
-          stepLogMsg(doneLine);
-          completed = true;
-          break;
-        }
+        const doneLine = `Step ${step}: DONE (text extracted for summary)`;
+        taskLog.push(doneLine);
+        stepLogMsg(doneLine);
+        completed = true;
+        break;
       }
 
       let recoveredByActionFailure = false;
@@ -10723,6 +10806,11 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     // the goal on its own.
     const actualSuccess = agentClaimedSuccess && failures === 0;
     const discrepancy = agentClaimedSuccess && !actualSuccess;
+    // Distinguishes "ran out of the step budget" from other incompletion
+    // reasons (CAPTCHA/human handoff, operator-stopped) — without this,
+    // every non-completed task looked identical in aggregate metrics, and
+    // "why don't tasks complete" couldn't be answered from the log alone.
+    const reachedMaxSteps = !completed && !requiresHuman && !stoppedByGuidance && finalStepReached >= MAX_STEPS;
     appendLearningEvent({
       kind: "task",
       phase: "end",
@@ -10730,6 +10818,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       host: getHostFromUrl(finalState.url),
       completed: agentClaimedSuccess,
       steps: taskLog.length,
+      reachedMaxSteps,
       result: String(answer || "").slice(0, 260)
     });
     appendLearningEvent({
@@ -10742,6 +10831,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       finalFailureStreak: failures,
       requiresHuman: !!requiresHuman,
       stoppedByGuidance: !!stoppedByGuidance,
+      reachedMaxSteps,
       steps: taskLog.length
     });
     saveMemory({ goal, result: answer.slice(0, 200), completed, steps: taskLog.length });
@@ -12305,17 +12395,11 @@ async function handleBrowserCrash(reason) {
 
 (async () => {
   try {
-    if (cloudflareMode.shouldExit) {
-      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID and PUPPETERR_REQUIRE_CF is enabled.");
-      process.exit(1);
+    if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
+      console.error("❌ Missing CF_API_TOKEN or CF_ACCOUNT_ID"); process.exit(1);
     }
 
-    if (!CF_API_TOKEN || !CF_ACCOUNT_ID) {
-      console.warn("⚠️  Cloudflare credentials missing; running in degraded mode with text model fallbacks only.");
-      console.warn("   Set CF_API_TOKEN and CF_ACCOUNT_ID for full AI functionality, or set PUPPETERR_REQUIRE_CF=1 to enforce strict startup.");
-    } else {
-      await runCloudflareStartupPreflight();
-    }
+    await runCloudflareStartupPreflight();
 
     const browserHeadlessEnv = String(process.env.PUPPETERR_HEADLESS || "").trim().toLowerCase();
     if (browserHeadlessEnv === "false" || browserHeadlessEnv === "0" || browserHeadlessEnv === "no") {

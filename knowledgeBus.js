@@ -48,9 +48,9 @@ function createKnowledgeBus({ modules = {} } = {}) {
     const tools = registry.get(target);
     const handler = tools?.get(tool);
 
-    if (!target || !tool) return { ok: false, error: "target and tool are required" };
-    if (!tools) return { ok: false, source: target, error: `Unknown knowledge module: ${target}` };
-    if (!handler) return { ok: false, source: target, error: `Unknown knowledge tool: ${tool}` };
+    if (!target || !tool) return { ok: false, error: "target and tool are required", results: [], confidence: 0 };
+    if (!tools) return { ok: false, source: target, error: `Unknown knowledge module: ${target}`, results: [], confidence: 0 };
+    if (!handler) return { ok: false, source: target, error: `Unknown knowledge tool: ${tool}`, results: [], confidence: 0 };
 
     try {
       const result = await handler({ query, limit, envelope });
@@ -64,7 +64,15 @@ function createKnowledgeBus({ modules = {} } = {}) {
         ...(safeResult.meta && typeof safeResult.meta === "object" ? { meta: safeResult.meta } : {})
       };
     } catch (error) {
-      return { ok: false, source: target, tool, error: error?.message || String(error) };
+      // Every return path from request() — success or failure — now
+      // consistently includes `results` (always an array) and
+      // `confidence`. Before this fix, only the success path did; any
+      // caller that assumed a uniform response shape (reasonable for a
+      // request/response API) and read response.results.length
+      // unconditionally would crash with "Cannot read properties of
+      // undefined (reading 'length')" on ANY failure — wrong target name,
+      // wrong tool name, unregistered module, or a thrown handler error.
+      return { ok: false, source: target, tool, error: error?.message || String(error), results: [], confidence: 0 };
     }
   }
 

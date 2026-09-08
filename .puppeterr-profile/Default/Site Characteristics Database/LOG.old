@@ -1,5 +1,3 @@
-2026/09/07-15:54:12.689 cd00 Log #6: 0 ops saved to Table #7 OK
-2026/09/07-15:54:12.732 cd00 Archiving /workspaces/Puppeterr/.puppeterr-profile/Default/Site Characteristics Database/000006.log: OK
-2026/09/07-15:54:12.735 cd00 Table #4: 23 entries OK
-2026/09/07-15:54:12.737 cd00 Archiving /workspaces/Puppeterr/.puppeterr-profile/Default/Site Characteristics Database/MANIFEST-000001: OK
-2026/09/07-15:54:12.755 cd00 **** Repaired leveldb /workspaces/Puppeterr/.puppeterr-profile/Default/Site Characteristics Database; recovered 1 files; 479 bytes. Some data may have been lost. ****
+2026/09/07-23:28:09.488 28cc5 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Site Characteristics Database/MANIFEST-000001
+2026/09/07-23:28:09.490 28cc5 Recovering log #3
+2026/09/07-23:28:09.491 28cc5 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Site Characteristics Database/000003.log 

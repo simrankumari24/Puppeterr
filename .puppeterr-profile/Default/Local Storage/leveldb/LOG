@@ -1,0 +1,15 @@
+2026/09/07-23:35:44.135 29d32 Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2026/09/07-23:35:44.163 29d32 Recovering log #25
+2026/09/07-23:35:44.170 29d32 Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000025.log 
+2026/09/08-01:00:01.757 29d39 Level-0 table #29: started
+2026/09/08-01:00:01.795 29d39 Level-0 table #29: 914569 bytes OK
+2026/09/08-01:00:01.799 29d39 Delete type=0 #25
+2026/09/08-01:00:01.802 29d32 Compacting 4@0 + 1@1 files
+2026/09/08-01:00:01.874 29d32 Generated table #30@0: 67 keys, 1484221 bytes
+2026/09/08-01:00:01.874 29d32 Compacted 4@0 + 1@1 files => 1484221 bytes
+2026/09/08-01:00:01.876 29d32 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/09/08-01:00:01.876 29d32 Delete type=2 #29
+2026/09/08-01:00:01.876 29d32 Delete type=2 #23
+2026/09/08-01:00:01.876 29d32 Delete type=2 #26
+2026/09/08-01:00:01.877 29d32 Delete type=2 #21
+2026/09/08-01:00:01.877 29d32 Delete type=2 #18

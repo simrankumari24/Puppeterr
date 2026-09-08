@@ -1,0 +1,6 @@
+2026/09/07-23:28:09.513 28ccc Reusing MANIFEST /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2026/09/07-23:28:09.537 28ccc Recovering log #22
+2026/09/07-23:28:09.704 28ccc Reusing old log /workspaces/Puppeterr/.puppeterr-profile/Default/Local Storage/leveldb/000022.log 
+2026/09/07-23:28:33.871 28cce Level-0 table #26: started
+2026/09/07-23:28:33.881 28cce Level-0 table #26: 63248 bytes OK
+2026/09/07-23:28:33.884 28cce Delete type=0 #22

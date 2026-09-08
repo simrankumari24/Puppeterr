@@ -9,6 +9,7 @@ stress-tester-runs.jsonl
 stress-tester-summary.json
 view.png
 fallback.fallback
+idk.js
 
 # Secrets
 .env

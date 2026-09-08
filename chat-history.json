@@ -447,7 +447,7 @@
       "id": "1fe3a0cc-cead-4efd-81ba-a1851f15023b",
       "title": "Stress Tester 2026-08-21T21:36:56.936Z",
       "createdAt": "2026-08-21T21:36:56.941Z",
-      "updatedAt": "2026-09-01T01:15:38.964Z",
+      "updatedAt": "2026-09-07T22:33:25.140Z",
       "models": {
         "router": "@cf/qwen/qwen2.5-coder-32b-instruct",
         "planner": "@cf/qwen/qwen2.5-coder-32b-instruct",
@@ -507,6 +507,21 @@
           "role": "assistant",
           "content": "⚠️ The browser crashed mid-task and is restarting. Please retry your request once it's back.",
           "ts": "2026-09-01T01:15:38.964Z",
+          "completed": false,
+          "error": true
+        },
+        {
+          "role": "assistant",
+          "content": "Reasoner summary (step 20):\nFocus on the current page state.\nFocus: current page\nRisk: medium\nCaution: keep the next step small",
+          "ts": "2026-09-07T22:33:12.968Z",
+          "reasoner_summary": true,
+          "step": 20,
+          "completed": false
+        },
+        {
+          "role": "assistant",
+          "content": "⚠️ The browser crashed mid-task and is restarting. Please retry your request once it's back.",
+          "ts": "2026-09-07T22:33:25.140Z",
           "completed": false,
           "error": true
         }
