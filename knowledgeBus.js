@@ -48,6 +48,13 @@ function createKnowledgeBus({ modules = {} } = {}) {
     const tools = registry.get(target);
     const handler = tools?.get(tool);
 
+    console.log(`[knowledgebus] ${JSON.stringify({
+      target,
+      tool,
+      query,
+      limit
+    })}`);
+
     if (!target || !tool) return { ok: false, error: "target and tool are required", results: [], confidence: 0 };
     if (!tools) return { ok: false, source: target, error: `Unknown knowledge module: ${target}`, results: [], confidence: 0 };
     if (!handler) return { ok: false, source: target, error: `Unknown knowledge tool: ${tool}`, results: [], confidence: 0 };

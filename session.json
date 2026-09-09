@@ -437,9 +437,9 @@
     }
   ],
   "strider": {
-    "workerCount": 1,
+    "workerCount": 3,
     "seedUrls": [
-      "https://docs.python.org/"
+      "https://desmos.com"
     ],
     "randomWalk": false,
     "runtimeOptions": {
@@ -448,7 +448,7 @@
       "challengeHandling": "observe"
     },
     "status": "running",
-    "updatedAt": "2026-08-21T21:35:14.582Z",
+    "updatedAt": "2026-09-09T22:22:11.700Z",
     "startedAt": "2026-07-29T23:25:06.882Z",
     "stoppedAt": null
   }

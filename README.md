@@ -13,17 +13,17 @@ See `TODO.md` for planned/in-progress work.
 
 These numbers come from Puppeterr's own instrumentation (`metrics.py`
 against `log.json`), not a published third-party benchmark. Sample size is
-small (pilot scale, n≈46 tasks) — treat these as directional, not
+small (pilot scale, n=91 task attempts) — treat these as directional, not
 definitive, and expect variance run to run. **Reproduce them yourself:**
 `python3 metrics.py log.json`.
 
 | Metric | Value | What it means |
 |---|---|---|
-| Step-level success rate | **87.9%** (255/290 logged actions) | How often an individual action (click, fill, navigate, etc.) succeeds |
-| Task completion (of tasks that finished cleanly) | **56.8%** (21/37) | Full end-to-end task success, excluding runs that crashed before reaching a result |
-| Task completion (of all tasks attempted) | **45.7%** (21/46) | Same, but counting crashed/incomplete runs against the total — the more conservative number |
-| CAPTCHA/challenge encounter rate | **8.1%** (3/37 ended tasks) | How often a task hit a bot-check wall (Bing accounts for the largest share) |
-| Claimed vs. verified success match | **70.4%** (19/27 diagnosis events) | How often the agent's own "I completed this" signal matched an independent check |
+| Step-level success rate | **90.3%** (513/568 logged actions) | How often an individual action (click, fill, navigate, etc.) succeeds |
+| Task completion (of tasks that finished cleanly) | **61.6%** (45/73) | Full end-to-end task success, excluding runs that crashed before reaching a result |
+| Task completion (of all tasks attempted) | **49.5%** (45/91) | Same, but counting crashed/incomplete runs against the total — the more conservative number |
+| CAPTCHA/challenge encounter rate | **4.1%** (3/73 ended tasks) | How often a task hit a bot-check wall; the latest encounters were on Wikipedia, Reddit, and the Wayback Machine |
+| Agent claimed success / actually succeeded | **79.6%** (43/54 diagnosis events, each) | Share of diagnosis events in which the agent claimed success and the independent signal also recorded success |
 
 **In progress:** task completion is the current priority. Known
 bottlenecks are resource constraints (RAM/CPU under load) and CAPTCHA
@@ -44,7 +44,7 @@ this project is under one year old and changes frequently.
 **Capabilities, verified by instrumentation:**
 
 - Reliable direct navigation to a known URL, including deep links (tested against GitHub release pages, documentation anchors, and search-engine result pages)
-- Step-level action execution (click, fill, navigate, scroll, tab management) at an 87.9% success rate across logged actions
+- Step-level action execution (click, fill, navigate, scroll, tab management) at a 90.3% success rate across logged actions
 - Multi-tab task execution (open/switch/close tabs within a single task)
 - Text extraction scoped to a specific page region via a selector, not only whole-page extraction
 - Structured, categorized failure logging: infrastructure failure, reasoning failure, and CAPTCHA/challenge block are recorded as distinct categories, not merged into a single pass/fail signal
@@ -52,7 +52,7 @@ this project is under one year old and changes frequently.
 
 **Known limitations, stated plainly:**
 
-- Task-level completion (45.7-56.8% depending on how crashed runs are counted) is meaningfully behind published results for funded, benchmark-evaluated agents. Step-level execution is comparatively strong; the gap is concentrated in end-to-end task reliability.
+- Task-level completion (49.5-61.6% depending on how crashed runs are counted) is meaningfully behind published results for funded, benchmark-evaluated agents. Step-level execution is comparatively strong; the gap is concentrated in end-to-end task reliability.
 - CAPTCHA and bot-detection walls are not solved. When a task hits one, current behavior is to recognize and report the block, not to defeat it. This applies to Puppeterr and to every other browser agent industry-wide as of this writing — it is not a solved problem anywhere.
 - A small number of hosts (encountered so far: en.wikipedia.org, archive.org, reddit.com, web.archive.org) have shown 0% completion in testing to date. The root cause has not yet been isolated as CAPTCHA-specific versus a structural/selector issue on those sites.
 - Planner decisions are not fully deterministic. The same goal text has been observed to succeed on one run and fail on an identical retry; this is inherent to LLM-driven decision-making at each step, not a parsing or configuration bug.
@@ -231,6 +231,12 @@ These env vars control key speed/quality tradeoffs in the browser loop:
   - `always`: aggressively prefer simple browse behavior for most tasks
 - `SIMPLE_BROWSING_DYNAMIC_UI_FAIL_THRESHOLD` (default `2`) — number of failures before dynamic-UI vision-only click mode is allowed in simple browsing mode
 
+- `CAPTCHA_DOMAINS_FILE` (default `./captcha-domains.json`) — JSON file with an `ignoredDomains` array for hosts whose CAPTCHA-like text/URLs should be ignored; visible CAPTCHA widgets still require Vision confirmation
+- `CAPTCHA_IGNORED_DOMAINS` (default empty) — comma-separated domain override merged with the policy file
+- `CAPTCHA_VISION_CONFIRMATION_MIN_CONFIDENCE` (default `70`) — minimum fresh Vision confidence required before CAPTCHA solving or human handoff begins
+
+CAPTCHA detection is two-stage: DOM/text heuristics create a suspect signal, then a fresh screenshot is sent to Vision. Vision must explicitly confirm a visible CAPTCHA or human-verification gate with sufficient confidence; ambiguous or failed Vision responses do not start the CAPTCHA solve or handoff flow. Add a host to `captcha-domains.json` when ordinary page text on that host repeatedly resembles CAPTCHA language.
+
 **Supervisor cache safety:** cached supervisor decisions are invalidated
 when the active host changes, reducing stale risk decisions after
 cross-domain pivots.
@@ -346,13 +352,13 @@ If you hit a missing-browser or missing-library error on first run:
    sudo find / -type f -iname "*chrome*" 2>/dev/null
    ```
 2. **If not found, install Chromium via Playwright:**
-   ```bash
+   ```
    npx playwright install chromium
    ```
    For real Chrome specifically (preferred — see Known Issues on
    fingerprinting), use `npx playwright install chrome` instead.
 3. **Install required system libraries and XVFB in one pass:**
-   ```bash
+   ```
    sudo apt-get update
    sudo apt-get install -y \
      libatk1.0-0 \
@@ -365,7 +371,7 @@ If you hit a missing-browser or missing-library error on first run:
      xvfb
    ```
 4. **Run the program:**
-   ```bash
+   ```
    npm start
    ```
 
@@ -376,7 +382,7 @@ If you hit a missing-browser or missing-library error on first run:
 If a previous run didn't shut down cleanly (stale browser/agent processes
 holding port 3000 or the profile lock):
 
-```bash
+```
 pkill -9 node || true
 pkill -9 chrome || true
 pkill -9 chromium || true
@@ -395,7 +401,7 @@ If your dev tunnel (e.g. a GitHub Codespaces forwarded URL) returns a 404 or
 can't connect:
 
 1. **Try a clean restart first:**
-   ```bash
+   ```
    fuser -k 3000/tcp || true
    pkill -f "node agent.js" || true
    pkill -f "xvfb-run -a node agent.js" || true
@@ -404,7 +410,7 @@ can't connect:
 2. **If that doesn't resolve it, the tunnel itself may be corrupted.**
    Create a new branch, push your work to it, then start a fresh Codespace
    from that branch and delete the old one:
-   ```bash
+   ```
    git checkout -b <new-branch-name>
    git push -u origin <new-branch-name>
    ```

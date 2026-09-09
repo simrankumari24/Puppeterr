@@ -64,3 +64,18 @@ test('knowledge adapters tolerate unavailable reports and non-array providers', 
   assert.equal(models.ok, true);
   assert.deepEqual(models.results, []);
 });
+
+test('memory knowledge combines live memory with persisted log history', async () => {
+  const bus = createKnowledgeBus({
+    modules: createKnowledgeModules({
+      memorySearch: async () => [{ task: 'current browser state', result: 'live result' }],
+      logSearch: async () => [{ kind: 'task', goal: 'past browser task', completed: true, ts: '2026-01-01T00:00:00.000Z' }]
+    })
+  });
+
+  const result = await bus.request({ target: 'MEMORY', request: 'search: browser', limit: 2 });
+  assert.equal(result.ok, true);
+  assert.equal(result.results.length, 2);
+  assert.deepEqual(new Set(result.results.map(item => item.source)), new Set(['live-memory', 'log.json']));
+  assert.equal(result.results.find(item => item.source === 'log.json').completed, true);
+});

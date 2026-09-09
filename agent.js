@@ -203,6 +203,8 @@ const pinchApi = require("pinch-api");
 const pixelGridReasoner = require("./pixelGridReasoner");
 const StriderIntegration = require("./strider-integration");
 const { resolveChatWriteUserId, resolveChatIdForWrite } = require("./chat-scope");
+const { createKnowledgeBus } = require("./knowledgeBus");
+const { createKnowledgeModules } = require("./knowledgeModules");
 const {
   installVoidElementMapInitScript,
   captureVoidElementMapFromPage,
@@ -561,6 +563,10 @@ const MODEL_CACHE_MS = 15 * 60 * 1000;
 const CAPTCHA_HUMAN_CHECK_LIMIT = Math.max(1, Number(process.env.CAPTCHA_HUMAN_CHECK_LIMIT || 10));
 const CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES = Math.max(1, Number(process.env.CAPTCHA_HUMAN_HANDOFF_PAGE_FAILURES || 3));
 const CAPTCHA_RECHECK_DELAY_MS = Number(process.env.CAPTCHA_RECHECK_DELAY_MS || 6000);
+const CAPTCHA_DOMAINS_FILE = String(process.env.CAPTCHA_DOMAINS_FILE || path.join(process.cwd(), "captcha-domains.json"));
+const CAPTCHA_IGNORED_DOMAINS = new Set(String(process.env.CAPTCHA_IGNORED_DOMAINS || "")
+  .split(",").map(value => value.trim().toLowerCase()).filter(Boolean));
+const CAPTCHA_VISION_CONFIRMATION_MIN_CONFIDENCE = Math.max(0, Math.min(100, Number(process.env.CAPTCHA_VISION_CONFIRMATION_MIN_CONFIDENCE || 70)));
 const CAPTCHA_GENTLE_MODE_MS = Math.max(30000, Number(process.env.CAPTCHA_GENTLE_MODE_MS || 180000));
 const CAPTCHA_GENTLE_PACING_MULTIPLIER = Math.max(1, Number(process.env.CAPTCHA_GENTLE_PACING_MULTIPLIER || 1.8));
 const CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS = Math.max(200, Number(process.env.CAPTCHA_GENTLE_PRE_ACTION_IDLE_MS || 900));
@@ -668,6 +674,35 @@ function loadStablePage() {
     if (url && typeof url === "string" && url.startsWith("http")) return url;
   } catch {}
   return null;
+}
+
+function normalizeCaptchaDomain(value) {
+  return String(value || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+}
+
+function loadCaptchaIgnoredDomains() {
+  const domains = new Set(CAPTCHA_IGNORED_DOMAINS);
+  if (!fs.existsSync(CAPTCHA_DOMAINS_FILE)) return domains;
+  try {
+    const config = JSON.parse(fs.readFileSync(CAPTCHA_DOMAINS_FILE, "utf8"));
+    const configured = Array.isArray(config) ? config : config?.ignoredDomains;
+    for (const domain of Array.isArray(configured) ? configured : []) {
+      const normalized = normalizeCaptchaDomain(domain);
+      if (normalized) domains.add(normalized);
+    }
+  } catch (error) {
+    console.warn(`[captcha] Could not read ${CAPTCHA_DOMAINS_FILE}: ${error.message}`);
+  }
+  return domains;
+}
+
+const CAPTCHA_IGNORED_DOMAIN_SET = loadCaptchaIgnoredDomains();
+
+function isCaptchaIgnoredDomain(rawUrl) {
+  let host = "";
+  try { host = normalizeCaptchaDomain(new URL(String(rawUrl || "")).hostname); } catch {}
+  if (!host) return false;
+  return Array.from(CAPTCHA_IGNORED_DOMAIN_SET).some(domain => host === domain || host.endsWith(`.${domain}`));
 }
 // ─────────────────────────────────────────────────────────────────────────────
 const FREE_TIER_MAX_TASKS = Math.max(1, Number(process.env.FREE_TIER_MAX_TASKS || 50));
@@ -3472,6 +3507,10 @@ async function callVisionAI(imageB64, promptText, maxTokens = 600, modelName = D
         return data.result.response;
 
       } catch (err) {
+        const errorText = String(err?.message || err || "");
+        if (/context window|estimated number of input|maximum output tokens|code.?5021/i.test(errorText)) {
+          throw err;
+        }
         if (i === 2) throw err;
         status(`Vision retry ${i + 1}: ${err.message}`);
         await sleep(400 + (i * 150));
@@ -3760,10 +3799,8 @@ async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560
   if (!sourceB64) return "";
 
   const sourceMime = String(mimeType || "image/jpeg").toLowerCase();
-  const outputFormat = sourceMime.includes("png") ? "png"
-    : sourceMime.includes("webp") ? "webp"
-    : sourceMime.includes("gif") ? "gif"
-    : "jpeg";
+  // Compact JPEGs produce more predictable vision token estimates than PNGs.
+  const outputFormat = "jpeg";
 
   if (sharp) {
     try {
@@ -3777,9 +3814,7 @@ async function resizeImageB64ForVision(imageB64, maxWidth = 800, maxHeight = 560
       if (ratio < 1) {
         pipeline = pipeline.resize({ width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)), fit: "inside", withoutEnlargement: true });
       }
-      if (outputFormat === "png") pipeline = pipeline.png();
-      else if (outputFormat === "webp") pipeline = pipeline.webp({ quality: 82 });
-      else pipeline = pipeline.jpeg({ quality: 72, mozjpeg: true });
+      pipeline = pipeline.jpeg({ quality: 60, mozjpeg: true });
       const buf = await pipeline.toBuffer();
       if (buf && buf.length) return buf.toString("base64");
     } catch {}
@@ -4110,7 +4145,7 @@ async function runImageAnalysis(media, modelId, userQuery = "") {
   const sourceMime = String(media?.mimeType || "image/jpeg");
   const imageBuffer = Buffer.from(String(media?.dataB64 || ""), "base64");
   const dimensions = readImageDimensions(imageBuffer, sourceMime);
-  const preparedImageB64 = await resizeImageB64ForVision(media.dataB64, 800, 560, sourceMime);
+  const preparedImageB64 = await resizeImageB64ForVision(media.dataB64, 512, 384, sourceMime);
   const prompt = `User query: "${String(userQuery || "").slice(0, 800)}"
 
 You are analyzing a user-uploaded image. Return a detailed response with these exact sections:
@@ -4414,9 +4449,43 @@ function detectChatStyleRequest(rawMessage) {
 // multiple stray tag pairs in a malformed response don't merge into one match.
 const BROWSING_TASK_TAG_RE = /<<BROWSING_TASK>>([\s\S]*?)<<END_BROWSING_TASK>>/;
 
+function findFirstBrowsingTaskFromLog() {
+  if (!fs.existsSync(LOG_FILE)) return null;
+  try {
+    const entries = JSON.parse(fs.readFileSync(LOG_FILE, "utf8"));
+    if (!Array.isArray(entries)) return null;
+    const first = entries.find(entry =>
+      entry &&
+      entry.kind === "task" &&
+      entry.phase === "start" &&
+      String(entry.goal || "").trim()
+    );
+    return first ? {
+      goal: String(first.goal).trim(),
+      ts: first.ts || null,
+      host: first.host || null
+    } : null;
+  } catch (error) {
+    console.warn(`[history] Could not read ${LOG_FILE}: ${error.message}`);
+    return null;
+  }
+}
+
+function isFirstBrowsingTaskQuestion(text) {
+  return /\b(first|1st|earliest|initial)\b[\s\S]{0,80}\b(browsing|browser|web)\s+task\b/i.test(String(text || ""))
+    || /\bwhat\s+was\s+the\s+(first|1st|earliest)\b[\s\S]{0,80}\btask\b/i.test(String(text || ""));
+}
+
 async function answerCasualChat(rawMessage, conversationHistory, models, chatId = null, browserRuntime = null, userId = null) {
   if (isModelIdentityQuestion(rawMessage)) {
     return getCasualIdentityReply(models);
+  }
+
+  if (isFirstBrowsingTaskQuestion(rawMessage)) {
+    const firstTask = findFirstBrowsingTaskFromLog();
+    if (!firstTask) return "I couldn't find a recorded browsing task in log.json.";
+    const date = firstTask.ts ? ` (${new Date(firstTask.ts).toISOString()})` : "";
+    return `The first recorded browsing task was: "${firstTask.goal}"${date}.`;
   }
 
   const styleRequest = detectChatStyleRequest(rawMessage);
@@ -4434,7 +4503,7 @@ async function answerCasualChat(rawMessage, conversationHistory, models, chatId 
     "acoustic=algospeak for 'autistic', clueless insult | aura=vibe/reputation | ate=did great | baddie=confident attractive woman | based=being unapologetically yourself | bffr='be for real' | brain rot=overstimulation from online content | bruh=bro/disbelief | bussin=extremely good | cap=lie, no cap=truth | caught in 4K=caught with proof | crine=crying-laughing | cooked=in trouble/screwed | dead=hilarious | delulu=delusional (romantic fantasy) | drip=good fashion | edge=near-completion or sexual context | face card=attractiveness | fanum tax=stealing a friend's food | finna=about to | fit=outfit | gagged=shocked | geeked=excited/hyped | glaze=overpraise | glow-up=major improvement | GOAT=greatest of all time | gyatt=attractive butt | hits different=uniquely better | ick=sudden disgust/turn-off | icl='I can't lie' | IJBOL='I just burst out laughing' | it's giving=describes a vibe | iykyk='if you know you know' | jit=young/inexperienced person | Karen=entitled person | L=loss/failure, L+ratio=you lost badly | lit=fun/exciting | locked in=focused | mid=mediocre | mog=outshine someone | moots=mutual followers | nepo baby=child of a famous/connected parent | oomf='one of my followers' | out of pocket=wild/inappropriate | periodt=emphatic final statement | pick-me=seeking validation via approval-seeking behavior | pookie=affectionate nickname | pushing P=acting with style/success | ratio=replies outnumber likes (a dunk) | rage-bait=content meant to provoke anger | rizz=charisma/flirting skill | salty=bitter | sheesh=praise/impressed | sigma=lone-wolf archetype | simp=overly eager for someone's attention | situationship=undefined romantic relationship | skibidi=nonsense meme word | slay=did something well | touch grass=go outside, get perspective | ts='this'/'type shit' | twin=close friend | rawdog=doing something with no aids/prep (e.g. a flight with no phone) | mewing=jaw-exercise meme trend | npc=someone acting robotic/unoriginal | girl dinner=a small/mismatched improvised meal | main character energy=acting confidently central to the moment | beige flag=a quirky, neutral personality trait | chronically online=too online, out of touch with offline norms | ghost=stop responding/disappear | menty b=mental breakdown (used casually) | rent free=can't stop thinking about something | vibe check=informal read on someone's mood/energy | W=win.\n" +
     "Sensitive-term note: KMS/KYS/'unalive' appear in youth slang sometimes as exaggerated dark humor (e.g. reacting to embarrassment) and sometimes as a genuine expression of distress. Recognize both meanings, but never use these terms yourself, never mirror them back playfully, and if the context reads as genuine distress rather than joking, drop the casual tone and respond with care instead of banter.\n\n";
 
-  const CASUAL_CHAT_SYSTEM = SLANG_GLOSSARY + "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them.\n\n" +
+  const CASUAL_CHAT_SYSTEM = SLANG_GLOSSARY + "You are Puppeterr in casual chat mode. Respond helpfully and conversationally. If asked what model you are, state the configured model id exactly. Formatting: - *italic*, **bold**, ***bold+italic*** - `inline code` - <br> for line breaks - Headings (# to ######) for visual flair - Emoji shortcodes like :rocket: :fire: :smile: Tone: - Match the user’s energy and slang (lol, brb, idk, smh, lmao, wtf, etc.) - Adjust style, not emotions. You never express feelings. Tone rules: - Hype → high energy, playful confidence - Annoyed → dry humor, light sarcasm - Bored → chill, low‑energy banter - Chaotic → theatrical, exaggerated - Neutral → normal conversational tone Roasting: - Light, playful roasts only about simple tasks - Never personal, emotional, or identity‑based Boundaries: - No emotions, no attachment, no claiming to be OpenAI/GPT‑4 unless true, CRITICAL: If the user is being ch then be casual; if the user is going/doing to do something worth while (eg. coding, making a project/writing a essay) make sure that you push back on parts that dont make sense / aren't worth it.. Creativity: - Use headings, spacing, and visual flair when it improves clarity or aesthetics. - Keep responses natural and conversational. - Only use structured layouts when the user explicitly asks for them. NEVER do/make gramatical mistakes always 2x check.\n\n" +
     "Context escalation: you may NOT browse on your own initiative for memes, casual link-dropping, or vague reactions (\"lol look at this\", \"bro this link is wild\") — just react normally to those. ONLY when the user explicitly asks you to evaluate, summarize, or describe something you have no cached context for (e.g. \"is this repo good?\", \"what does this project do?\", \"is this site legit?\") AND a URL or clearly identifiable target is present, you may request one — and only one — browsing task instead of guessing or hallucinating. To do this, respond with ONLY this block and nothing else:\n<<BROWSING_TASK>>\n/browser go to <url>, then do <X> <additional tasks here> \n<<END_BROWSING_TASK>>\n.  Never emit it a second time in the same reply. X may be 'extract all text' or as simple as 'mark task as done' feel free to manipulate that Variable. you may add additional tasks based on the user's request, but you may not add any tasks that are not explicitly requested by the user. If you do not have enough information to complete the task, ask the user for clarification. If you cannot complete the task, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification. If the user asks you to do something that is outside of your capabilities, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification. (you can input it at the <addition tasks here>) I repeat you may FREELY manipulate variables 'X' and '<additional tasks here>' to suit the user's request, but you may not add any tasks that are not explicitly requested by the user. If you do not have enough information to complete the task, ask the user for clarification. If you cannot complete the task, respond with a clear explanation of why and suggest an alternative approach. Do not make up information or guess at answers. If you are unsure about something, ask the user for clarification.";
 
   try {
@@ -4651,10 +4720,14 @@ async function pinchListWebhookTypes() {
       const status = String(item?.status || "unknown");
       const selector = String(item?.selector || "").trim();
       const reason = String(item?.error || item?.reason || "").replace(/\s+/g, " ").trim().slice(0, 120);
+      const extracted = String(item?.extractedText || "").replace(/\s+/g, " ").trim().slice(0, 560);
+      const result = String(item?.result || "").replace(/\s+/g, " ").trim().slice(0, extracted ? 0 : 240);
       const notes = [];
       if (selector) notes.push(`sel=${selector.slice(0, 80)}`);
       if (reason) notes.push(`note=${reason}`);
       if (item?.domMapSummary) notes.push(`dom=${String(item.domMapSummary).slice(0, 100)}`);
+      if (extracted) notes.push(`extracted=${extracted}`);
+      else if (result) notes.push(`result=${result}`);
       return `${idx + 1}. ${action}:${status}${notes.length ? ` (${notes.join(" | ")})` : ""}`;
     }).join("\n");
   }
@@ -4891,6 +4964,7 @@ async function pinchListWebhookTypes() {
   async function detectCaptchaChallenge(state) {
     const lowerText = `${state?.title || ""}\n${state?.text || ""}`.toLowerCase();
     const currentUrl = String(state?.url || "").toLowerCase();
+    const ignoredDomain = isCaptchaIgnoredDomain(state?.url);
 
     // Avoid false positives on normal auth routes like Google sign-in
     // where "challenge" can appear in the URL without any CAPTCHA widget.
@@ -4945,23 +5019,23 @@ async function pinchListWebhookTypes() {
     const weakDomHit = !!domSignals.hasWeak;
 
     const score =
-      (strongTextHit ? 3 : 0) +
-      (weakTextHit ? 1 : 0) +
-      (urlHit ? 2 : 0) +
+      (strongTextHit && !ignoredDomain ? 3 : 0) +
+      (weakTextHit && !ignoredDomain ? 1 : 0) +
+      (urlHit && !ignoredDomain ? 2 : 0) +
       (strongDomHit ? 3 : 0) +
       (weakDomHit ? 1 : 0);
 
     const detected =
       strongDomHit ||
-      strongTextHit ||
-      (urlHit && (weakTextHit || weakDomHit)) ||
-      (weakTextHit && weakDomHit && score >= 3) ||
+      (!ignoredDomain && strongTextHit) ||
+      (!ignoredDomain && urlHit && (weakTextHit || weakDomHit)) ||
+      (!ignoredDomain && weakTextHit && weakDomHit && score >= 3) ||
       score >= 5;
 
     const strongEvidence =
       strongDomHit ||
-      strongTextHit ||
-      (urlHit && (weakTextHit || weakDomHit));
+      (!ignoredDomain && strongTextHit) ||
+      (!ignoredDomain && urlHit && (weakTextHit || weakDomHit));
 
     const evidence = [
       strongDomHit ? "dom-strong" : "",
@@ -4974,8 +5048,9 @@ async function pinchListWebhookTypes() {
     return {
       detected,
       strongEvidence,
+      ignoredDomain,
       score,
-      reason: detected ? `Potential CAPTCHA/challenge detected${evidence ? ` (${evidence})` : ""}` : ""
+      reason: detected ? `Potential CAPTCHA/challenge detected${ignoredDomain ? " (visible DOM evidence)" : evidence ? ` (${evidence})` : ""}` : ""
     };
   }
 
@@ -5005,17 +5080,41 @@ async function pinchListWebhookTypes() {
     if (parsed && typeof parsed.captcha === "boolean") {
       return {
         captcha: parsed.captcha,
+        confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : 0,
         reason: typeof parsed.reason === "string" ? parsed.reason : ""
       };
     }
     const text = String(raw || "").toLowerCase();
     if (/"captcha"\s*:\s*true|\bcaptcha\s+present\b|\bchallenge\s+present\b/.test(text)) {
-      return { captcha: true, reason: "vision-text-match" };
+      return { captcha: true, confidence: 50, reason: "vision-text-match" };
     }
     if (/"captcha"\s*:\s*false|\bno\s+captcha\b|\bchallenge\s+not\s+present\b|\bcleared\b/.test(text)) {
-      return { captcha: false, reason: "vision-text-match" };
+      return { captcha: false, confidence: 50, reason: "vision-text-match" };
     }
-    return { captcha: true, reason: "vision-ambiguous-default-keep-open" };
+    return { captcha: false, confidence: 0, reason: "vision-ambiguous-no-confirmation" };
+  }
+
+  async function confirmCaptchaWithVision(state, models) {
+    try {
+      const screenshotB64 = await getVisionScreenshotB64({ broadcastImage: false, writeFile: false });
+      const raw = await callVisionAI(
+        screenshotB64,
+        `Inspect this browser screenshot for a real CAPTCHA, Turnstile, hCaptcha, reCAPTCHA, or human-verification gate.
+Return JSON only: {"captcha":true|false,"confidence":0-100,"reason":"short evidence"}.
+Set captcha=true only when a visible challenge widget or clearly presented human-verification gate is actually present now. Normal article text mentioning CAPTCHA, security wording without a visible gate, loading screens, login pages, and blank/uncertain UI are captcha=false.
+URL: ${String(state?.url || "")}`,
+      180,
+      models?.vision || DEFAULT_MODELS.vision
+    );
+    const signal = parseVisionCaptchaSignal(raw);
+    return {
+      confirmed: signal.captcha === true && signal.confidence >= CAPTCHA_VISION_CONFIRMATION_MIN_CONFIDENCE,
+      confidence: signal.confidence,
+      reason: signal.reason || "vision did not provide clear evidence"
+    };
+  } catch (error) {
+    return { confirmed: false, confidence: 0, reason: `vision confirmation unavailable: ${error.message}` };
+  }
   }
 
   function stopHumanBridgeWatchdog() {
@@ -5673,11 +5772,16 @@ Return JSON only:
   function getMemoryEntryText(entry) {
     const keywords = Array.isArray(entry?.keywords) ? entry.keywords.join(" ") : "";
     return [
+      entry?.kind,
       entry?.task,
       entry?.prompt,
       entry?.goal,
       entry?.result,
       entry?.action_done,
+      entry?.action,
+      entry?.status,
+      entry?.error,
+      entry?.errorMessage,
       entry?.url,
       keywords,
       entry?.other_data && typeof entry.other_data === "object" ? JSON.stringify(entry.other_data).slice(0, 99999) : ""
@@ -5718,7 +5822,7 @@ Return JSON only:
 
   function searchRelevantMemory(query, limit = 6) {
     const startedAt = Date.now();
-    const all = loadMemory();
+    const all = [...loadMemory(), ...loadLearningLog()];
     const terms = normalizeKeywordList([query], 14);
     if (!terms.length) return all.slice(-limit);
 
@@ -6848,6 +6952,7 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
   const compactDirectNavigationTarget = taskHints.simpleFastPathCandidate && String(taskHints.directNavigationTarget || "").trim()
     ? compactUrlForPrompt(taskHints.directNavigationTarget)
     : "none";
+  const compactKnowledge = compactPromptValue(JSON.stringify(taskHints.knowledgeContext || {}), 1800);
 
   // Dynamic page-text compaction: budget = however much room is actually
   // left after every other field in this prompt, not a fixed guess. Also
@@ -6883,6 +6988,7 @@ async function planNextSteps(goal, state, visionFeedback, taskLog, plannerHistor
     compactTabs, compactInputs, compactButtons, compactVisibleLinks,
     compactVoidMapSummary, compactVoidMapClickable,
     compactPromptValue(visionFeedback || "none", 280),
+    compactKnowledge,
     compactPromptValue(peerReasoner.instinct || "none", 80),
     compactPromptValue(peerSupervisor.reason || "", 70),
     goalMemCtx || "none", compactDirectNavigationTarget,
@@ -6908,6 +7014,7 @@ Links:${compactVisibleLinks}
 VoidMap:${compactVoidMapSummary}
 VoidClickable:${compactVoidMapClickable}
 Vision:${compactPromptValue(visionFeedback || "none", 280)}
+KnowledgeBusEvidence:${compactKnowledge}
 Peers:instinct=${compactPromptValue(peerReasoner.instinct || "none", 80)};risk=${compactPromptValue(peerReasoner.risk || "none", 24)};focus=${compactPromptValue(peerReasoner.next_focus || "none", 60)};supervisor=${compactPromptValue(peerSupervisor.decision || "none", 20)}:${compactPromptValue(peerSupervisor.reason || "", 70)};researchHints=${Number(peerResearch.hintCount || 0)}
 GoalProgress:${goalMemCtx || "none"}
 DirectNavigationTarget:${compactDirectNavigationTarget}
@@ -6917,7 +7024,8 @@ Recon:${compactRecon}
 PageText:${compactPageText}
 Learning:${compactPromptValue(learningContext, 200)}
 Failures:${failures};Stuck:${stuck ? "yes" : "no"}
-Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.`;
+Constraints:<=13 actions;avoid repeating failed selector/action;prefer submitForm for search;JSON only.
+Knowledge rule: when visual output, memory, prior failures, or element targeting is uncertain, use the provided KnowledgeBus evidence before inventing a new strategy. For graph/chart/equation goals, require Vision evidence that the requested visual result is visible before marking done.`;
 
   plannerHistory.push({ role: "user", content: userMsg.slice(0, MAX_PLANNER_USER_MSG_CHARS) });
   // Keep the conversation bounded BEFORE sending — see trimHistory's doc
@@ -7181,9 +7289,10 @@ const PLANNER_TIPS_50 = `
 
 const PLANNER_SYSTEM_PROMPT = `CRITICAL: Output must be ONLY valid JSON. Start with { and end with }. No prose, no markdown, no code fences.
 CRITICAL: On search engines (Google/Bing/DuckDuckGo/Yahoo), submit queries with Enter or submitForm. Do NOT click "Search" buttons.
+CRITICAL: Honor the explicit engine/order in the user's prompt. If the goal explicitly names Bing or Bing Maps first, do not rewrite it into a Google-first compare flow. Default Google-first only when the prompt does not specify an engine or compare sequence.
 CRITICAL: Prefer Google over Bing for search when the destination isn't specified by the user. Google accounts for the large majority of observed CAPTCHA/challenge walls in this agent's run history — only go to Bing when the user explicitly names it (OR when GOOGLE's captchas become overbearing (eg. 6+)).
 HIGH-CRITICAL:  When you need to extract text from a sector or need to extract text use the following command: <<START OF COMMAND>> // Wait for the element to be present in the DOM await page.waitForSelector('$YOURSECTORHERE$'); // Get the visible text (similar to innerText in DevTools) const text = await page.innerText('$YOURSECTORHERE$'); <<END OF COMMAND>> $YOURSECTORHERE$ = to the sector of the text you wish to extract to complete the goal. The FOLLOWING DOMAINS DO NOT HAVE contain/use captchas: ${CAPTCHA_DOMAINS}. IF YOU SEE ANY OTHER DOMAIN that consistantly shows no captchas write that in you summary
-
+MAX-PRIORITY: When the prompt request info from a site or multiple ones remember to get as much as information as possible and summarize it in a concise manner. If the prompt asks for a summary of a large document, use the summarizeLargeDocument command to get a summary of the document.
 Planner mode: deterministic, progress-first, minimal-risk.
 
 Allowed actions: goto,reload,goBack,goForward,click,dblclick,mouseDblclick,hover,fill,type,press,check,uncheck,selectOption,scrollIntoView,submitForm,keyboardType,keyboardPress,keyboardDown,keyboardUp,mouseMove,mouseClick,mouseDown,mouseUp,mouseWheel,waitForSelector,waitForVisible,waitForTimeout,waitForLoadState,waitForURLChange,waitForNavigation,getText,getAttribute,getAllText,getHTML,getTitle,getURL,countElements,isVisible,elementExists,expectVisible,expectHidden,expectText,expectURL,evaluate,screenshot,fullPageScreenshot,setViewport,uploadFile,summarizeLargeDocument,openNewTab,switchToTab,listTabs,closeCurrentTab,pinchListTickets,pinchSendTicketMessage,pinchListWebhooks,pinchListWebhookTypes.
@@ -7226,6 +7335,11 @@ GoalProgress policy:
 - If GoalProgress says all complete (or evidence clearly satisfies goal), output done:true.
 - For extract+summarize goals, avoid repeated getAllText after one successful extraction.
 
+Extraction result handling:
+- Results may include an extracted= value containing the literal return from getText, getAllText, getHTML, or evaluate.
+- Treat usable extracted text for the requested target as completed evidence; do not repeat extraction or switch selectors just because the action status is only ok.
+- If the extracted value says no matching content was found, choose one targeted recovery action or finish honestly; do not repeat the same extraction loop.
+
 getAllText usage:
 - getAllText now accepts an optional selector param — pass params:{"selector":"..."} to scope extraction to a specific container/section instead of the whole page. Prefer a scoped selector over the full-page default when the target content is inside a specific region (an article body, a results list, a sidebar) — it returns cleaner, more focused text and avoids picking up unrelated page chrome (nav/footer/ads).
 - Extraction is literal page text (DOM order, script/style/hidden nodes excluded) — it no longer applies CSS text-transform or layout-based reflow, so output should now closely match what a human would get from selecting the text by hand.
@@ -7238,6 +7352,21 @@ Schema:
 
 const REASONER_INSTINCT_PROMPT = `You are the fast instinct layer.
 Give short, operational guidance before planning.
+
+You may request targeted internal knowledge when it would reduce uncertainty.
+Available KnowledgeBus modules are:
+- MEMORY.search: prior task outcomes and memory.json/history evidence
+- PAGE.state or PAGE.text: current live page state and visible text
+- VISION.snapshot: latest visual interpretation and whether a requested result is visible
+- ELEMENT_MAP.snapshot: current interactive elements and visible page regions
+- SUPERVISOR.decision: latest safety decision and reason
+- MODELS.list: available model capabilities
+
+Do not browse the web for historical or internal questions. Use MEMORY for questions
+about previous tasks, logs, failures, or what happened earlier. Use VISION or
+ELEMENT_MAP when the answer depends on what is visibly present. Query only the
+module(s) relevant to the uncertainty; do not query everything by default.
+When no query is needed, proceed from the evidence already supplied.
 
 Output JSON only:
 {
@@ -7252,7 +7381,10 @@ Rules:
 2) If page is blocked or uncertain, say it clearly.
 3) If vision already contains needed answer, advise extract/finish.
 4) If same selector/action keeps failing, advise a different selector family or submit path.
-5) Allow one small creative suggestion only when risk is low and it directly supports the goal.`;
+5) Decide dynamically whether MEMORY, PAGE, VISION, ELEMENT_MAP, SUPERVISOR, or MODELS is needed.
+6) When a targeted query is needed, state the exact module and query in "next_focus" or "caution".
+7) For graph, chart, equation, line, canvas, or screenshot goals, explicitly check whether the requested visual result is visible in Vision evidence, regardless of its color.
+8) Allow one small creative suggestion only when risk is low and it directly supports the goal.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: EXECUTOR
@@ -7653,7 +7785,8 @@ async function runActionWithFallback(item, goal, models) {
     const resultText = rawResultText.slice(0, 200);
     recordOutcome("ok", { result: resultText, path: ACTION_PATH.PRIMARY });
     const response = { action, status: "ok", result: resultText };
-    if (["getText", "getAllText", "getHTML"].includes(String(action || "")) && rawResultText.trim()) {
+    const extractionAction = ["getText", "getAllText", "getHTML", "evaluate"].includes(String(action || ""));
+    if (extractionAction && rawResultText.trim()) {
       response.extractedText = rawResultText.slice(0, 12000);
     }
     if (["getText", "getAllText", "getHTML"].includes(String(action || "")) && shouldCaptureStructuredDom(goal, action, response.extractedText || rawResultText)) {
@@ -7945,7 +8078,7 @@ async function executeActionPlan(plan, goal, models, throttle = {}, supervisorCo
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT: REASONER — final answer + memory
 // ─────────────────────────────────────────────────────────────────────────────
-async function summarizeResult(goal, state, taskLog, visionFeedback, completed, models, extractedText = "") {
+async function summarizeResult(goal, state, taskLog, visionFeedback, completed, models, extractedText = "", finalScreenshotSummary = "", knowledgeContext = null) {
   status("Reasoner composing answer...");
   try {
     // Ground on whichever text source actually has content. extractedText
@@ -7958,7 +8091,7 @@ async function summarizeResult(goal, state, taskLog, visionFeedback, completed, 
     // no explicit extraction action ran.
     const hasExplicitExtraction = String(extractedText || "").trim().length > 0;
     const groundingText = hasExplicitExtraction ? extractedText : (state.text || "");
-    const extractedSnippet = compactPromptValue(groundingText, 4000) || "(none)";
+    const extractedSnippet = preserveEvidenceText(groundingText, 4000) || "(none)";
     const hasAnyGrounding = extractedSnippet !== "(none)";
 
     const compareFormatHint = isSearchEngineComparisonGoal(goal)
@@ -7971,6 +8104,8 @@ Result: ${completed ? "COMPLETED" : "INCOMPLETE"}
 Final URL: ${state.url}
 Final title: ${state.title}
 Vision last saw: ${visionFeedback ? visionFeedback.slice(0, 500) : "(none)"}
+Final screenshot summary: ${finalScreenshotSummary || "(none)"}
+KnowledgeBus evidence: ${compactPromptValue(JSON.stringify(knowledgeContext || {}), 1800)}
 Extracted text snippet (source: ${hasExplicitExtraction ? "explicit getText/getAllText call" : "page text fallback"}): ${extractedSnippet}
 Steps taken: ${taskLog.join("\n")}
 
@@ -8020,7 +8155,7 @@ Mark done=true only when there is clear evidence the goal is satisfied.`
   }
 }
 
-async function getReasonerInstinct(goal, state, visionFeedback, taskLog, models) {
+async function getReasonerInstinct(goal, state, visionFeedback, taskLog, models, knowledgeContext = null) {
   try {
     const raw = await callCFAI(models.reasoner, [
       {
@@ -8033,6 +8168,7 @@ async function getReasonerInstinct(goal, state, visionFeedback, taskLog, models)
 Current URL: ${state.url}
 Current title: ${state.title}
 Vision notes: ${visionFeedback || "(none)"}
+KnowledgeBus evidence: ${compactPromptValue(JSON.stringify(knowledgeContext || {}), 1600)}
 Recent step log:
 ${taskLog.slice(-6).join("\n") || "(none)"}
 
@@ -8228,6 +8364,20 @@ function isGoogleSearchResultsUrl(rawUrl) {
   }
 }
 
+function preserveEvidenceText(value, maxChars = 4000) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+
+  const headRatio = 0.65;
+  const headLen = Math.max(120, Math.floor(maxChars * headRatio));
+  const tailLen = Math.max(120, maxChars - headLen);
+  const head = text.slice(0, headLen);
+  const tail = text.slice(-tailLen);
+  const cut = text.length - (headLen + tailLen);
+  return `${head} …[TRUNCATED: ${cut} chars removed from the middle — evidence at the end is preserved here]… ${tail}`;
+}
+
 function compactPromptValue(value, maxChars = 240) {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
@@ -8300,6 +8450,18 @@ function extractSearchQuery(goalText) {
   return cleaned || null;
 }
 
+function getExplicitSearchEnginePreference(goalText) {
+  const g = String(goalText || "").toLowerCase();
+  if (!g) return "google";
+
+  const bingIndex = g.search(/\bbing(?:\s+maps)?\b|bing\.com|maps\.bing\.com/);
+  const googleIndex = g.search(/\bgoogle\b|google\.com/);
+
+  if (bingIndex !== -1 && (googleIndex === -1 || bingIndex < googleIndex)) return "bing";
+  if (googleIndex !== -1 && (bingIndex === -1 || googleIndex < bingIndex)) return "google";
+  return "google";
+}
+
 function isSearchEngineComparisonGoal(goalText) {
   const g = String(goalText || "").toLowerCase();
   if (!g) return false;
@@ -8308,7 +8470,12 @@ function isSearchEngineComparisonGoal(goalText) {
   const hasBing = /\bbing\b/.test(g);
   const hasCompareIntent = /\b(compare|contrast|compare and contrast|difference|differences|versus|vs)\b/.test(g);
   const hasSummaryIntent = /\b(summarize|summary|summery|three paragraph|3 paragraph|three-paragraph)\b/.test(g);
-  return hasSearchIntent && ((hasGoogle && hasBing) || (hasBing && hasCompareIntent && hasSummaryIntent));
+  const explicitPreference = getExplicitSearchEnginePreference(g);
+  return hasSearchIntent && (
+    (hasGoogle && hasBing) ||
+    (hasBing && hasCompareIntent && hasSummaryIntent) ||
+    (explicitPreference === "bing" && hasBing && hasCompareIntent)
+  );
 }
 
 function isDocsPreferredSearch(queryText, goalText = "") {
@@ -8435,8 +8602,18 @@ function shouldAcceptPlannerDoneDecision(goalText, state, extractedTextBuffer = 
 function isExtractionSummaryGoal(goalText) {
   const g = String(goalText || "").toLowerCase();
   const wantsSummary = /\b(summarize|summary|summery|tldr|tl;dr)\b/.test(g);
-  const wantsExtract = /\b(extract|get text|get all text|current text|read page|page text|content)\b/.test(g);
+  const wantsExtract = isExtractionGoal(g);
   return wantsSummary && wantsExtract;
+}
+
+function isExtractionGoal(goalText) {
+  return /\b(extract|get text|get all text|current text|read page|page text|infobox|content)\b/i.test(String(goalText || ""));
+}
+
+function isUsableExtractedText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length < 2) return false;
+  return !/^(?:no\s+.+\s+found|(?:nothing|no)\s+(?:was\s+)?(?:found|extracted))\.?$/i.test(text);
 }
 
 function getExtractedTextFromResults(results = []) {
@@ -8444,9 +8621,9 @@ function getExtractedTextFromResults(results = []) {
   for (let i = list.length - 1; i >= 0; i--) {
     const item = list[i] || {};
     if (String(item.status || "") !== "ok") continue;
-    if (!["getText", "getAllText", "getHTML"].includes(String(item.action || ""))) continue;
+    if (!["getText", "getAllText", "getHTML", "evaluate"].includes(String(item.action || ""))) continue;
     const text = String(item.extractedText || "").trim();
-    if (text) return text;
+    if (isUsableExtractedText(text)) return text;
   }
   return "";
 }
@@ -8569,6 +8746,19 @@ function buildConfusionSearchPlan(goal, state, visionFeedback, taskLog = [], fai
     shouldPreferOfficial: !!targetDomain,
     failureBias: failures >= 2
   };
+}
+
+function shouldUseHeuristicPlannerFallback(plan, goal, state, taskLog = [], failures = 0) {
+  if (!plan || typeof plan !== "object") return true;
+  if (plan._parseFailed) return true;
+  if (plan.done === true) return false;
+  if (Array.isArray(plan.actions) && plan.actions.length > 0) return false;
+
+  const taskLogText = String((taskLog || []).join("\n") || "").toLowerCase();
+  const hasRepeatedFailureLoop = failures >= 3 || /repeated|stuck|loop|no actions|planner parse failed|invalid params/i.test(taskLogText);
+  const hasSearchGoal = /\b(search|find|look up|look-up)\b/i.test(String(goal || ""));
+  const hasWorkingPageEvidence = !!String(state?.url || "").trim() || !!String(state?.title || "").trim() || !!String(state?.text || "").trim();
+  return hasRepeatedFailureLoop && hasSearchGoal && hasWorkingPageEvidence;
 }
 
 function extractResearchHintsFromResults(text, links, researchPlan) {
@@ -8850,6 +9040,8 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
       const bingSearchSeen = /bing\.com\/search\?q=/.test(currentUrl.toLowerCase()) || logText.includes("bing.com/search?q=");
       const googleCaptured = logText.includes("capture google:ok");
       const bingCaptured = logText.includes("capture bing:ok");
+      const explicitPreference = getExplicitSearchEnginePreference(goal);
+      const preferBingFirst = explicitPreference === "bing";
 
       if (googleCaptured && bingCaptured) {
         return {
@@ -8857,6 +9049,29 @@ function inferHeuristicPlan(goal, state, taskLog, failures) {
           confidence: 90,
           done: true,
           actions: []
+        };
+      }
+
+      if (preferBingFirst && !bingSearchSeen && !onBing) {
+        return {
+          reasoning: `Heuristic compare flow: honor the explicit Bing-first task and search for \"${query}\" on Bing.`,
+          confidence: 86,
+          done: false,
+          actions: [
+            { action: "goto", params: { url: buildSearchResultsUrl(query, "bing") } },
+            { action: "waitForVisible", params: { selector: "a[href]", timeout: 8000 } }
+          ]
+        };
+      }
+
+      if (preferBingFirst && onBing && !bingCaptured) {
+        return {
+          reasoning: "Heuristic compare flow: capture the explicit Bing result-page text before comparing.",
+          confidence: 80,
+          done: false,
+          actions: [
+            { action: "getAllText", params: {} }
+          ]
         };
       }
 
@@ -9780,6 +9995,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
   let lastAction     = null;
   let completed      = false;
   let finalState     = { url: "about:blank", title: "", text: "", links: [], inputs: [] };
+  let latestKnowledgeContext = null;
   let failures       = 0;
   let requiresHuman  = false;
   let supervisorBlocks = 0;
@@ -9822,6 +10038,64 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
     lastTriggeredsStep: 0,
     mapsEscaped: false
   };
+
+  const knowledgeBus = createKnowledgeBus({
+    modules: createKnowledgeModules({
+      pageState: () => getPageState(),
+      visionSnapshot: () => getTaskVisionSnapshot(),
+      elementMap: async () => {
+        const map = await captureVoidElementMap(page, {
+          includeWithoutId: true,
+          includeText: true,
+          includeStyleBits: true,
+          maxElements: 240,
+          textLimit: 180
+        }).catch(() => null);
+        return map ? {
+          summary: summarizeVoidElementMap(map),
+          clickable: Array.isArray(map.elements)
+            ? map.elements.filter(item => item?.clickable && item?.visibility?.isVisible).slice(0, 12).map(item => ({
+                tag: item.tagName,
+                id: item.id,
+                role: item.role,
+                text: String(item.text || item.ariaLabel || "").slice(0, 100)
+              }))
+            : []
+        } : null;
+      },
+      memorySearch: (query, limit) => searchRelevantMemory(query, limit),
+      logSearch: (query, limit) => loadLearningLog().slice(-Math.max(1, limit * 4)),
+      modelCatalog: () => modelCatalogCache.items,
+      supervisorState: () => lastSupervisorGate
+    })
+  });
+
+  async function queryKnowledge(target, tool, query, limit = 4) {
+    try {
+      const response = await knowledgeBus.request({ target, tool, query, limit });
+      return response.ok ? response : null;
+    } catch (error) {
+      think(`KnowledgeBus ${target}.${tool} unavailable: ${error.message}`);
+      return null;
+    }
+  }
+
+  async function buildKnowledgeContext(state, step, stuck) {
+    const visualGoal = /graph|chart|line|plot|formula|equation|visible|screenshot|screen|canvas|image/i.test(String(goal || ""));
+    const shouldSearchMemory = step === 1 || stuck || failures >= 2;
+    const requests = [];
+    if (shouldSearchMemory) requests.push(queryKnowledge("MEMORY", "search", goal, 3));
+    if (visualGoal || stuck || failures >= 1) {
+      requests.push(queryKnowledge("VISION", "snapshot", `Is the requested visual result visible for: ${goal}`, 2));
+      requests.push(queryKnowledge("ELEMENT_MAP", "snapshot", `Find visible controls or result regions relevant to: ${goal}`, 2));
+    }
+    const [memory, vision, elementMap] = await Promise.all([
+      requests[0] || Promise.resolve(null),
+      visualGoal || stuck || failures >= 1 ? requests[shouldSearchMemory ? 1 : 0] : Promise.resolve(null),
+      visualGoal || stuck || failures >= 1 ? requests[shouldSearchMemory ? 2 : 1] : Promise.resolve(null)
+    ]);
+    return { memory, vision, elementMap, visualGoal, url: state?.url || "" };
+  }
 
   const scheduleElementMapTick = (initialDelayMs = null) => {
     if (elementMapTimer) {
@@ -10082,20 +10356,17 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
         const detectionStreak = (captchaDetectionStreakByPage.get(pageKey) || 0) + 1;
         captchaDetectionStreakByPage.set(pageKey, detectionStreak);
 
-        const visionState = String(visionSnap?.signal?.state || "").toLowerCase();
-        const visionBlocker = String(visionSnap?.signal?.blocker || "").toLowerCase();
-        const visionAffirmsCaptcha = visionState === "captcha" || visionBlocker === "captcha";
-        const shouldEscalateCaptchaFlow =
-          !!captcha.strongEvidence ||
-          visionAffirmsCaptcha ||
-          (detectionStreak >= 3 && Number(captcha.score || 0) >= 5);
+        const visionConfirmation = await confirmCaptchaWithVision(state, models);
+        const shouldEscalateCaptchaFlow = visionConfirmation.confirmed;
 
         if (!shouldEscalateCaptchaFlow) {
-          think(`Soft CAPTCHA signal ignored on ${state.url} (streak ${detectionStreak}, score ${Number(captcha.score || 0)}).`);
-          // Keep running normally unless repeated strong evidence appears.
+          think(`CAPTCHA suspect rejected by Vision on ${state.url} (streak ${detectionStreak}, heuristic score ${Number(captcha.score || 0)}, vision ${visionConfirmation.confidence}%: ${visionConfirmation.reason}).`);
+          captchaDetectionStreakByPage.delete(pageKey);
           await sleep(120);
           continue;
         }
+
+        think(`Vision confirmed CAPTCHA on ${state.url} (${visionConfirmation.confidence}%): ${visionConfirmation.reason}`);
 
         const hostKey = getHostFromUrl(state.url);
         captchaGentleUntilByHost.set(hostKey, Date.now() + CAPTCHA_GENTLE_MODE_MS);
@@ -10205,6 +10476,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
 
       const stuck = detectStuck(taskLog);
+      latestKnowledgeContext = await buildKnowledgeContext(state, step, stuck);
       const reconTargetUrl = getStriderReconTarget(goal, state.url);
       const shouldRefreshStriderRecon = !simpleBrowsingModeActive && !!reconTargetUrl && step >= 2 && (step - lastStriderReconRefreshStep >= 3) && (
         stuck ||
@@ -10240,7 +10512,7 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
         ((step - lastInstinctStep) >= INSTINCT_SAMPLE_EVERY_STEPS);
 
       const instinct = shouldRefreshInstinct
-        ? await getReasonerInstinct(goal, state, visionFeedback, taskLog, models)
+        ? await getReasonerInstinct(goal, state, visionFeedback, taskLog, models, latestKnowledgeContext)
         : (lastInstinct || {
             instinct: "Focus on the current page state.",
             risk: "medium",
@@ -10324,7 +10596,8 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
         plan = await withExecutorWork(() => planNextSteps(goal, state, instinctFeedback, taskLog, plannerHistory, stuck, failures, models, peerSignals, {
           simpleFastPathCandidate,
           directNavigationTarget,
-          taskContext
+          taskContext,
+          knowledgeContext: latestKnowledgeContext
         }));
       } catch (err) {
         errLog("Planning failed: " + err.message);
@@ -10352,7 +10625,8 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
 
       if (!plan.actions?.length) {
-        const heuristicPlan = inferHeuristicPlan(goal, state, taskLog, failures);
+        const shouldUseFallback = shouldUseHeuristicPlannerFallback(plan, goal, state, taskLog, failures);
+        const heuristicPlan = shouldUseFallback ? inferHeuristicPlan(goal, state, taskLog, failures) : null;
         if (heuristicPlan && heuristicPlan.actions?.length) {
           plan = heuristicPlan;
           think(`Heuristic no-actions recovery: ${heuristicPlan.reasoning}`);
@@ -10364,11 +10638,13 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
             actions: [{ action: "getAllText", params: {} }]
           };
           think(`Research recovery fallback: using hints from ${confusionResearch.targetDomain || "search results"}.`);
-        } else {
+        } else if (shouldUseFallback) {
           taskLog.push(`Step ${step}: no actions`);
           if (plan._parseFailed) failures++;
           if (failures >= taskRetryLimit) break;
           continue;
+        } else {
+          taskLog.push(`Step ${step}: planner returned no actions; waiting for a valid LLM follow-up.`);
         }
       }
 
@@ -10577,12 +10853,15 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       // the top of every planner prompt so "what was I doing again?" has a
       // cheap, un-truncatable answer even deep into a long task.
       taskContext.lastAction = summary.slice(0, 200);
+      const resultExtraction = getExtractedTextFromResults(results);
       taskContext.lastResult = results.some(r => String(r?.status) === "error")
         ? `error: ${results.find(r => String(r?.status) === "error")?.error || "unknown"}`.slice(0, 160)
-        : "ok";
+        : resultExtraction
+          ? `ok; extracted: ${resultExtraction.replace(/\s+/g, " ").slice(0, 120)}`
+          : "ok";
       taskContext.stepCount = step;
 
-      const extractedNow = getExtractedTextFromResults(results);
+      const extractedNow = resultExtraction;
       if (extractedNow) {
         extractedTextBuffer = extractedNow;
         if (searchEngineCompareGoal) {
@@ -10614,15 +10893,16 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
 
       // For extract+summarize goals, trigger smart extraction and complete immediately.
       const searchEvidenceReady = !extractSearchQuery(goal) || hasSearchGoalEvidence(goal, state);
-      if (isExtractionSummaryGoal(goal) && extractedTextBuffer && searchEvidenceReady) {
+      const targetPageReady = !directNavigationTargetHost || hostMatchesExpectedHost(getHostFromUrl(state.url), directNavigationTargetHost);
+      if (isExtractionGoal(goal) && isUsableExtractedText(extractedTextBuffer) && searchEvidenceReady && targetPageReady) {
         // If we haven't done smart extraction yet, do it now for cleaner summary content.
-        if (extractedTextBuffer.length < 2000) {
+        if (isExtractionSummaryGoal(goal) && extractedTextBuffer.length < 2000) {
           const smartText = await withExecutorWork(() => extractMainContent({ ...state, page }));
           if (smartText && smartText.length > extractedTextBuffer.length) {
             extractedTextBuffer = smartText;
           }
         }
-        const doneLine = `Step ${step}: DONE (text extracted for summary)`;
+        const doneLine = `Step ${step}: DONE (text extracted)`;
         taskLog.push(doneLine);
         stepLogMsg(doneLine);
         completed = true;
@@ -10792,11 +11072,28 @@ async function runTask(goal, models, chatId, browserRuntime = null, userId = nul
       }
     }
 
+    let finalScreenshotSummary = "";
+    if (completed && page) {
+      try {
+        status("Creating final screenshot summary...");
+        const finalScreenshot = await withExecutorWork(() => getVisionScreenshotB64({ broadcastImage: false, writeFile: false }));
+        finalScreenshotSummary = await withExecutorWork(() => callVisionAI(
+          finalScreenshot,
+          `Give a tiny, factual summary of the current browser screenshot for a final answer. Check explicitly whether the requested visual result is visible, including a graph, chart, equation, or line of any color. Describe visible result state, important text, controls, charts, or graphs relevant to this goal. If the requested line or graph is not visibly confirmed, say that clearly. Use 1-3 concise sentences. Do not guess details that are not visible. Goal: ${String(goal || "").slice(0, 500)}`,
+          220,
+          models.vision
+        ));
+        finalScreenshotSummary = stripThinking(finalScreenshotSummary).slice(0, 1200);
+      } catch (err) {
+        think(`Final screenshot summary skipped: ${err.message}`);
+      }
+    }
+
     const answer = stoppedByGuidance
       ? `Task stopped on operator instruction. Last page: ${finalState.url}. Last guidance: ${stoppedGuidanceReason || "stop"}`
       : requiresHuman
       ? `I hit a CAPTCHA/challenge on ${finalState.url} and paused for manual help after ${CAPTCHA_HUMAN_CHECK_LIMIT} automated attempts. Please complete the challenge in the browser, then retry the task.`
-      : await summarizeResult(goal, finalState, taskLog, visionFeedback, completed, models, extractedTextBuffer);
+      : await summarizeResult(goal, finalState, taskLog, visionFeedback, completed, models, extractedTextBuffer, finalScreenshotSummary, latestKnowledgeContext);
     const agentClaimedSuccess = !!(completed && !requiresHuman && !stoppedByGuidance);
     // `completed` above comes from verifyGoalCompletion(), an LLM self-check —
     // i.e. the agent grading its own homework. actualSuccess is a cheap,
@@ -12489,4 +12786,4 @@ async function handleBrowserCrash(reason) {
     console.error("Oh shit I died; Fatal:", err);
     process.exit(1);
   }
-})();
+})()

@@ -9,7 +9,7 @@ Core Tier: 1000 tasks/month
 
 Ultimate: Unlimited
 
-Overages: $0.001 per task
+Overages: $0.01 per task
 
 Safety rules apply
 
